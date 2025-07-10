@@ -1,4 +1,3 @@
-use crate::field_serializers;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 /// alias for DateTime<Utc>
