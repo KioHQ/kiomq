@@ -17,11 +17,13 @@ async fn main() -> Result<(), KioError> {
         .move_job_to_state(job.id.unwrap(), JobState::Wait, JobState::Active, None)
         .await?;
 
-    let stored_job = queue.get_job::<String, (), i32>(job.id.unwrap()).await?;
+    let mut stored_job = queue.get_job::<String, (), i32>(job.id.unwrap()).await?;
+    let con = queue.conn_pool.get().await?;
+    stored_job.update_progress(100, con).await?;
     let previous_state = queue.is_paused();
     queue.pause_or_resume().await?;
     assert_ne!(queue.is_paused(), previous_state);
-    dbg!(previous_state, queue.is_paused());
+    assert_eq!(stored_job.progress, Some(100));
     println!("{:?}", now.elapsed());
     Ok(())
 }

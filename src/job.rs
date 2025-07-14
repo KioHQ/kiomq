@@ -1,9 +1,11 @@
-use std::{collections::HashMap, error::Error, str::FromStr};
+use std::{collections::HashMap, error::Error, fmt::format, str::FromStr};
 
 use chrono::{DateTime, Utc};
 use deadpool_redis::redis::ToRedisArgs;
 use derive_more::{Display, FromStr};
-use redis::{from_redis_value, AsyncCommands, FromRedisValue, Value};
+use redis::{
+    from_redis_value, AsyncCommands, ConnectionLike, FromRedisValue, Pipeline, RedisResult, Value,
+};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_redis::RedisDeserialize;
 
@@ -49,12 +51,14 @@ pub struct Job<D, R, P> {
     pub failed_reason: Option<String>,
     pub processed_on: Option<Dt>,
     pub finished_on: Option<Dt>,
+    pub queue_name: Option<String>,
 }
 impl<D, R, P> Job<D, R, P> {
-    pub fn new(name: &str, data: Option<D>, id: Option<u64>) -> Self {
+    pub fn new(name: &str, data: Option<D>, id: Option<u64>, queue_name: Option<&str>) -> Self {
         let ts = Utc::now().timestamp();
 
         Self {
+            queue_name: queue_name.map(|s| s.to_owned()),
             name: name.to_lowercase(),
             id,
             ts,
@@ -70,6 +74,25 @@ impl<D, R, P> Job<D, R, P> {
             failed_reason: None,
         }
     }
+    pub async fn update_progress<C: redis::aio::ConnectionLike>(
+        &mut self,
+        value: P,
+        mut con: C,
+    ) -> Result<(), KioError>
+    where
+        P: Serialize,
+    {
+        if let (Some(queue_name), Some(id)) = (&self.queue_name, self.id) {
+            let job_key = format!("{queue_name}:{id}");
+            let mut pipeline = redis::pipe();
+            let job_str = serde_json::to_string_pretty(&value)?;
+            pipeline.hset(job_key, "progress", job_str);
+
+            let result = pipeline.query_async::<redis::Value>(&mut con).await?;
+            self.progress = Some(value);
+        }
+        Ok(())
+    }
 }
 impl<D, R, P> FromRedisValue for Job<D, R, P>
 where
@@ -78,13 +101,14 @@ where
     P: for<'de> Deserialize<'de>,
 {
     fn from_redis_value(v: &Value) -> redis::RedisResult<Self> {
-        let mut job: Job<D, R, P> = Job::new("", None, None);
+        let mut job: Job<D, R, P> = Job::new("", None, None, None);
         let map = HashMap::<String, String>::from_redis_value(v)?;
         for (key, value) in map.iter() {
             match key.to_lowercase().as_str() {
                 "id" => job.id = serde_json::from_str(value)?,
                 "timestamp" => job.ts = serde_json::from_str(value)?,
                 "name" => job.name = serde_json::from_str(value)?,
+                "queuename" => job.queue_name = serde_json::from_str(value)?,
                 "state" => {
                     job.state = JobState::from_str(value)
                         .or(serde_json::from_str(value))

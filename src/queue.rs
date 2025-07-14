@@ -1,3 +1,4 @@
+use std::fmt::format;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -94,7 +95,8 @@ impl<'a> Queue<'a> {
         data: D,
         job_id: Option<u64>,
     ) -> Result<Job<D, R, P>, KioError> {
-        let mut job = Job::<D, R, P>::new(name, Some(data), job_id);
+        let queue_name = format!("{}:{}", self.prefix, self.name);
+        let mut job = Job::<D, R, P>::new(name, Some(data), job_id, Some(&queue_name));
         let mut conn = self.conn_pool.get().await?;
         let id = self.fetch_id().await?;
         let prefix = self.prefix;
