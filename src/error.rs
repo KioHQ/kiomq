@@ -26,7 +26,7 @@ pub enum KioError {
     ParseIntError(#[from] std::num::ParseIntError),
     // Dynamic Error type for handling any other errors
     #[error("GeneralError: {0}")]
-    GeneralError(#[from] Box<dyn std::error::Error + Send + Sync>),
+    GeneralError(#[from] Box<dyn std::error::Error + Send>),
     #[error("SystemTimeError: {0}")]
     SystemTimeError(#[from] std::time::SystemTimeError),
     #[error("QueueError: {0}")]

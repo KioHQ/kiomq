@@ -53,6 +53,8 @@ pub struct Job<D, R, P> {
     pub finished_on: Option<Dt>,
     pub queue_name: Option<String>,
 }
+
+// skip comparing the data,progress and return_value field;
 impl<D, R, P> Job<D, R, P> {
     pub fn new(name: &str, data: Option<D>, id: Option<u64>, queue_name: Option<&str>) -> Self {
         let ts = Utc::now().timestamp();

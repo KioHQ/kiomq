@@ -8,6 +8,8 @@ async fn main() -> Result<(), KioError> {
     if let Some(cfg) = config.connection.as_mut() {
         cfg.redis.password = Some(password);
     }
+    let url = &config.url;
+    dbg!(url);
     let queue = Queue::new(None, "trial", &config).await?;
     let job = queue
         .add_job::<_, (), i32>("test_job", "data".to_lowercase(), None)

@@ -3,6 +3,7 @@ mod error;
 mod job;
 mod queue;
 mod utils;
+mod worker;
 pub use error::KioError;
 pub use job::*;
 pub use queue::*;

@@ -58,23 +58,20 @@ impl ToRedisArgs for CollectionSuffix {
 }
 
 #[derive(Debug, Clone)]
-pub struct Queue<'a> {
-    pub(crate) prefix: &'a str,
-    pub name: &'a str,
+pub struct Queue {
+    pub(crate) prefix: String,
+    pub name: String,
     pub paused: Arc<AtomicBool>,
     #[debug(skip)]
     pub conn_pool: Arc<Pool>,
 }
 
-impl<'a> Queue<'a> {
-    pub async fn new(
-        prefix: Option<&'a str>,
-        name: &'a str,
-        cfg: &Config,
-    ) -> Result<Self, KioError> {
+impl Queue {
+    pub async fn new(prefix: Option<&str>, name: &str, cfg: &Config) -> Result<Self, KioError> {
         let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
-        let prefix = prefix.unwrap_or("kio");
-        let meta_key = CollectionSuffix::Meta.to_collection_name(prefix, name);
+        let prefix = prefix.unwrap_or("kio").to_lowercase();
+        let meta_key = CollectionSuffix::Meta.to_collection_name(&prefix, name);
+        let name = name.to_lowercase();
         // if queue exists in redis, restore its state;
         let mut conn = pool.get().await?;
         let is_paused = conn.hexists(&meta_key, JobState::Paused).await?;
@@ -91,7 +88,7 @@ impl<'a> Queue<'a> {
     }
     pub async fn add_job<D: Serialize, R: Serialize, P: Serialize>(
         &self,
-        name: &'a str,
+        name: &str,
         data: D,
         job_id: Option<u64>,
     ) -> Result<Job<D, R, P>, KioError> {
@@ -99,15 +96,15 @@ impl<'a> Queue<'a> {
         let mut job = Job::<D, R, P>::new(name, Some(data), job_id, Some(&queue_name));
         let mut conn = self.conn_pool.get().await?;
         let id = self.fetch_id().await?;
-        let prefix = self.prefix;
-        let job_key = CollectionSuffix::Job(id).to_collection_name(self.prefix, self.name);
-        let events_keys = CollectionSuffix::Events.to_collection_name(self.prefix, self.name);
+        let prefix = &self.prefix;
+        let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
+        let events_keys = CollectionSuffix::Events.to_collection_name(&self.prefix, &self.name);
         let waiting_or_paused = if !self.is_paused() {
             CollectionSuffix::Wait
         } else {
             CollectionSuffix::Paused
         };
-        let waiting_key = waiting_or_paused.to_collection_name(self.prefix, self.name);
+        let waiting_key = waiting_or_paused.to_collection_name(&self.prefix, &self.name);
         let mut pipeline = redis::pipe();
         pipeline.atomic();
         job.id = Some(id);
@@ -126,7 +123,7 @@ impl<'a> Queue<'a> {
     }
     async fn fetch_id(&self) -> Result<u64, KioError> {
         let mut conn = self.conn_pool.get().await?;
-        let id_key = CollectionSuffix::Id.to_collection_name(self.prefix, self.name);
+        let id_key = CollectionSuffix::Id.to_collection_name(&self.prefix, &self.name);
         let id = conn.incr(&id_key, 1_u64).await?;
         Ok(id)
     }
@@ -137,7 +134,7 @@ impl<'a> Queue<'a> {
         P: DeserializeOwned,
     {
         use redis::Value;
-        let job_key = CollectionSuffix::Job(id).to_collection_name(self.prefix, self.name);
+        let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
         let mut conn = self.conn_pool.get().await?;
         let value: Job<_, _, _> = conn.hgetall(job_key).await?;
         Ok(value)
@@ -162,7 +159,7 @@ impl<'a> Queue<'a> {
             previous_suffix,
             next_state_suffix,
         ]
-        .map(|s| s.to_collection_name(self.prefix, self.name));
+        .map(|s| s.to_collection_name(&self.prefix, &self.name));
         let mut conn = self.conn_pool.get().await?;
         let job_exists: bool = conn.exists(&job_key).await?;
         if !job_exists {
@@ -196,7 +193,7 @@ impl<'a> Queue<'a> {
             CollectionSuffix::Meta,
             CollectionSuffix::Paused,
         ]
-        .map(|s| s.to_collection_name(self.prefix, self.name));
+        .map(|s| s.to_collection_name(&self.prefix, &self.name));
         // Plan: rename wait collection to paused
         let mut conn = self.conn_pool.get().await?;
         let src = if pause { &wait_key } else { &paused_key };
