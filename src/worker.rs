@@ -2,25 +2,30 @@ use crate::{queue, Job, KioError, KioResult, Queue};
 
 use dashmap::DashMap;
 use deadpool_redis::Pool;
+use derive_more::Debug;
 use futures::{
     future::{BoxFuture, Future, FutureExt, TryFutureExt},
     stream::FuturesUnordered,
 };
 use redis::aio::ConnectionLike;
-use std::{process::Output, sync::Arc};
-#[derive(Clone)]
+use serde::de::DeserializeOwned;
+use std::sync::Arc;
+#[derive(Clone, Debug)]
 pub struct Worker<D, R, P> {
     queue: Arc<Queue<D, R, P>>,
     jobs: DashMap<u64, Job<D, R, P>>,
+    #[debug(skip)]
     processor: Arc<WorkerCallback<D, R, P>>,
-    running_queue: Arc<FuturesUnordered<Result<(), KioError>>>,
+    processing: Arc<FuturesUnordered<KioResult<()>>>,
 }
 use deadpool_redis::Connection;
 pub(crate) type WorkerCallback<D, R, P> =
-    dyn Fn(Connection, Job<D, R, P>) -> BoxFuture<'static, Result<R, KioError>> + Send;
+    dyn Fn(Connection, Job<D, R, P>) -> BoxFuture<'static, KioResult<R>> + Send;
 
-impl<D: Clone, R: Clone, P: Clone> Worker<D, R, P> {
-    pub fn new<C, F>(queue: &Queue<D, R, P>, procesor: C) -> Self
+impl<D: Clone + DeserializeOwned, R: Clone + DeserializeOwned, P: Clone + DeserializeOwned>
+    Worker<D, R, P>
+{
+    pub fn new<C, F>(queue: &Queue<D, R, P>, processor: C) -> Self
     where
         C: Fn(Connection, Job<D, R, P>) -> F + Send + 'static,
         F: Future<Output = Result<R, Box<dyn std::error::Error + Send>>> + Send + 'static,
@@ -29,7 +34,7 @@ impl<D: Clone, R: Clone, P: Clone> Worker<D, R, P> {
         let pool = queue.conn_pool.clone();
         let jobs = DashMap::new();
         let callback = move |conn: Connection, job: Job<D, R, P>| {
-            let fut = procesor(conn, job);
+            let fut = processor(conn, job);
             fut.map_err(|e| e.into()).boxed()
         };
 
@@ -37,13 +42,24 @@ impl<D: Clone, R: Clone, P: Clone> Worker<D, R, P> {
             queue,
             jobs,
             processor: Arc::new(callback),
-            running_queue: Arc::default(),
+            processing: Arc::default(),
         }
     }
 
-    async fn run(&self) -> KioResult<()> {
-        // finished waiting jobs;
-        //self.queue.
+    pub async fn run(&self) -> KioResult<()> {
+        // populate our jobs with waiting jobs;
+        self.queue
+            .fetch_waiting_jobs()
+            .await?
+            .into_iter()
+            .for_each(|job| {
+                if let Some(job_id) = job.id {
+                    if !self.jobs.contains_key(&job_id) {
+                        self.jobs.insert(job_id, job);
+                    }
+                }
+            });
+
         Ok(())
     }
 }

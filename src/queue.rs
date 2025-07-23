@@ -214,7 +214,8 @@ impl<D, R, P> Queue<D, R, P> {
             let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
             pipeline.hgetall(job_key);
         }
-        let jobs = pipeline.query_async(&mut conn).await?;
+        let mut jobs: Vec<Job<D, R, P>> = pipeline.query_async(&mut conn).await?;
+        jobs.sort_unstable_by(|a, b| a.id.cmp(&b.id));
         Ok(jobs)
     }
     /// pauses the queue if not resumed and vice-versa
@@ -255,4 +256,3 @@ impl<D, R, P> Queue<D, R, P> {
         Ok(())
     }
 }
-//let mut fetches: FuturesUnordered<RedisResult<Job<D, R, P>>> = FuturesUnordered::new();
