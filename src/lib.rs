@@ -8,3 +8,5 @@ pub use error::KioError;
 pub use job::*;
 pub use queue::*;
 pub use utils::fetch_redis_pass;
+
+pub type KioResult<T> = Result<T, KioError>;

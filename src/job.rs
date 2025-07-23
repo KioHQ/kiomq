@@ -106,6 +106,7 @@ where
         let mut job: Job<D, R, P> = Job::new("", None, None, None);
         let map = HashMap::<String, String>::from_redis_value(v)?;
         for (key, value) in map.iter() {
+            //dbg!(&key, &value);
             match key.to_lowercase().as_str() {
                 "id" => job.id = serde_json::from_str(value)?,
                 "timestamp" => job.ts = serde_json::from_str(value)?,

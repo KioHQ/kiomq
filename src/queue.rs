@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::fmt::format;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -5,13 +6,15 @@ use std::sync::Arc;
 use crate::error::{JobError, KioError};
 use crate::job::{Job, JobState};
 use crate::utils::serialize_into_pairs;
+use crate::KioResult;
 use deadpool_redis::{Config, Pool, Runtime};
+use futures::stream::FuturesUnordered;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_redis::RedisDeserialize;
 use std::collections::HashMap;
 
-use redis::{self, AsyncCommands, JsonAsyncCommands, Pipeline, ToRedisArgs};
+use redis::{self, AsyncCommands, JsonAsyncCommands, Pipeline, RedisResult, ToRedisArgs, Value};
 
 use derive_more::{Debug, Display};
 #[derive(Display, Serialize)]
@@ -28,6 +31,8 @@ pub enum CollectionSuffix {
     Failed,
     #[display("{_0}")]
     Job(u64),
+    #[display("")]
+    Prefix,
 }
 
 impl CollectionSuffix {
@@ -67,7 +72,7 @@ pub struct Queue {
 }
 
 impl Queue {
-    pub async fn new(prefix: Option<&str>, name: &str, cfg: &Config) -> Result<Self, KioError> {
+    pub async fn new(prefix: Option<&str>, name: &str, cfg: &Config) -> KioResult<Self> {
         let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
         let prefix = prefix.unwrap_or("kio").to_lowercase();
         let meta_key = CollectionSuffix::Meta.to_collection_name(&prefix, name);
@@ -121,13 +126,13 @@ impl Queue {
 
         Ok(job)
     }
-    async fn fetch_id(&self) -> Result<u64, KioError> {
+    async fn fetch_id(&self) -> KioResult<u64> {
         let mut conn = self.conn_pool.get().await?;
         let id_key = CollectionSuffix::Id.to_collection_name(&self.prefix, &self.name);
         let id = conn.incr(&id_key, 1_u64).await?;
         Ok(id)
     }
-    pub async fn get_job<D, R, P>(&self, id: u64) -> Result<Job<D, R, P>, KioError>
+    pub async fn get_job<D, R, P>(&self, id: u64) -> KioResult<Job<D, R, P>>
     where
         D: DeserializeOwned,
         R: DeserializeOwned,
@@ -145,7 +150,7 @@ impl Queue {
         from: JobState,
         to: JobState,
         returned_value: Option<String>,
-    ) -> Result<(), KioError> {
+    ) -> KioResult<()> {
         // do nothing if the  queue_is_paused.
         if self.is_paused() {
             return Ok(());
@@ -182,6 +187,31 @@ impl Queue {
         pipeline.xadd(events_key, "*", &items);
         let _: redis::Value = pipeline.query_async(&mut conn).await?;
         Ok(())
+    }
+    pub async fn fetch_waiting_jobs<
+        D: DeserializeOwned,
+        R: DeserializeOwned,
+        P: DeserializeOwned,
+    >(
+        &self,
+    ) -> KioResult<Vec<Job<D, R, P>>> {
+        //let mut fetches: FuturesUnordered<RedisResult<Job<D, R, P>>> = FuturesUnordered::new();
+        let jobs_awaiting = vec![];
+        if self.is_paused() {
+            return Ok(jobs_awaiting);
+        }
+        let waiting_key = CollectionSuffix::Wait.to_collection_name(&self.prefix, &self.name);
+        let mut conn = self.conn_pool.get().await?;
+        let waiting: Vec<u64> = conn.lrange(waiting_key, 0, -1).await?;
+        let mut results = Vec::with_capacity(waiting.len());
+        for id in waiting {
+            let job_key =
+                CollectionSuffix::Job(id as u64).to_collection_name(&self.prefix, &self.name);
+            let job = conn.get(job_key).await?;
+            results.push(job);
+        }
+
+        Ok(results)
     }
     /// pauses the queue if not resumed and vice-versa
     pub async fn pause_or_resume(&self) -> Result<(), KioError> {
