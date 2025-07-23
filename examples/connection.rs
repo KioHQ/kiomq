@@ -8,24 +8,22 @@ async fn main() -> Result<(), KioError> {
     if let Some(cfg) = config.connection.as_mut() {
         cfg.redis.password = Some(password);
     }
-    let url = &config.url;
-    dbg!(url);
-    let queue = Queue::new(None, "trial", &config).await?;
+    let queue = Queue::<String, (), i32>::new(None, "trial", &config).await?;
     let job = queue
-        .add_job::<_, (), i32>("test_job", "data".to_lowercase(), None)
+        .add_job("test_job", "data".to_lowercase(), None)
         .await?;
 
-    queue
-        .move_job_to_state(job.id.unwrap(), JobState::Wait, JobState::Active, None)
-        .await?;
+    //queue
+    //    .move_job_to_state(job.id.unwrap(), JobState::Wait, JobState::Active, None)
+    //    .await?;
 
-    let mut stored_job = queue.get_job::<String, (), i32>(job.id.unwrap()).await?;
+    let mut stored_job = queue.get_job(job.id.unwrap()).await?;
     let con = queue.conn_pool.get().await?;
     stored_job.update_progress(100, con).await?;
     let previous_state = queue.is_paused();
-    queue.pause_or_resume().await?;
-    assert_ne!(queue.is_paused(), previous_state);
     assert_eq!(stored_job.progress, Some(100));
+    let waiting_jobs = queue.fetch_waiting_jobs().await?;
+    dbg!(waiting_jobs);
     println!("{:?}", now.elapsed());
     Ok(())
 }

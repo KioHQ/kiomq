@@ -10,7 +10,7 @@ use redis::aio::ConnectionLike;
 use std::{process::Output, sync::Arc};
 #[derive(Clone)]
 pub struct Worker<D, R, P> {
-    queue: Arc<Queue>,
+    queue: Arc<Queue<D, R, P>>,
     jobs: DashMap<u64, Job<D, R, P>>,
     processor: Arc<WorkerCallback<D, R, P>>,
     running_queue: Arc<FuturesUnordered<Result<(), KioError>>>,
@@ -19,8 +19,8 @@ use deadpool_redis::Connection;
 pub(crate) type WorkerCallback<D, R, P> =
     dyn Fn(Connection, Job<D, R, P>) -> BoxFuture<'static, Result<R, KioError>> + Send;
 
-impl<D, R, P> Worker<D, R, P> {
-    pub fn new<C, F>(queue: &Queue, procesor: C) -> Self
+impl<D: Clone, R: Clone, P: Clone> Worker<D, R, P> {
+    pub fn new<C, F>(queue: &Queue<D, R, P>, procesor: C) -> Self
     where
         C: Fn(Connection, Job<D, R, P>) -> F + Send + 'static,
         F: Future<Output = Result<R, Box<dyn std::error::Error + Send>>> + Send + 'static,
