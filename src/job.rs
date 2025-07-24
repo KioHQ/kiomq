@@ -11,7 +11,7 @@ use serde_redis::RedisDeserialize;
 
 use crate::{queue::Queue, CollectionSuffix, KioError};
 /// alias for DateTime<Utc>
-type Dt = DateTime<Utc>;
+pub(crate) type Dt = DateTime<Utc>;
 #[derive(
     Debug, Serialize, Deserialize, FromStr, Default, Hash, Display, Clone, Copy, PartialEq,
 )]

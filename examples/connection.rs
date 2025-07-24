@@ -16,7 +16,7 @@ async fn main() -> KioResult<()> {
         }
         Ok(())
     };
-    let worker = Worker::new(&queue, processor);
+    let worker = Worker::new(&queue, processor, None);
     worker.run().await?;
     println!("{:?}", now.elapsed());
     Ok(())
