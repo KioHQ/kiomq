@@ -4,6 +4,7 @@ mod job;
 mod queue;
 mod utils;
 mod worker;
+mod timer;
 pub use error::KioError;
 pub use job::*;
 pub use queue::*;

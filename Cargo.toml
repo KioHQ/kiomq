@@ -24,4 +24,5 @@ serde-redis = "0.14.0"
 serde_json = { version = "1.0.140", features = ["default", "raw_value"] }
 thiserror = "2.0.12"
 tokio = { version = "1.46.1", features = ["macros", "rt", "rt-multi-thread"] }
+tokio-util = "0.7.15"
 uuid = { version = "1.17.0", features = ["serde", "v4"] }
