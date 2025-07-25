@@ -24,3 +24,5 @@ Cargo.lock
 
 /target
 .env
+## bacon-location files
+.bacon-location*

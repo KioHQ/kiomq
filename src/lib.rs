@@ -1,14 +1,14 @@
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
-}
+#![allow(dead_code, unused)]
+mod error;
+mod job;
+mod queue;
+mod timer;
+mod utils;
+mod worker;
+pub use error::KioError;
+pub use job::*;
+pub use queue::*;
+pub use utils::fetch_redis_pass;
+pub use worker::Worker;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub type KioResult<T> = Result<T, KioError>;
