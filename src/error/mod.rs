@@ -57,6 +57,7 @@ pub enum WorkerError {
 pub enum QueueError {
     FailedToObliterate,
     CantObliterateWhileJobsActive,
+    CantOperateWhenPaused,
 }
 #[derive(Debug, Display, Error)]
 pub enum JobError {
