@@ -1,7 +1,6 @@
 use derive_more::Debug;
 use futures::future::{BoxFuture, Future, FutureExt};
 use std::cell::RefCell;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::{
@@ -12,11 +11,10 @@ pub type EmptyCb = dyn Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static;
 use tokio_util::sync::CancellationToken;
 #[derive(Clone, Debug)]
 pub struct Timer {
-    interval: Duration,
+    interval_ms: Duration,
     #[debug(skip)]
     callback: Arc<EmptyCb>,
     cancel: CancellationToken,
-    status: Arc<AtomicBool>,
 }
 
 impl Timer {
@@ -25,39 +23,36 @@ impl Timer {
         C: Fn() -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + 'static,
     {
-        let interval = Duration::from_millis(delay_ms);
+        let interval_ms = Duration::from_millis(delay_ms);
         #[allow(clippy::redundant_closure)]
         let parsed_cb = move || cb().boxed();
         Self {
-            interval,
+            interval_ms,
             callback: Arc::new(parsed_cb),
             cancel: Default::default(),
-            status: Arc::default(),
         }
     }
 
     pub fn run(&self) -> JoinHandle<()> {
-        let mut interval = tokio::time::interval(self.interval);
+        let mut interval = tokio::time::interval(self.interval_ms);
         let callback = Arc::clone(&self.callback);
         let token = self.cancel.clone();
         let mut task = task::spawn(async move {
+            // wait for the first tick to ensure the initial delay;
+            interval.tick().await;
             while !token.is_cancelled() {
-                interval.tick().await;
-
                 callback().await;
+                interval.tick().await;
             }
         });
-        self.status
-            .store(true, std::sync::atomic::Ordering::Release);
         task
     }
 
     pub fn stop(&self) {
         self.cancel.cancel();
-        self.status.swap(false, std::sync::atomic::Ordering::AcqRel);
     }
     pub fn is_running(&self) -> bool {
-        self.status.load(std::sync::atomic::Ordering::Acquire)
+        !self.cancel.is_cancelled()
     }
 }
 
@@ -66,13 +61,14 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn runs_and_stops() {
+        let now = tokio::time::Instant::now();
         let mut timer = Timer::new(100, || async { println!("hello") });
         timer.run();
-        dbg!(timer.is_running());
+        assert!(timer.is_running());
 
         tokio::time::sleep(Duration::from_millis(300)).await;
         timer.stop();
-
         assert!(!timer.is_running());
+        println!("{:?}", now.elapsed());
     }
 }
