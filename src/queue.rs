@@ -7,7 +7,8 @@ use std::sync::Arc;
 use crate::error::{JobError, KioError};
 use crate::job::{Job, JobState};
 use crate::utils::serialize_into_pairs;
-use crate::KioResult;
+use crate::{Dt, KioResult};
+use chrono::Utc;
 use deadpool_redis::{Config, Pool, Runtime};
 use futures::stream::FuturesUnordered;
 use serde::de::DeserializeOwned;
@@ -121,7 +122,7 @@ impl<D, R, P> Queue<D, R, P> {
         let mut pipeline = redis::pipe();
         pipeline.atomic();
         job.id = Some(id);
-        pipeline.rpush(&waiting_key, id);
+        pipeline.lpush(&waiting_key, id);
         let fields = serialize_into_pairs(&job);
         pipeline.hset_multiple(&job_key, &fields);
         let items = [
@@ -254,5 +255,17 @@ impl<D, R, P> Queue<D, R, P> {
         self.paused
             .store(pause, std::sync::atomic::Ordering::Relaxed);
         Ok(())
+    }
+    pub async fn wait_for_job(&self, block_duration: i64) -> Option<u64> {
+        use chrono::TimeDelta;
+        if self.is_paused() {
+            return None;
+        }
+        let [wait_key, active_key] = [CollectionSuffix::Wait, CollectionSuffix::Active]
+            .map(|key| key.to_collection_name(&self.prefix, &self.name));
+
+        let block_until = TimeDelta::milliseconds(block_duration).as_seconds_f64();
+        let mut con = self.conn_pool.get().await.ok()?;
+        con.brpoplpush(wait_key, active_key, block_until).await.ok()
     }
 }
