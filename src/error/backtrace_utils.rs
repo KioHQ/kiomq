@@ -16,7 +16,7 @@ pub enum CaughtError {
 pub struct BacktraceCatcher;
 
 impl BacktraceCatcher {
-    fn capture_panic_info(info: &panic::PanicInfo<'_>) -> String {
+    fn capture_panic_info(info: &panic::PanicHookInfo<'_>) -> String {
         let backtrace = Backtrace::force_capture();
         let payload = info
             .payload()
