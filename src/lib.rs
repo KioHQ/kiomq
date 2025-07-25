@@ -2,9 +2,9 @@
 mod error;
 mod job;
 mod queue;
+mod timer;
 mod utils;
 mod worker;
-mod timer;
 pub use error::KioError;
 pub use job::*;
 pub use queue::*;
