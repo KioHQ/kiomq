@@ -11,12 +11,14 @@ use crate::{Dt, KioResult};
 use chrono::Utc;
 use deadpool_redis::{Config, Pool, Runtime};
 use futures::stream::FuturesUnordered;
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, Error};
 use serde::{Deserialize, Serialize};
 use serde_redis::RedisDeserialize;
 use std::collections::HashMap;
 
-use redis::{self, AsyncCommands, JsonAsyncCommands, Pipeline, RedisResult, ToRedisArgs, Value};
+use redis::{
+    self, AsyncCommands, JsonAsyncCommands, LposOptions, Pipeline, RedisResult, ToRedisArgs, Value,
+};
 
 use derive_more::{Debug, Display};
 #[derive(Display, Serialize)]
@@ -24,8 +26,8 @@ pub enum CollectionSuffix {
     Active,
     Completed,
     Delayed,
-    Stalled,
-    Id, // hash(number)
+    Stalled, // Set
+    Id,      // hash(number)
     Meta,
     Events,
     Wait,
@@ -35,6 +37,9 @@ pub enum CollectionSuffix {
     Job(u64),
     #[display("")]
     Prefix,
+    #[display("{_0}:lock")]
+    /// Lock(job_id)
+    Lock(u64),
 }
 
 impl CollectionSuffix {
@@ -181,9 +186,16 @@ impl<D, R, P> Queue<D, R, P> {
         }
         let mut pipeline = redis::pipe();
         pipeline.atomic();
-        pipeline.lrem(prev_state_key, 1, job_id);
-        pipeline.rpush(next_state_key, job_id);
-        pipeline.hset(job_key, "state", to.to_string().to_lowercase());
+        // only move the value if it doesn't exist in the target list
+        let job_id_exists_in_target: Option<usize> = conn
+            .lpos(&next_state_key, job_id, LposOptions::default())
+            .await?;
+        if job_id_exists_in_target.is_none() {
+            pipeline.lrem(prev_state_key, 1, job_id);
+            pipeline.rpush(next_state_key, job_id);
+        }
+        let dst = serde_json::to_string(&to)?;
+        pipeline.hset(job_key, "state", dst);
 
         let mut items = vec![
             ("event", to.to_string().to_lowercase()),
@@ -256,16 +268,44 @@ impl<D, R, P> Queue<D, R, P> {
             .store(pause, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
-    pub async fn wait_for_job(&self, block_duration: i64) -> Option<u64> {
+    pub async fn wait_for_job(&self, block_duration: i64) -> KioResult<u64> {
         use chrono::TimeDelta;
         if self.is_paused() {
-            return None;
+            return Err(KioError::QueueError(
+                crate::error::QueueError::CantOperateWhenPaused,
+            ));
         }
         let [wait_key, active_key] = [CollectionSuffix::Wait, CollectionSuffix::Active]
             .map(|key| key.to_collection_name(&self.prefix, &self.name));
 
         let block_until = TimeDelta::milliseconds(block_duration).as_seconds_f64();
-        let mut con = self.conn_pool.get().await.ok()?;
-        con.brpoplpush(wait_key, active_key, block_until).await.ok()
+        let mut con = self.conn_pool.get().await?;
+        let job_id: u64 = con.brpoplpush(wait_key, active_key, block_until).await?;
+        self.move_job_to_state(job_id, JobState::Wait, JobState::Active, None)
+            .await?;
+        Ok(job_id)
+    }
+
+    pub async fn extend_lock(
+        &self,
+        job_id: u64,
+        lock_duration: u64,
+        token: &str,
+    ) -> KioResult<(bool)> {
+        let [lock_key, stalled_key] = [CollectionSuffix::Lock(job_id), CollectionSuffix::Stalled]
+            .map(|key| key.to_collection_name(&self.prefix, &self.name));
+        let mut conn = self.conn_pool.get().await?;
+        let mut pipeline = redis::pipe();
+        pipeline.atomic();
+        let previous: Option<String> = conn.get(&lock_key).await?;
+        if let Some(prev_token) = previous {
+            if prev_token == token {
+                pipeline.pset_ex(lock_key, token, lock_duration);
+                pipeline.srem(stalled_key, job_id);
+                let result: redis::Value = pipeline.query_async(&mut conn).await?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }

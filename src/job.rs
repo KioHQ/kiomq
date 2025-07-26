@@ -52,6 +52,7 @@ pub struct Job<D, R, P> {
     pub processed_on: Option<Dt>,
     pub finished_on: Option<Dt>,
     pub queue_name: Option<String>,
+    pub token: Option<String>, // job_lock token
 }
 
 // skip comparing the data,progress and return_value field;
@@ -74,6 +75,7 @@ impl<D, R, P> Job<D, R, P> {
             attempts_made: 0,
             stack_trace: vec![],
             failed_reason: None,
+            token: None,
         }
     }
     pub async fn update_progress<C: redis::aio::ConnectionLike>(
@@ -117,6 +119,7 @@ where
                         .or(serde_json::from_str(value))
                         .map_err(std::io::Error::other)?
                 }
+                "token" => job.token = serde_json::from_str(value)?,
                 "progress" => job.progress = serde_json::from_str(value)?,
                 "attemptsmade" => job.attempts_made = serde_json::from_str(value)?,
                 "delay" => job.delay = serde_json::from_str(value)?,

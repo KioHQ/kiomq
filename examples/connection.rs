@@ -21,8 +21,10 @@ async fn main() -> KioResult<()> {
     };
     let worker = Worker::new(&queue, processor, None);
     worker.run().await?;
-    let next_job = queue.wait_for_job(100).await;
+    let next_job = queue.wait_for_job(100).await?;
     dbg!(next_job);
+    let done = queue.extend_lock(2, 5000, "test").await?;
+    dbg!(done);
     println!("{:?}", now.elapsed());
     Ok(())
 }

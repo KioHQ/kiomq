@@ -9,9 +9,10 @@ use futures::{
 };
 use redis::aio::ConnectionLike;
 use serde::de::DeserializeOwned;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 mod worker_opts;
+
 pub use worker_opts::WorkerOpts;
 #[derive(Clone, Debug)]
 pub struct Worker<D, R, P> {
@@ -21,7 +22,7 @@ pub struct Worker<D, R, P> {
     #[debug(skip)]
     processor: Arc<WorkerCallback<D, R, P>>,
     opts: WorkerOpts,
-    processing: Arc<FuturesUnordered<KioResult<()>>>,
+    processing: Arc<Mutex<FuturesUnordered<KioResult<()>>>>,
 }
 use deadpool_redis::Connection;
 pub(crate) type WorkerCallback<D, R, P> =
