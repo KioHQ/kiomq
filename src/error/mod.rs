@@ -3,6 +3,7 @@ use deadpool_redis::redis;
 use derive_more::Display;
 use std::io;
 use thiserror::Error;
+use uuid::Uuid;
 
 mod backtrace_utils;
 use backtrace_utils::{BacktraceCatcher, CaughtError};
@@ -50,7 +51,7 @@ pub enum KioError {
 
 #[derive(Debug, Display, Error)]
 pub enum WorkerError {
-    WorkerAlreadyRunningWithId(String),
+    WorkerAlreadyRunningWithId(Uuid),
     FailedToCheckStalledJobs,
 }
 #[derive(Debug, Display, Error)]

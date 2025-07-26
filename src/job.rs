@@ -37,7 +37,7 @@ impl ToRedisArgs for JobState {
 #[derive(Debug, Serialize, Deserialize, Default, Hash, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Job<D, R, P> {
-    pub id: Option<u64>,
+    pub id: Option<String>,
     #[serde(rename = "timestamp", alias = "timestamp")]
     pub ts: i64,
     pub name: String,
@@ -53,12 +53,14 @@ pub struct Job<D, R, P> {
     pub finished_on: Option<Dt>,
     pub queue_name: Option<String>,
     pub token: Option<String>, // job_lock token
+    pub stalled_counter: u64,
 }
 
 // skip comparing the data,progress and return_value field;
 impl<D, R, P> Job<D, R, P> {
     pub fn new(name: &str, data: Option<D>, id: Option<u64>, queue_name: Option<&str>) -> Self {
         let ts = Utc::now().timestamp();
+        let id = id.map(|v| v.to_string());
 
         Self {
             queue_name: queue_name.map(|s| s.to_owned()),
@@ -76,6 +78,7 @@ impl<D, R, P> Job<D, R, P> {
             stack_trace: vec![],
             failed_reason: None,
             token: None,
+            stalled_counter: 0,
         }
     }
     pub async fn update_progress<C: redis::aio::ConnectionLike>(
@@ -86,7 +89,7 @@ impl<D, R, P> Job<D, R, P> {
     where
         P: Serialize,
     {
-        if let (Some(queue_name), Some(id)) = (&self.queue_name, self.id) {
+        if let (Some(queue_name), Some(id)) = (&self.queue_name, &self.id) {
             let job_key = format!("{queue_name}:{id}");
             let mut pipeline = redis::pipe();
             let job_str = serde_json::to_string_pretty(&value)?;
@@ -108,7 +111,6 @@ where
         let mut job: Job<D, R, P> = Job::new("", None, None, None);
         let map = HashMap::<String, String>::from_redis_value(v)?;
         for (key, value) in map.iter() {
-            //dbg!(&key, &value);
             match key.to_lowercase().as_str() {
                 "id" => job.id = serde_json::from_str(value)?,
                 "timestamp" => job.ts = serde_json::from_str(value)?,
@@ -129,6 +131,7 @@ where
                 "failedreason" => job.failed_reason = serde_json::from_str(value)?,
                 "processedon" => job.processed_on = serde_json::from_str(value)?, // Assuming Dt is handled by serde_json
                 "finishedon" => job.finished_on = serde_json::from_str(value)?,
+                "stalledcounter" => job.stalled_counter = serde_json::from_str(value)?,
                 _ => { /* Ignore unknown fields if your hash might contain others */ }
             }
         }

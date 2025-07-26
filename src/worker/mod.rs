@@ -12,6 +12,7 @@ use serde::de::DeserializeOwned;
 use std::sync::{atomic::AtomicBool, Arc, Mutex};
 use uuid::Uuid;
 mod worker_opts;
+use crate::error::WorkerError;
 use tokio_util::sync::CancellationToken;
 
 pub use worker_opts::WorkerOpts;
@@ -19,12 +20,12 @@ pub use worker_opts::WorkerOpts;
 pub struct Worker<D, R, P> {
     id: Uuid,
     queue: Arc<Queue<D, R, P>>,
-    jobs: DashMap<u64, Job<D, R, P>>,
+    jobs_in_progress: DashMap<u64, Job<D, R, P>>,
     #[debug(skip)]
     processor: Arc<WorkerCallback<D, R, P>>,
-    opts: WorkerOpts,
+    pub opts: WorkerOpts,
     cancellation_token: CancellationToken,
-    is_running: Arc<AtomicBool>,
+    active: Arc<AtomicBool>,
     processing: Arc<Mutex<FuturesUnordered<KioResult<()>>>>,
 }
 use deadpool_redis::Connection;
@@ -41,7 +42,7 @@ impl<D: Clone + DeserializeOwned, R: Clone + DeserializeOwned, P: Clone + Deseri
     {
         let queue = Arc::new(queue.clone());
         let pool = queue.conn_pool.clone();
-        let jobs = DashMap::new();
+        let jobs_in_progress = DashMap::new();
         let callback = move |conn: Connection, job: Job<D, R, P>| {
             let fut = processor(conn, job);
             fut.map_err(|e| e.into()).boxed()
@@ -51,29 +52,24 @@ impl<D: Clone + DeserializeOwned, R: Clone + DeserializeOwned, P: Clone + Deseri
 
         Self {
             opts,
-            is_running: Arc::default(),
+            active: Arc::default(),
             id,
             queue,
-            jobs,
+            jobs_in_progress,
             processor: Arc::new(callback),
             cancellation_token: CancellationToken::new(),
             processing: Arc::default(),
         }
     }
 
+    fn is_running(&self) -> bool {
+        self.active.load(std::sync::atomic::Ordering::Acquire)
+            && !self.cancellation_token.is_cancelled()
+    }
     pub async fn run(&self) -> KioResult<()> {
-        // populate our jobs with waiting jobs;
-        self.queue
-            .fetch_waiting_jobs()
-            .await?
-            .into_iter()
-            .for_each(|job| {
-                if let Some(job_id) = job.id {
-                    if !self.jobs.contains_key(&job_id) {
-                        self.jobs.insert(job_id, job);
-                    }
-                }
-            });
+        if self.is_running() {
+            return Err(WorkerError::WorkerAlreadyRunningWithId(self.id).into());
+        }
 
         Ok(())
     }
