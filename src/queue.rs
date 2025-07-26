@@ -414,6 +414,7 @@ impl<D, R, P> Queue<D, R, P> {
             pipeline.atomic();
             if !active.is_empty() {
                 for (from, to) in Batches::new(active.len(), 7000) {
+                    dbg!(from, to);
                     let batch = &active[from..to];
                     pipeline.sadd(&stalled_key, batch);
                 }

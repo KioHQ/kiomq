@@ -11,7 +11,7 @@ pub type EmptyCb = dyn Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static;
 use tokio_util::sync::CancellationToken;
 #[derive(Clone, Debug)]
 pub struct Timer {
-    interval_ms: Duration,
+    interval: Duration,
     #[debug(skip)]
     callback: Arc<EmptyCb>,
     cancel: CancellationToken,
@@ -23,18 +23,18 @@ impl Timer {
         C: Fn() -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + 'static,
     {
-        let interval_ms = Duration::from_millis(delay_ms);
+        let interval = Duration::from_millis(delay_ms);
         #[allow(clippy::redundant_closure)]
         let parsed_cb = move || cb().boxed();
         Self {
-            interval_ms,
+            interval,
             callback: Arc::new(parsed_cb),
             cancel: Default::default(),
         }
     }
 
     pub fn run(&self) -> JoinHandle<()> {
-        let mut interval = tokio::time::interval(self.interval_ms);
+        let mut interval = tokio::time::interval(self.interval);
         let callback = Arc::clone(&self.callback);
         let token = self.cancel.clone();
         let mut task = task::spawn(async move {
