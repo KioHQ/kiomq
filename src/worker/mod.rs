@@ -9,9 +9,10 @@ use futures::{
 };
 use redis::aio::ConnectionLike;
 use serde::de::DeserializeOwned;
-use std::sync::{Arc, Mutex};
+use std::sync::{atomic::AtomicBool, Arc, Mutex};
 use uuid::Uuid;
 mod worker_opts;
+use tokio_util::sync::CancellationToken;
 
 pub use worker_opts::WorkerOpts;
 #[derive(Clone, Debug)]
@@ -22,6 +23,8 @@ pub struct Worker<D, R, P> {
     #[debug(skip)]
     processor: Arc<WorkerCallback<D, R, P>>,
     opts: WorkerOpts,
+    cancellation_token: CancellationToken,
+    is_running: Arc<AtomicBool>,
     processing: Arc<Mutex<FuturesUnordered<KioResult<()>>>>,
 }
 use deadpool_redis::Connection;
@@ -48,10 +51,12 @@ impl<D: Clone + DeserializeOwned, R: Clone + DeserializeOwned, P: Clone + Deseri
 
         Self {
             opts,
+            is_running: Arc::default(),
             id,
             queue,
             jobs,
             processor: Arc::new(callback),
+            cancellation_token: CancellationToken::new(),
             processing: Arc::default(),
         }
     }
@@ -71,5 +76,8 @@ impl<D: Clone + DeserializeOwned, R: Clone + DeserializeOwned, P: Clone + Deseri
             });
 
         Ok(())
+    }
+    pub fn closed(&self) -> bool {
+        self.cancellation_token.is_cancelled()
     }
 }

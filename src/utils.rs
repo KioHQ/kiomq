@@ -1,12 +1,12 @@
 use serde::Serialize;
 
 // ---------------- REDIS FUNCTION here
-pub fn fetch_redis_pass() -> String {
+pub fn fetch_redis_pass() -> Option<String> {
     use dotenv;
     if let Err(err) = dotenv::dotenv() {
         // dothing; continue
     }
-    std::env::var("REDIS_PASSWORD").unwrap_or_default()
+    std::env::var("REDIS_PASSWORD").ok()
 }
 
 pub fn serialize_into_pairs<V: Serialize>(item: &V) -> Vec<(String, String)> {

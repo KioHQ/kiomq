@@ -6,7 +6,7 @@ async fn main() -> KioResult<()> {
     let password = fetch_redis_pass();
     let mut config = Config::default();
     if let Some(cfg) = config.connection.as_mut() {
-        cfg.redis.password = Some(password);
+        cfg.redis.password = password;
     }
     let queue = Queue::<String, (), i32>::new(None, "trial", &config).await?;
 
@@ -22,9 +22,7 @@ async fn main() -> KioResult<()> {
     let worker = Worker::new(&queue, processor, None);
     worker.run().await?;
     let next_job = queue.wait_for_job(100).await?;
-    dbg!(next_job);
     let done = queue.extend_lock(2, 5000, "test").await?;
-    dbg!(done);
     println!("{:?}", now.elapsed());
     Ok(())
 }
