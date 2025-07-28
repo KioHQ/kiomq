@@ -34,16 +34,15 @@ impl BacktraceCatcher {
 
     pub async fn catch<F, T, E>(f: F) -> Result<T, CaughtError>
     where
-        F: Future<Output = Result<T, E>> + Send + 'static,
-        T: Send + 'static,
-        E: Error + Send + Sync + 'static,
+        F: Future<Output = Result<T, E>> + Send,
+        T: Send,
+        E: Error + Send + 'static,
     {
         static PANIC_INFO: LazyLock<Mutex<Option<String>>> = LazyLock::new(Mutex::default);
 
         let old_hook = panic::take_hook();
         panic::set_hook(Box::new(|info| {
             let panic_info = Self::capture_panic_info(info);
-            dbg!(&panic_info, "here");
             PANIC_INFO.lock().unwrap().replace(panic_info);
         }));
 

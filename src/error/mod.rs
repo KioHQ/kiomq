@@ -6,7 +6,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 mod backtrace_utils;
-use backtrace_utils::{BacktraceCatcher, CaughtError};
+pub(crate) use backtrace_utils::{BacktraceCatcher, CaughtError};
 #[derive(Debug, Error)]
 pub enum KioError {
     #[error("RedisError: {0}")]
@@ -60,7 +60,19 @@ pub enum QueueError {
     CantObliterateWhileJobsActive,
     CantOperateWhenPaused,
 }
-#[derive(Debug, Display, Error)]
+#[repr(i8)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Error)]
 pub enum JobError {
-    NotFound,
+    #[error("The job does not exist")]
+    JobNotFound = -1,
+    #[error("The job lock does not exist")]
+    JobLockNotExist = -2,
+    #[error("The job is not in the expected state")]
+    JobNotInState = -3,
+    #[error("The job has pending dependencies")]
+    JobPendingDependencies = -4,
+    #[error("The parent job does not exist")]
+    ParentJobNotExist = -5,
+    #[error("The job lock does not match")]
+    JobLockMismatch = -6,
 }

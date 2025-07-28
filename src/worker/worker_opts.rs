@@ -18,11 +18,13 @@ pub struct WorkerOpts {
     /// Amount of times a job can be recovered from a stalled stalled_interval to the `wait` state.
     /// If this is exceeded, the job is moved to `failed`
     pub max_stalled_count: u64,
+    pub concurrency: usize,
     pub autorun: bool,
 }
 impl Default for WorkerOpts {
     fn default() -> Self {
         Self {
+            concurrency: 1,
             stalled_interval: 30000,
             lock_duration: 30000,
             lock_renew_time: 15000,

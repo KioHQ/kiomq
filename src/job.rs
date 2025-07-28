@@ -6,7 +6,10 @@ use derive_more::{Display, FromStr};
 use redis::{
     from_redis_value, AsyncCommands, ConnectionLike, FromRedisValue, Pipeline, RedisResult, Value,
 };
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{
+    de::{self, DeserializeOwned},
+    Deserialize, Serialize,
+};
 use serde_redis::RedisDeserialize;
 
 use crate::{queue::Queue, CollectionSuffix, KioError};
@@ -24,6 +27,7 @@ pub enum JobState {
     Paused,
     Resumed,
     Completed,
+    Failed,
 }
 impl ToRedisArgs for JobState {
     fn write_redis_args<W>(&self, out: &mut W)
@@ -49,8 +53,8 @@ pub struct Job<D, R, P> {
     pub return_value: Option<R>,
     pub stack_trace: Vec<String>,
     pub failed_reason: Option<String>,
-    pub processed_on: Option<Dt>,
-    pub finished_on: Option<Dt>,
+    pub processed_on: Option<u64>,
+    pub finished_on: Option<u64>,
     pub queue_name: Option<String>,
     pub token: Option<String>, // job_lock token
     pub stalled_counter: u64,
@@ -59,7 +63,7 @@ pub struct Job<D, R, P> {
 // skip comparing the data,progress and return_value field;
 impl<D, R, P> Job<D, R, P> {
     pub fn new(name: &str, data: Option<D>, id: Option<u64>, queue_name: Option<&str>) -> Self {
-        let ts = Utc::now().timestamp();
+        let ts = Utc::now().timestamp_millis();
         let id = id.map(|v| v.to_string());
 
         Self {
@@ -121,14 +125,20 @@ where
                         .or(serde_json::from_str(value))
                         .map_err(std::io::Error::other)?
                 }
-                "token" => job.token = serde_json::from_str(value)?,
+                "token" => {
+                    job.token =
+                        serde_json::from_str(value).unwrap_or_else(|_| Some(value.to_owned()));
+                }
                 "progress" => job.progress = serde_json::from_str(value)?,
                 "attemptsmade" => job.attempts_made = serde_json::from_str(value)?,
                 "delay" => job.delay = serde_json::from_str(value)?,
                 "data" => job.data = serde_json::from_str(value)?,
                 "returnvalue" => job.return_value = serde_json::from_str(value)?,
                 "stacktrace" => job.stack_trace = serde_json::from_str(value)?,
-                "failedreason" => job.failed_reason = serde_json::from_str(value)?,
+                "failedreason" => {
+                    job.failed_reason =
+                        serde_json::from_str(value).unwrap_or_else(|_| Some(value.to_owned()));
+                }
                 "processedon" => job.processed_on = serde_json::from_str(value)?, // Assuming Dt is handled by serde_json
                 "finishedon" => job.finished_on = serde_json::from_str(value)?,
                 "stalledcounter" => job.stalled_counter = serde_json::from_str(value)?,
