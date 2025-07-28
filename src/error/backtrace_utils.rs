@@ -2,21 +2,58 @@ use futures::future::{Future, FutureExt};
 use std::backtrace::Backtrace;
 use std::cell::RefCell;
 use std::error::Error;
+use std::panic::Location;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
 #[derive(Debug)]
 pub enum CaughtError {
-    Panic(String),
+    Panic(CaughtPanicInfo),
     Error(Box<dyn Error + Send>, Backtrace),
 }
+#[derive(Debug)]
+pub struct CaughtPanicInfo {
+    pub payload: String,
+    pub location: Option<PanicLocation>,
+    pub backtrace: Option<Backtrace>,
+}
+impl CaughtPanicInfo {
+    pub fn contains(&self, sub_str: &str) -> bool {
+        self.payload.contains(sub_str)
+    }
+}
 
+impl Default for CaughtPanicInfo {
+    fn default() -> Self {
+        Self {
+            payload: "Panic occurred but failed to capture backtrace".to_string(),
+            location: Default::default(),
+            backtrace: Default::default(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct PanicLocation {
+    file: String,
+    line: u32,
+    col: u32,
+}
+impl From<&std::panic::Location<'_>> for PanicLocation {
+    fn from(value: &std::panic::Location<'_>) -> Self {
+        Self {
+            file: value.file().to_string(),
+            line: value.line(),
+            col: value.column(),
+        }
+    }
+}
 #[derive(Clone)]
 pub struct BacktraceCatcher;
 
 impl BacktraceCatcher {
-    fn capture_panic_info(info: &panic::PanicHookInfo<'_>) -> String {
+    fn capture_panic_info(info: &panic::PanicHookInfo<'_>) -> CaughtPanicInfo {
         let backtrace = Backtrace::force_capture();
         let payload = info
             .payload()
@@ -24,12 +61,16 @@ impl BacktraceCatcher {
             .map(|s| s.as_str())
             .or_else(|| info.payload().downcast_ref::<&'static str>().copied())
             .unwrap_or("Box<Any>");
-        format!(
-            "Panic occurred: {}\nLocation: {:?}\nBacktrace:\n{:?}",
-            payload,
-            info.location(),
-            backtrace
-        )
+        let mut location = None;
+        if let Some(location_info) = info.location() {
+            location.replace(location_info.into());
+        }
+
+        CaughtPanicInfo {
+            payload: payload.to_owned(),
+            location,
+            backtrace: Some(backtrace),
+        }
     }
 
     pub async fn catch<F, T, E>(f: F) -> Result<T, CaughtError>
@@ -38,7 +79,7 @@ impl BacktraceCatcher {
         T: Send,
         E: Error + Send + 'static,
     {
-        static PANIC_INFO: LazyLock<Mutex<Option<String>>> = LazyLock::new(Mutex::default);
+        static PANIC_INFO: LazyLock<Mutex<Option<CaughtPanicInfo>>> = LazyLock::new(Mutex::default);
 
         let old_hook = panic::take_hook();
         panic::set_hook(Box::new(|info| {
@@ -59,9 +100,7 @@ impl BacktraceCatcher {
             }
             Err(reason) => {
                 let panic_info = PANIC_INFO.lock().unwrap().take();
-                Err(CaughtError::Panic(panic_info.unwrap_or_else(|| {
-                    "Panic occurred but failed to capture backtrace".to_string()
-                })))
+                Err(CaughtError::Panic(panic_info.unwrap_or_default()))
             }
         }
     }
@@ -84,9 +123,9 @@ mod tests {
 
         let result = BacktraceCatcher::catch(panicking_function()).await;
         assert!(matches!(result, Err(CaughtError::Panic(_))));
-        if let Err(CaughtError::Panic(err)) = result {
-            assert!(err.contains("Test panic"));
-            assert!(err.contains("Backtrace:"));
+        if let Err(CaughtError::Panic(info)) = result {
+            assert!(info.contains("Test panic"));
+            assert!(info.contains("Backtrace:"));
         }
     }
     #[tokio::test]

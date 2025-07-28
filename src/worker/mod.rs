@@ -1,5 +1,5 @@
 use crate::{
-    error::{BacktraceCatcher, CaughtError},
+    error::{BacktraceCatcher, CaughtError, CaughtPanicInfo},
     queue,
     timer::Timer,
     Job, KioError, KioResult, Queue,
@@ -16,6 +16,7 @@ use futures::{
 };
 use redis::aio::ConnectionLike;
 use serde::{de::DeserializeOwned, Serialize};
+use serde_json::json;
 use std::{
     fmt::format,
     sync::{
@@ -62,13 +63,19 @@ impl<
         P: Clone + DeserializeOwned + 'static + Send + Sync,
     > Worker<D, R, P>
 {
-    pub fn new<C, F>(queue: &Queue<D, R, P>, processor: C, worker_opts: Option<WorkerOpts>) -> Self
+    pub fn new<C, F, E>(
+        queue: &Queue<D, R, P>,
+        processor: C,
+        worker_opts: Option<WorkerOpts>,
+    ) -> Self
     where
+        KioError: From<E>,
         C: Fn(Connection, Job<D, R, P>) -> F + Send + 'static + Sync,
-        F: Future<Output = Result<R, Box<dyn std::error::Error + Send>>> + Send + 'static,
+        F: Future<Output = Result<R, E>> + Send + 'static,
         P: Send + Sync + 'static,
         R: Send + Sync + 'static,
         D: Send + Sync + 'static,
+        E: std::error::Error + Send + 'static,
     {
         let queue = Arc::new(queue.clone());
         let pool = queue.conn_pool.clone();
@@ -174,10 +181,8 @@ impl<
                     let jobs_in_progress = self.jobs_in_progress.clone();
                     let queue = self.queue.clone();
                     let callback = self.processor.clone();
-                    let active_count = self.active_job_count.clone();
 
-                    let task =
-                        process_job(active_count, job, token, jobs_in_progress, queue, callback);
+                    let task = process_job(job, token, jobs_in_progress, queue, callback);
                     let handle = self.processing.lock().await.spawn(task);
                     // task handle
                     if let Some(mut re) = self.jobs_in_progress.get_mut(&id) {
@@ -188,8 +193,8 @@ impl<
             }
 
             if self.processing.lock().await.len() == self.opts.concurrency {
-                // we join_all_task, wait current jobs to complete before adding others;
-                if let Some(done) = self.processing.lock().await.join_next().await {}
+                // we wait for current jobs to complete before adding others;
+                //if let Some(done) = self.processing.lock().await.join_next().await {}
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -200,7 +205,6 @@ impl<
 // ---- UTIL FUNCTIONS
 
 async fn process_job<D, R, P>(
-    active_count: Arc<AtomicUsize>,
     job: Job<D, R, P>,
     token: String,
     jobs_in_progress: JobMap<D, R, P>,
@@ -213,7 +217,8 @@ where
     use crate::JobState;
     let job_id = job.id.clone();
     let conn = queue.conn_pool.get().await?;
-    let returned = BacktraceCatcher::catch(callback(conn, job)).await;
+    let callback = async_backtrace::frame!(callback(conn, job));
+    let returned = BacktraceCatcher::catch(callback).await;
     match returned {
         Ok(result) => {
             // move the job to failed state here;
@@ -223,20 +228,33 @@ where
                 let ts = Utc::now().timestamp_millis();
                 let move_to_state = JobState::Completed;
                 queue
-                    .move_job_to_finished_or_failed(job_id, ts, &token, move_to_state, &result_str)
+                    .move_job_to_finished_or_failed(
+                        job_id,
+                        ts,
+                        &token,
+                        move_to_state,
+                        &result_str,
+                        None,
+                    )
                     .await?;
                 if let Some((_, (_, _, Some(handle)))) = jobs_in_progress.remove(job_id) {
-                    handle.abort(); // remove task from the queue
+                    //handle.abort(); // remove task from the queue
                 }
                 // Todo emit event here
                 //
             }
         }
         Err(err) => {
-            let failed_reason = match err {
-                CaughtError::Panic(str) => str,
-                CaughtError::Error(error, backtrace) => format!("{backtrace:#?}"),
+            let (failed_reason, backtrace) = match err {
+                CaughtError::Panic(CaughtPanicInfo {
+                    backtrace,
+                    payload,
+                    location,
+                }) => (payload, backtrace),
+                CaughtError::Error(error, backtrace) => (error.to_string(), Some(backtrace)),
             };
+            let backtrace =
+                backtrace.map(|trace| serde_json::to_string(&format!("{trace}")).unwrap());
             // move job to failed_state
             if let Some(job_id) = job_id.as_ref() {
                 let ts = Utc::now().timestamp_millis();
@@ -248,13 +266,13 @@ where
                         &token,
                         move_to_state,
                         &serde_json::to_string(&failed_reason)?,
+                        backtrace,
                     )
                     .await?;
                 jobs_in_progress.remove(job_id);
             }
         }
     }
-    active_count.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     Ok(())
 }
 async fn get_next_job<D, R, P>(

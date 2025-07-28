@@ -6,7 +6,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 mod backtrace_utils;
-pub(crate) use backtrace_utils::{BacktraceCatcher, CaughtError};
+pub(crate) use backtrace_utils::{BacktraceCatcher, CaughtError, CaughtPanicInfo};
 #[derive(Debug, Error)]
 pub enum KioError {
     #[error("RedisError: {0}")]

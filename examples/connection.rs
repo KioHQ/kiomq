@@ -1,5 +1,5 @@
 use deadpool_redis::{Config, Connection};
-use kio_mq::{fetch_redis_pass, Job, KioResult, Queue, Worker};
+use kio_mq::{fetch_redis_pass, Job, KioError, KioResult, Queue, Worker};
 #[tokio::main]
 async fn main() -> KioResult<()> {
     let now = tokio::time::Instant::now();
@@ -17,7 +17,7 @@ async fn main() -> KioResult<()> {
         let progress = job.progress.unwrap_or_default();
         let _ = job.update_progress(progress + 1, con).await;
         if job.id.unwrap_or_default().contains("3") {
-            panic!("paniced here, don't save");
+            return Err(std::io::Error::other("failed here"));
         }
         Ok("done".to_lowercase())
     };

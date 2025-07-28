@@ -180,6 +180,7 @@ impl<D, R, P> Queue<D, R, P> {
         to: JobState,
         value: Option<&str>,
         ts: Option<i64>,
+        backtrace: Option<String>,
     ) -> KioResult<()> {
         let move_to_failed_or_completed = matches!(to, JobState::Failed | JobState::Completed);
         // do nothing if the  queue_is_paused.
@@ -223,6 +224,7 @@ impl<D, R, P> Queue<D, R, P> {
         }
         let dst = serde_json::to_string(&to)?;
         pipeline.hset(&job_key, "state", dst);
+        pipeline.hset(&job_key, "stackTrace", backtrace);
 
         let mut items = vec![
             ("event", to.to_string().to_lowercase()),
@@ -424,6 +426,7 @@ impl<D, R, P> Queue<D, R, P> {
                                     target,
                                     None,
                                     None,
+                                    None,
                                 )
                                 .await?;
                                 // emit  stalled;
@@ -439,7 +442,6 @@ impl<D, R, P> Queue<D, R, P> {
             // mark stalled Jobs
             let active: Vec<String> = conn.lrange(&active_key, 0, -1).await?;
             let mut pipeline = redis::pipe();
-            dbg!(&active);
             pipeline.atomic();
             if !active.is_empty() {
                 for (from, to) in Batches::new(active.len(), 7000) {
@@ -539,7 +541,7 @@ impl<D, R, P> Queue<D, R, P> {
         let _: () = conn
             .pset_ex(&job_lock_key, token, opts.lock_duration)
             .await?;
-        self.move_job_to_state(job_id, JobState::Wait, JobState::Active, None, None)
+        self.move_job_to_state(job_id, JobState::Wait, JobState::Active, None, None, None)
             .await?;
         let items = [
             ("processedOn", serde_json::to_string(&ts)?),
@@ -557,6 +559,7 @@ impl<D, R, P> Queue<D, R, P> {
         token: &str,
         move_to_state: JobState,
         returned_value_or_failed_reason: &str,
+        backtrace: Option<String>,
     ) -> KioResult<()> {
         let [job_key, job_lock_key, active_key, completed_key, events_stream_key, stalled_key] = [
             CollectionSuffix::Job(job_id.to_owned()),
@@ -593,6 +596,7 @@ impl<D, R, P> Queue<D, R, P> {
             move_to_state,
             Some(returned_value_or_failed_reason),
             Some(ts),
+            backtrace,
         )
         .await
     }
