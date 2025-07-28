@@ -161,7 +161,6 @@ impl<
     }
     async fn main_loop(&self) -> KioResult<()> {
         self.extend_lock_timer.run();
-
         while !self.closed() {
             while !self.closed() && self.processing.lock().await.len() < self.opts.concurrency {
                 let token_prefix = self
@@ -194,9 +193,8 @@ impl<
 
             if self.processing.lock().await.len() == self.opts.concurrency {
                 // we wait for current jobs to complete before adding others;
-                //if let Some(done) = self.processing.lock().await.join_next().await {}
+                if let Some(done) = self.processing.lock().await.join_next().await {}
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
         }
         Ok(())
     }
@@ -253,8 +251,7 @@ where
                 }) => (payload, backtrace),
                 CaughtError::Error(error, backtrace) => (error.to_string(), Some(backtrace)),
             };
-            let backtrace =
-                backtrace.map(|trace| serde_json::to_string(&format!("{trace}")).unwrap());
+            let backtrace = serde_json::to_string(&backtrace)?;
             // move job to failed_state
             if let Some(job_id) = job_id.as_ref() {
                 let ts = Utc::now().timestamp_millis();
@@ -266,7 +263,7 @@ where
                         &token,
                         move_to_state,
                         &serde_json::to_string(&failed_reason)?,
-                        backtrace,
+                        Some(backtrace),
                     )
                     .await?;
                 jobs_in_progress.remove(job_id);

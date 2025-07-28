@@ -9,6 +9,7 @@ use crate::job::{Job, JobState};
 use crate::utils::{serialize_into_pairs, Batches};
 use crate::worker::WorkerOpts;
 use crate::{Dt, KioResult};
+use async_backtrace::backtrace;
 use chrono::Utc;
 use deadpool_redis::{Config, Pool, Runtime};
 use futures::stream::FuturesUnordered;
@@ -224,7 +225,9 @@ impl<D, R, P> Queue<D, R, P> {
         }
         let dst = serde_json::to_string(&to)?;
         pipeline.hset(&job_key, "state", dst);
-        pipeline.hset(&job_key, "stackTrace", backtrace);
+        if let Some(backtrace) = backtrace {
+            pipeline.hset(&job_key, "stackTrace", backtrace);
+        }
 
         let mut items = vec![
             ("event", to.to_string().to_lowercase()),

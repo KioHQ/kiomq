@@ -1,5 +1,5 @@
+use backtrace::Backtrace;
 use futures::future::{Future, FutureExt};
-use std::backtrace::Backtrace;
 use std::cell::RefCell;
 use std::error::Error;
 use std::panic::Location;
@@ -54,7 +54,7 @@ pub struct BacktraceCatcher;
 
 impl BacktraceCatcher {
     fn capture_panic_info(info: &panic::PanicHookInfo<'_>) -> CaughtPanicInfo {
-        let backtrace = Backtrace::force_capture();
+        let backtrace = Backtrace::new();
         let payload = info
             .payload()
             .downcast_ref::<String>()
@@ -95,7 +95,7 @@ impl BacktraceCatcher {
         match result {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(error)) => {
-                let backtrace = Backtrace::force_capture();
+                let backtrace = Backtrace::new();
                 Err(CaughtError::Error(Box::new(error), backtrace))
             }
             Err(reason) => {
