@@ -10,7 +10,6 @@ use serde::{
     de::{self, DeserializeOwned},
     Deserialize, Serialize,
 };
-use serde_redis::RedisDeserialize;
 
 use crate::{queue::Queue, CollectionSuffix, KioError};
 /// alias for DateTime<Utc>
@@ -50,7 +49,7 @@ pub struct Job<D, R, P> {
     pub attempts_made: u64,
     pub delay: u64,
     pub data: Option<D>,
-    pub return_value: Option<R>,
+    pub returned_value: Option<R>,
     pub stack_trace: Vec<String>,
     pub failed_reason: Option<String>,
     pub processed_on: Option<u64>,
@@ -72,7 +71,7 @@ impl<D, R, P> Job<D, R, P> {
             id,
             ts,
             data,
-            return_value: None,
+            returned_value: None,
             progress: None,
             processed_on: None,
             finished_on: None,
@@ -133,7 +132,7 @@ where
                 "attemptsmade" => job.attempts_made = serde_json::from_str(value)?,
                 "delay" => job.delay = serde_json::from_str(value)?,
                 "data" => job.data = serde_json::from_str(value)?,
-                "returnvalue" => job.return_value = serde_json::from_str(value)?,
+                "returnedvalue" => job.returned_value = serde_json::from_str(value)?,
                 "stacktrace" => job.stack_trace = serde_json::from_str(value)?,
                 "failedreason" => {
                     job.failed_reason =

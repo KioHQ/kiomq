@@ -1,5 +1,5 @@
 use deadpool_redis::{Config, Connection};
-use kio_mq::{fetch_redis_pass, Job, KioError, KioResult, Queue, Worker};
+use kio_mq::{fetch_redis_pass, Job, KioResult, Queue, Worker};
 #[tokio::main]
 async fn main() -> KioResult<()> {
     let now = tokio::time::Instant::now();

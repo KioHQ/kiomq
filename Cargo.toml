@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 async-backtrace = "0.2.7"
-backtrace = { version = "0.3.75", features = ["serde", "serialize-serde"] }
 chrono = { version = "0.4.41", features = ["serde"] }
 dashmap = "6.1.0"
 deadpool-redis = { version = "0.22.0", default-features = false, features = [
@@ -22,7 +21,6 @@ dotenv = "0.15.0"
 futures = "0.3.31"
 redis = { version = "0.32.3", features = ["tokio-comp", "streams", "json"] }
 serde = { version = "1.0.219", features = ["derive"] }
-serde-redis = "0.14.0"
 serde_json = { version = "1.0.140", features = ["default", "raw_value"] }
 thiserror = "2.0.12"
 tokio = { version = "1.46.1", features = ["macros", "rt", "rt-multi-thread"] }

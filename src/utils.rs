@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use std::fmt::Write;
+
 // ---------------- REDIS FUNCTION here
 pub fn fetch_redis_pass() -> Option<String> {
     use dotenv;

@@ -1,4 +1,3 @@
-use backtrace::Backtrace;
 use futures::future::{Future, FutureExt};
 use std::cell::RefCell;
 use std::error::Error;
@@ -7,6 +6,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
+use std::backtrace::Backtrace;
 #[derive(Debug)]
 pub enum CaughtError {
     Panic(CaughtPanicInfo),
@@ -15,7 +15,7 @@ pub enum CaughtError {
 #[derive(Debug)]
 pub struct CaughtPanicInfo {
     pub payload: String,
-    pub location: Option<PanicLocation>,
+    pub location: PanicLocation,
     pub backtrace: Option<Backtrace>,
 }
 impl CaughtPanicInfo {
@@ -34,7 +34,8 @@ impl Default for CaughtPanicInfo {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, derive_more::Display)]
+#[display("{} at {}:{}", file, line, col)]
 pub struct PanicLocation {
     file: String,
     line: u32,
@@ -54,17 +55,16 @@ pub struct BacktraceCatcher;
 
 impl BacktraceCatcher {
     fn capture_panic_info(info: &panic::PanicHookInfo<'_>) -> CaughtPanicInfo {
-        let backtrace = Backtrace::new();
+        let backtrace = Backtrace::force_capture();
         let payload = info
             .payload()
             .downcast_ref::<String>()
             .map(|s| s.as_str())
             .or_else(|| info.payload().downcast_ref::<&'static str>().copied())
             .unwrap_or("Box<Any>");
-        let mut location = None;
-        if let Some(location_info) = info.location() {
-            location.replace(location_info.into());
-        }
+        let mut location = info.location().map(|l| l.into()).unwrap_or_default();
+
+        let payload = format!("Panic:{payload} :\n {}", location);
 
         CaughtPanicInfo {
             payload: payload.to_owned(),
@@ -95,7 +95,7 @@ impl BacktraceCatcher {
         match result {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(error)) => {
-                let backtrace = Backtrace::new();
+                let backtrace = Backtrace::force_capture();
                 Err(CaughtError::Error(Box::new(error), backtrace))
             }
             Err(reason) => {

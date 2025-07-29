@@ -15,7 +15,6 @@ use deadpool_redis::{Config, Pool, Runtime};
 use futures::stream::FuturesUnordered;
 use serde::de::{DeserializeOwned, Error};
 use serde::{Deserialize, Serialize};
-use serde_redis::RedisDeserialize;
 use std::collections::HashMap;
 
 use redis::{

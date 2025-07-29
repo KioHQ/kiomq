@@ -19,8 +19,6 @@ pub enum KioError {
     SerdeJsonError(#[from] serde_json::Error), // Handle serde_json errors
     #[error("SerdeDeserializeError: {0}")]
     SerdeDeserializeError(#[from] serde::de::value::Error),
-    #[error("SerdeRedisDecodeError: {0}")]
-    SerdeRedisDecodeError(#[from] serde_redis::decode::Error),
     // Standard library errors
     #[error("IOError: {0}")]
     IoError(#[from] io::Error),

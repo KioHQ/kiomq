@@ -9,11 +9,11 @@ use chrono::Utc;
 use dashmap::DashMap;
 use deadpool_redis::Pool;
 use derive_more::Debug;
-use futures::lock::Mutex;
 use futures::{
     future::{BoxFuture, Future, FutureExt, TryFutureExt},
     stream::FuturesUnordered,
 };
+use futures::{lock::Mutex, stream::TryReadyChunksError};
 use redis::aio::ConnectionLike;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::json;
@@ -251,7 +251,12 @@ where
                 }) => (payload, backtrace),
                 CaughtError::Error(error, backtrace) => (error.to_string(), Some(backtrace)),
             };
-            let backtrace = serde_json::to_string(&backtrace)?;
+            let backtrace: Option<Vec<String>> = backtrace.map(|trace| {
+                let trace = trace.to_string();
+                trace.lines().map(String::from).collect()
+            });
+
+            let frames = backtrace.and_then(|frames| serde_json::to_string(&frames).ok());
             // move job to failed_state
             if let Some(job_id) = job_id.as_ref() {
                 let ts = Utc::now().timestamp_millis();
@@ -263,7 +268,7 @@ where
                         &token,
                         move_to_state,
                         &serde_json::to_string(&failed_reason)?,
-                        Some(backtrace),
+                        frames,
                     )
                     .await?;
                 jobs_in_progress.remove(job_id);
