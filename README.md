@@ -1,8 +1,8 @@
-### Kiomq
+### kio-mq
 
 [![CI](https://github.com/spencerjibz/kio-mq/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/spencerjibz/kio-mq/actions/workflows/ci.yml)
 
-A simple async background queue based on redis (inspired by bullmq).
+A simple async background task queue based on redis (inspired by bullmq).
 
 ### Development Status
 
