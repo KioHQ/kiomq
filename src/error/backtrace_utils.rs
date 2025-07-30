@@ -6,7 +6,9 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
-use std::backtrace::Backtrace;
+use async_backtrace::Location as LocationTrace;
+type Backtrace = Option<Box<[LocationTrace]>>;
+
 #[derive(Debug)]
 pub enum CaughtError {
     Panic(CaughtPanicInfo),
@@ -16,7 +18,7 @@ pub enum CaughtError {
 pub struct CaughtPanicInfo {
     pub payload: String,
     pub location: PanicLocation,
-    pub backtrace: Option<Backtrace>,
+    pub backtrace: Backtrace,
 }
 impl CaughtPanicInfo {
     pub fn contains(&self, sub_str: &str) -> bool {
@@ -54,8 +56,9 @@ impl From<&std::panic::Location<'_>> for PanicLocation {
 pub struct BacktraceCatcher;
 
 impl BacktraceCatcher {
+    #[async_backtrace::framed]
     fn capture_panic_info(info: &panic::PanicHookInfo<'_>) -> CaughtPanicInfo {
-        let backtrace = Backtrace::force_capture();
+        let backtrace = async_backtrace::backtrace();
         let payload = info
             .payload()
             .downcast_ref::<String>()
@@ -69,10 +72,10 @@ impl BacktraceCatcher {
         CaughtPanicInfo {
             payload: payload.to_owned(),
             location,
-            backtrace: Some(backtrace),
+            backtrace,
         }
     }
-
+    #[async_backtrace::framed]
     pub async fn catch<F, T, E>(f: F) -> Result<T, CaughtError>
     where
         F: Future<Output = Result<T, E>> + Send,
@@ -95,7 +98,7 @@ impl BacktraceCatcher {
         match result {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(error)) => {
-                let backtrace = Backtrace::force_capture();
+                let backtrace = async_backtrace::backtrace();
                 Err(CaughtError::Error(Box::new(error), backtrace))
             }
             Err(reason) => {

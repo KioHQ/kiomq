@@ -81,7 +81,7 @@ impl<
         let pool = queue.conn_pool.clone();
         let jobs_in_progress: JobMap<_, _, _> = Arc::new(DashMap::new());
         let callback = move |conn: Connection, job: Job<D, R, P>| {
-            let fut = processor(conn, job);
+            let fut = async_backtrace::frame!(processor(conn, job));
             fut.map_err(|e| e.into()).boxed()
         };
         let id = Uuid::new_v4();
@@ -181,7 +181,13 @@ impl<
                     let queue = self.queue.clone();
                     let callback = self.processor.clone();
 
-                    let task = process_job(job, token, jobs_in_progress, queue, callback);
+                    let task = async_backtrace::frame!(process_job(
+                        job,
+                        token,
+                        jobs_in_progress,
+                        queue,
+                        callback
+                    ));
                     let handle = self.processing.lock().await.spawn(task);
                     // task handle
                     if let Some(mut re) = self.jobs_in_progress.get_mut(&id) {
@@ -202,6 +208,7 @@ impl<
 
 // ---- UTIL FUNCTIONS
 
+#[async_backtrace::framed]
 async fn process_job<D, R, P>(
     job: Job<D, R, P>,
     token: String,
@@ -249,12 +256,10 @@ where
                     payload,
                     location,
                 }) => (payload, backtrace),
-                CaughtError::Error(error, backtrace) => (error.to_string(), Some(backtrace)),
+                CaughtError::Error(error, backtrace) => (error.to_string(), backtrace),
             };
-            let backtrace: Option<Vec<String>> = backtrace.map(|trace| {
-                let trace = trace.to_string();
-                trace.lines().map(String::from).collect()
-            });
+            let backtrace: Option<Vec<String>> =
+                backtrace.map(|trace| trace.iter().map(|loc| loc.to_string()).collect());
 
             let frames = backtrace.and_then(|frames| serde_json::to_string(&frames).ok());
             // move job to failed_state
