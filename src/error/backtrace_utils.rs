@@ -67,7 +67,7 @@ impl BacktraceCatcher {
             .unwrap_or("Box<Any>");
         let mut location = info.location().map(|l| l.into()).unwrap_or_default();
 
-        let payload = format!("Panic:{payload} :\n {}", location);
+        let payload = format!("Panic:{payload} :\n {location}");
 
         CaughtPanicInfo {
             payload: payload.to_owned(),
