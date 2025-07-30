@@ -3,9 +3,10 @@ use deadpool_redis::redis;
 use derive_more::Display;
 use std::io;
 use thiserror::Error;
+use uuid::Uuid;
 
 mod backtrace_utils;
-use backtrace_utils::{BacktraceCatcher, CaughtError};
+pub(crate) use backtrace_utils::{BacktraceCatcher, CaughtError, CaughtPanicInfo};
 #[derive(Debug, Error)]
 pub enum KioError {
     #[error("RedisError: {0}")]
@@ -18,8 +19,6 @@ pub enum KioError {
     SerdeJsonError(#[from] serde_json::Error), // Handle serde_json errors
     #[error("SerdeDeserializeError: {0}")]
     SerdeDeserializeError(#[from] serde::de::value::Error),
-    #[error("SerdeRedisDecodeError: {0}")]
-    SerdeRedisDecodeError(#[from] serde_redis::decode::Error),
     // Standard library errors
     #[error("IOError: {0}")]
     IoError(#[from] io::Error),
@@ -50,15 +49,28 @@ pub enum KioError {
 
 #[derive(Debug, Display, Error)]
 pub enum WorkerError {
-    WorkerAlreadyRunningWithId(String),
+    WorkerAlreadyRunningWithId(Uuid),
     FailedToCheckStalledJobs,
 }
 #[derive(Debug, Display, Error)]
 pub enum QueueError {
     FailedToObliterate,
     CantObliterateWhileJobsActive,
+    CantOperateWhenPaused,
 }
-#[derive(Debug, Display, Error)]
+#[repr(i8)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Error)]
 pub enum JobError {
-    NotFound,
+    #[error("The job does not exist")]
+    JobNotFound = -1,
+    #[error("The job lock does not exist")]
+    JobLockNotExist = -2,
+    #[error("The job is not in the expected state")]
+    JobNotInState = -3,
+    #[error("The job has pending dependencies")]
+    JobPendingDependencies = -4,
+    #[error("The parent job does not exist")]
+    ParentJobNotExist = -5,
+    #[error("The job lock does not match")]
+    JobLockMismatch = -6,
 }

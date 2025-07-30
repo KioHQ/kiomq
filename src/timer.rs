@@ -1,7 +1,6 @@
 use derive_more::Debug;
 use futures::future::{BoxFuture, Future, FutureExt};
 use std::cell::RefCell;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::{
@@ -16,7 +15,6 @@ pub struct Timer {
     #[debug(skip)]
     callback: Arc<EmptyCb>,
     cancel: CancellationToken,
-    status: Arc<AtomicBool>,
 }
 
 impl Timer {
@@ -32,7 +30,6 @@ impl Timer {
             interval,
             callback: Arc::new(parsed_cb),
             cancel: Default::default(),
-            status: Arc::default(),
         }
     }
 
@@ -41,23 +38,21 @@ impl Timer {
         let callback = Arc::clone(&self.callback);
         let token = self.cancel.clone();
         let mut task = task::spawn(async move {
+            // wait for the first tick to ensure the initial delay;
+            interval.tick().await;
             while !token.is_cancelled() {
-                interval.tick().await;
-
                 callback().await;
+                interval.tick().await;
             }
         });
-        self.status
-            .store(true, std::sync::atomic::Ordering::Release);
         task
     }
 
     pub fn stop(&self) {
         self.cancel.cancel();
-        self.status.swap(false, std::sync::atomic::Ordering::AcqRel);
     }
     pub fn is_running(&self) -> bool {
-        self.status.load(std::sync::atomic::Ordering::Acquire)
+        !self.cancel.is_cancelled()
     }
 }
 
@@ -66,13 +61,14 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn runs_and_stops() {
+        let now = tokio::time::Instant::now();
         let mut timer = Timer::new(100, || async { println!("hello") });
         timer.run();
-        dbg!(timer.is_running());
+        assert!(timer.is_running());
 
         tokio::time::sleep(Duration::from_millis(300)).await;
         timer.stop();
-
         assert!(!timer.is_running());
+        println!("{:?}", now.elapsed());
     }
 }

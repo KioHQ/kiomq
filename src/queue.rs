@@ -1,40 +1,49 @@
 use std::any::Any;
 use std::fmt::format;
-use std::marker::PhantomData;
+use std::marker::{self, PhantomData};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use crate::error::{JobError, KioError};
 use crate::job::{Job, JobState};
-use crate::utils::serialize_into_pairs;
+use crate::utils::{serialize_into_pairs, Batches};
+use crate::worker::WorkerOpts;
 use crate::{Dt, KioResult};
+use async_backtrace::backtrace;
 use chrono::Utc;
 use deadpool_redis::{Config, Pool, Runtime};
 use futures::stream::FuturesUnordered;
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, Error};
 use serde::{Deserialize, Serialize};
-use serde_redis::RedisDeserialize;
 use std::collections::HashMap;
 
-use redis::{self, AsyncCommands, JsonAsyncCommands, Pipeline, RedisResult, ToRedisArgs, Value};
+use redis::{
+    self, AsyncCommands, JsonAsyncCommands, LposOptions, Pipeline, RedisResult, ToRedisArgs, Value,
+};
 
 use derive_more::{Debug, Display};
 #[derive(Display, Serialize)]
 pub enum CollectionSuffix {
-    Active,
-    Completed,
+    Active,    // (list)
+    Completed, //
     Delayed,
-    Stalled,
-    Id, // hash(number)
-    Meta,
-    Events,
-    Wait,
-    Paused,
-    Failed,
+    Stalled, // Set
+    Id,      // hash(number)
+    Meta,    // key
+    Events,  // stream
+    Wait,    // LIST
+    Paused,  // LIST
+    Failed,  // ZSET
+    Marker,
     #[display("{_0}")]
-    Job(u64),
+    Job(String),
     #[display("")]
     Prefix,
+    #[display("{_0}:lock")]
+    /// Lock(job_id)
+    Lock(String),
+    #[display("stalled_check")]
+    StalledCheck, // key
 }
 
 impl CollectionSuffix {
@@ -51,6 +60,7 @@ impl From<JobState> for CollectionSuffix {
             JobState::Paused => CollectionSuffix::Paused,
             JobState::Completed => CollectionSuffix::Completed,
             JobState::Resumed => CollectionSuffix::Active,
+            JobState::Failed => CollectionSuffix::Failed,
         }
     }
 }
@@ -92,8 +102,15 @@ impl<D, R, P> Queue<D, R, P> {
             _d: PhantomData,
         })
     }
-    pub fn is_paused(&self) -> bool {
-        self.paused.load(std::sync::atomic::Ordering::Relaxed)
+    pub async fn is_paused(&self) -> KioResult<bool> {
+        let mut conn = self.conn_pool.get().await?;
+
+        let meta_key = CollectionSuffix::Meta.to_collection_name(&self.prefix, &self.name);
+        let is_paused = conn.hexists(meta_key, JobState::Paused).await?;
+        let done = self
+            .paused
+            .fetch_and(is_paused, std::sync::atomic::Ordering::AcqRel);
+        Ok(done)
     }
     pub async fn add_job(
         &self,
@@ -111,9 +128,11 @@ impl<D, R, P> Queue<D, R, P> {
         let mut conn = self.conn_pool.get().await?;
         let id = self.fetch_id().await?;
         let prefix = &self.prefix;
-        let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
+        let job_key =
+            CollectionSuffix::Job(id.to_string()).to_collection_name(&self.prefix, &self.name);
         let events_keys = CollectionSuffix::Events.to_collection_name(&self.prefix, &self.name);
-        let waiting_or_paused = if !self.is_paused() {
+
+        let waiting_or_paused = if !self.is_paused().await.unwrap_or_default() {
             CollectionSuffix::Wait
         } else {
             CollectionSuffix::Paused
@@ -121,8 +140,8 @@ impl<D, R, P> Queue<D, R, P> {
         let waiting_key = waiting_or_paused.to_collection_name(&self.prefix, &self.name);
         let mut pipeline = redis::pipe();
         pipeline.atomic();
-        job.id = Some(id);
-        pipeline.lpush(&waiting_key, id);
+        job.id = Some(id.to_string());
+        pipeline.lpush(&waiting_key, id.to_string());
         let fields = serialize_into_pairs(&job);
         pipeline.hset_multiple(&job_key, &fields);
         let items = [
@@ -141,34 +160,38 @@ impl<D, R, P> Queue<D, R, P> {
         let id = conn.incr(&id_key, 1_u64).await?;
         Ok(id)
     }
-    pub async fn get_job(&self, id: u64) -> KioResult<Job<D, R, P>>
+    pub async fn get_job(&self, id: &str) -> KioResult<Job<D, R, P>>
     where
         D: DeserializeOwned,
         R: DeserializeOwned,
         P: DeserializeOwned,
     {
         use redis::Value;
-        let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
+        let job_key =
+            CollectionSuffix::Job(id.to_lowercase()).to_collection_name(&self.prefix, &self.name);
         let mut conn = self.conn_pool.get().await?;
         let value: Job<_, _, _> = conn.hgetall(job_key).await?;
         Ok(value)
     }
     pub async fn move_job_to_state(
         &self,
-        job_id: u64,
+        job_id: &str,
         from: JobState,
         to: JobState,
-        returned_value: Option<String>,
+        value: Option<&str>,
+        ts: Option<i64>,
+        backtrace: Option<String>,
     ) -> KioResult<()> {
+        let move_to_failed_or_completed = matches!(to, JobState::Failed | JobState::Completed);
         // do nothing if the  queue_is_paused.
-        if self.is_paused() {
+        if self.is_paused().await.unwrap_or_default() {
             return Ok(());
         }
         use redis::Value;
         let previous_suffix = from.into();
         let next_state_suffix = to.into();
         let [job_key, events_key, prev_state_key, next_state_key] = [
-            CollectionSuffix::Job(job_id),
+            CollectionSuffix::Job(job_id.to_lowercase()),
             CollectionSuffix::Events,
             previous_suffix,
             next_state_suffix,
@@ -177,23 +200,52 @@ impl<D, R, P> Queue<D, R, P> {
         let mut conn = self.conn_pool.get().await?;
         let job_exists: bool = conn.exists(&job_key).await?;
         if !job_exists {
-            return Err(JobError::NotFound.into());
+            return Err(JobError::JobNotFound.into());
         }
         let mut pipeline = redis::pipe();
         pipeline.atomic();
-        pipeline.lrem(prev_state_key, 1, job_id);
-        pipeline.rpush(next_state_key, job_id);
-        pipeline.hset(job_key, "state", to.to_string().to_lowercase());
+        if move_to_failed_or_completed {
+            pipeline.hincr(&job_key, "attemptsMade", 1);
+            pipeline.lrem(prev_state_key, 1, job_id);
+            pipeline.zadd(
+                next_state_key,
+                ts.unwrap_or_else(|| Utc::now().timestamp_millis()),
+                job_id,
+            );
+        } else {
+            // only move the value if it doesn't exist in the target list
+            let job_id_exists_in_target: Option<usize> = conn
+                .lpos(&next_state_key, job_id, LposOptions::default())
+                .await?;
+            if job_id_exists_in_target.is_none() {
+                pipeline.lrem(prev_state_key, 1, job_id);
+                pipeline.rpush(next_state_key, job_id);
+            }
+        }
+        let dst = serde_json::to_string(&to)?;
+        pipeline.hset(&job_key, "state", dst);
+        if let Some(backtrace) = backtrace {
+            pipeline.hset(&job_key, "stackTrace", backtrace);
+        }
 
         let mut items = vec![
             ("event", to.to_string().to_lowercase()),
             ("prev", from.to_string().to_lowercase()),
             ("job_id", job_id.to_string()),
         ];
-        if let Some(data) = returned_value {
-            items.push(("returned_value", data));
+        if let Some(data) = value {
+            let key = if matches!(to, JobState::Failed) {
+                "failedReason"
+            } else {
+                "returnedValue"
+            };
+            pipeline.hset(&job_key, key, data);
+            items.push((key, data.to_owned()));
+            pipeline.hset(&job_key, "finishedOn", ts);
         }
         pipeline.xadd(events_key, "*", &items);
+        // check of retries_exhausion here;
+
         let _: redis::Value = pipeline.query_async(&mut conn).await?;
         Ok(())
     }
@@ -203,12 +255,12 @@ impl<D, R, P> Queue<D, R, P> {
         R: DeserializeOwned,
         P: DeserializeOwned,
     {
-        if self.is_paused() {
+        if self.is_paused().await? {
             return Ok(vec![]);
         }
         let waiting_key = CollectionSuffix::Wait.to_collection_name(&self.prefix, &self.name);
         let mut conn = self.conn_pool.get().await?;
-        let waiting: Vec<u64> = conn.lrange(waiting_key, 0, -1).await?;
+        let waiting: Vec<String> = conn.lrange(waiting_key, 0, -1).await?;
         let mut pipeline = redis::pipe();
 
         for id in waiting {
@@ -222,7 +274,7 @@ impl<D, R, P> Queue<D, R, P> {
     /// pauses the queue if not resumed and vice-versa
     pub async fn pause_or_resume(&self) -> Result<(), KioError> {
         // if its paused
-        let pause = !self.is_paused();
+        let pause = !self.is_paused().await?;
         let [wait_key, events_key, meta_key, paused_key] = [
             CollectionSuffix::Wait,
             CollectionSuffix::Events,
@@ -256,16 +308,300 @@ impl<D, R, P> Queue<D, R, P> {
             .store(pause, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
-    pub async fn wait_for_job(&self, block_duration: i64) -> Option<u64> {
+    pub async fn wait_for_job(&self, block_duration: i64) -> KioResult<u64> {
         use chrono::TimeDelta;
-        if self.is_paused() {
-            return None;
+        if self.is_paused().await.unwrap_or_default() {
+            return Err(KioError::QueueError(
+                crate::error::QueueError::CantOperateWhenPaused,
+            ));
         }
-        let [wait_key, active_key] = [CollectionSuffix::Wait, CollectionSuffix::Active]
-            .map(|key| key.to_collection_name(&self.prefix, &self.name));
-
+        let marker_key = CollectionSuffix::Marker.to_collection_name(&self.prefix, &self.name);
         let block_until = TimeDelta::milliseconds(block_duration).as_seconds_f64();
-        let mut con = self.conn_pool.get().await.ok()?;
-        con.brpoplpush(wait_key, active_key, block_until).await.ok()
+        let mut con = self.conn_pool.get().await?;
+        let (_, _, score): (String, String, u64) = con.bzpopmin(&marker_key, block_until).await?;
+        Ok(score)
+    }
+
+    pub async fn extend_lock(
+        &self,
+        job_id: &str,
+        lock_duration: u64,
+        token: &str,
+    ) -> KioResult<(bool)> {
+        let [lock_key, stalled_key] = [
+            CollectionSuffix::Lock(job_id.to_lowercase()),
+            CollectionSuffix::Stalled,
+        ]
+        .map(|key| key.to_collection_name(&self.prefix, &self.name));
+        let mut conn = self.conn_pool.get().await?;
+        let mut pipeline = redis::pipe();
+        pipeline.atomic();
+        let previous: Option<String> = conn.get(&lock_key).await?;
+        if let Some(prev_token) = previous {
+            if prev_token == token {
+                pipeline.pset_ex(lock_key, token, lock_duration);
+                pipeline.srem(stalled_key, job_id.to_string());
+                let result: redis::Value = pipeline.query_async(&mut conn).await?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    pub async fn make_stalled_jobs_wait(
+        &self,
+        opts: &WorkerOpts,
+    ) -> KioResult<(Vec<String>, Vec<String>)> {
+        let ts = Utc::now().timestamp_millis();
+        let [wait_key, active_key, events_key, meta_key, paused_key, stalled_key, stalled_check, failed_key, marker_key] =
+            [
+                CollectionSuffix::Wait,
+                CollectionSuffix::Active,
+                CollectionSuffix::Events,
+                CollectionSuffix::Meta,
+                CollectionSuffix::Paused,
+                CollectionSuffix::Stalled,
+                CollectionSuffix::StalledCheck,
+                CollectionSuffix::Failed,
+                CollectionSuffix::Marker,
+            ]
+            .map(|s| s.to_collection_name(&self.prefix, &self.name));
+        let mut conn = self.conn_pool.get().await?;
+        let mut failed = vec![];
+        let mut stalled = vec![];
+        let stalled_key_exists: bool = conn.exists(&stalled_check).await?;
+        if dbg!(stalled_key_exists) {
+            return Ok((failed, stalled));
+        }
+        let _: () = conn
+            .pset_ex(&stalled_check, ts, opts.stalled_interval)
+            .await?;
+        // trim
+        let stalling: Vec<String> = conn.smembers(&stalled_key).await?;
+        if !stalling.is_empty() {
+            for job_id in stalling {
+                if job_id.starts_with("0:") {
+                    let _: () = conn.lrem(&active_key, 1, &job_id).await?;
+                } else {
+                    let job_key = CollectionSuffix::Job(job_id.clone())
+                        .to_collection_name(&self.prefix, &self.name);
+                    let job_lock_key = CollectionSuffix::Lock(job_id.to_lowercase())
+                        .to_collection_name(&self.prefix, &self.name);
+                    if !conn
+                        .exists::<_, bool>(&job_lock_key)
+                        .await
+                        .unwrap_or_default()
+                    {
+                        let removed: isize = conn.lrem(&active_key, 1, &job_id).await?;
+                        if removed > 0 {
+                            // If this job has been stalled too many times, such as if it crashes the worker, then fail it.
+                            let stalled_count: u64 =
+                                conn.hincr(&job_key, "stalledCounter", 1).await?;
+                            if stalled_count > opts.max_stalled_count {
+                                // Add job removal option logic here
+                                let _: () = conn.zadd(&failed_key, ts, &job_id).await?;
+                                let failed_reason = "job stalled more than allowable limit";
+                                let state = JobState::Failed.to_string();
+
+                                let items = [
+                                    ("failedReason", failed_reason.to_lowercase()),
+                                    ("finishedOn", ts.to_string()),
+                                    ("state", state),
+                                ];
+                                let _: () = conn.hset_multiple(&job_key, &items).await?;
+                                let items = [
+                                    ("event", "failed"),
+                                    ("job_id", &job_id),
+                                    ("failedReason", failed_reason),
+                                    ("prev", "active"),
+                                ];
+                                let _: () = conn.xadd(&events_key, "*", &items).await?;
+                                failed.push(job_id);
+                            } else {
+                                let (is_paused, target) = self.get_target_list().await;
+                                if !is_paused {
+                                    let _: () = conn.zadd(&marker_key, 0, "0").await?;
+                                }
+                                self.move_job_to_state(
+                                    &job_id,
+                                    JobState::Active,
+                                    target,
+                                    None,
+                                    None,
+                                    None,
+                                )
+                                .await?;
+                                // emit  stalled;
+                                let items = [("event", "stalled"), ("job_id", &job_id)];
+                                let _: () = conn.xadd(&events_key, "*", &items).await?;
+                                stalled.push(job_id);
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // mark stalled Jobs
+            let active: Vec<String> = conn.lrange(&active_key, 0, -1).await?;
+            let mut pipeline = redis::pipe();
+            pipeline.atomic();
+            if !active.is_empty() {
+                for (from, to) in Batches::new(active.len(), 7000) {
+                    let batch = &active[from..to];
+                    dbg!(&batch);
+                    if !batch.is_empty() {
+                        pipeline.sadd(&stalled_key, batch);
+                    }
+                }
+                let _: () = pipeline.query_async(&mut conn).await?;
+            }
+        }
+
+        Ok((failed, stalled))
+    }
+
+    pub async fn get_target_list(&self) -> (bool, JobState) {
+        let paused = self.is_paused().await.unwrap_or_default();
+        if paused {
+            return (paused, JobState::Paused);
+        }
+        (paused, JobState::Wait)
+    }
+
+    pub async fn move_to_active(
+        &self,
+        token: &str,
+        opts: &WorkerOpts,
+    ) -> KioResult<Option<Job<D, R, P>>>
+    where
+        D: DeserializeOwned,
+        R: DeserializeOwned,
+        P: DeserializeOwned,
+    {
+        let ts = Utc::now().timestamp_millis();
+        let [wait_key, active_key, events_key, meta_key, paused_key, stalled_key, stalled_check, failed_key, marker_key] =
+            [
+                CollectionSuffix::Wait,
+                CollectionSuffix::Active,
+                CollectionSuffix::Events,
+                CollectionSuffix::Meta,
+                CollectionSuffix::Paused,
+                CollectionSuffix::Stalled,
+                CollectionSuffix::StalledCheck,
+                CollectionSuffix::Failed,
+                CollectionSuffix::Marker,
+            ]
+            .map(|s| s.to_collection_name(&self.prefix, &self.name));
+        let mut conn = self.conn_pool.get().await?;
+        let (is_paused, target_state) = self.get_target_list().await;
+        let mut job_id: Option<String> = conn.rpoplpush(&wait_key, &active_key).await?;
+        if let Some(id) = job_id.as_ref() {
+            if id.starts_with("0:") {
+                let _: () = conn.lrem(&active_key, 1, id).await?;
+                job_id = conn.rpoplpush(&wait_key, &active_key).await?;
+            }
+        }
+
+        if let Some(job_id) = job_id {
+            let job = self
+                .prepare_job_for_processing(token, &job_id, ts as u64, opts)
+                .await?;
+
+            return Ok(Some(job));
+        }
+        Ok(None)
+    }
+    pub async fn prepare_job_for_processing(
+        &self,
+        token: &str,
+        job_id: &str,
+        ts: u64,
+        opts: &WorkerOpts,
+    ) -> KioResult<Job<D, R, P>>
+    where
+        D: DeserializeOwned,
+        R: DeserializeOwned,
+        P: DeserializeOwned,
+    {
+        let [wait_key, active_key, events_key, meta_key, paused_key, stalled_key, stalled_check, failed_key, marker_key, job_key, job_lock_key] =
+            [
+                CollectionSuffix::Wait,
+                CollectionSuffix::Active,
+                CollectionSuffix::Events,
+                CollectionSuffix::Meta,
+                CollectionSuffix::Paused,
+                CollectionSuffix::Stalled,
+                CollectionSuffix::StalledCheck,
+                CollectionSuffix::Failed,
+                CollectionSuffix::Marker,
+                CollectionSuffix::Job(job_id.to_lowercase()),
+                CollectionSuffix::Lock(job_id.to_lowercase()),
+            ]
+            .map(|s| s.to_collection_name(&self.prefix, &self.name));
+        let mut conn = self.conn_pool.get().await?;
+
+        let _: () = conn
+            .pset_ex(&job_lock_key, token, opts.lock_duration)
+            .await?;
+        self.move_job_to_state(job_id, JobState::Wait, JobState::Active, None, None, None)
+            .await?;
+        let items = [
+            ("processedOn", serde_json::to_string(&ts)?),
+            ("token", serde_json::to_string(token)?),
+        ];
+        let _: () = conn.hset_multiple(&job_key, &items).await?;
+        let job = conn.hgetall(&job_key).await?;
+        Ok(job)
+    }
+
+    pub(crate) async fn move_job_to_finished_or_failed(
+        &self,
+        job_id: &str,
+        ts: i64,
+        token: &str,
+        move_to_state: JobState,
+        returned_value_or_failed_reason: &str,
+        backtrace: Option<String>,
+    ) -> KioResult<()> {
+        let [job_key, job_lock_key, active_key, completed_key, events_stream_key, stalled_key] = [
+            CollectionSuffix::Job(job_id.to_owned()),
+            CollectionSuffix::Lock(job_id.to_owned()),
+            CollectionSuffix::Active,
+            CollectionSuffix::Completed,
+            CollectionSuffix::Events,
+            CollectionSuffix::Stalled,
+        ]
+        .map(|e| e.to_collection_name(&self.prefix, &self.name));
+
+        let mut conn = self.conn_pool.get().await?;
+        let mut pipeline = redis::pipe();
+        pipeline.atomic();
+        let job_exists: bool = conn.exists(&job_key).await?;
+        if !job_exists {
+            return Err(JobError::JobNotFound.into());
+        }
+        let lock_token: Option<String> = conn.get(&job_lock_key).await?;
+        if let Some(local) = lock_token {
+            if local != token {
+                return Err(JobError::JobLockMismatch.into());
+            }
+            pipeline.del(&job_lock_key);
+            pipeline.srem(&stalled_key, job_id);
+        } else {
+            return Err(JobError::JobLockNotExist.into());
+        }
+        // Todo: remove any dependencies too here ;
+
+        self.move_job_to_state(
+            job_id,
+            JobState::Active,
+            move_to_state,
+            Some(returned_value_or_failed_reason),
+            Some(ts),
+            backtrace,
+        )
+        .await
     }
 }
+
+// ----- UTILITY FUNCTIONS -------------------

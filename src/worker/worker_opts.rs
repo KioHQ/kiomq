@@ -14,18 +14,20 @@ pub struct WorkerOpts {
     /// The time in milliseconds before the lock is automatically renewed.
     /// It is not recommended to modify this value, which is by default set to halv the lockDuration value,
     /// which is optimal for most use cases.
-    pub lock_renew_time: Dt,
+    pub lock_renew_time: u64,
     /// Amount of times a job can be recovered from a stalled stalled_interval to the `wait` state.
     /// If this is exceeded, the job is moved to `failed`
-    pub max_stalled_count: i32,
+    pub max_stalled_count: u64,
+    pub concurrency: usize,
     pub autorun: bool,
 }
 impl Default for WorkerOpts {
     fn default() -> Self {
         Self {
+            concurrency: 1,
             stalled_interval: 30000,
             lock_duration: 30000,
-            lock_renew_time: Default::default(),
+            lock_renew_time: 15000,
             max_stalled_count: 1,
             autorun: Default::default(),
         }
