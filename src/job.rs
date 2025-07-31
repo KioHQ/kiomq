@@ -15,7 +15,7 @@ use crate::{queue::Queue, CollectionSuffix, KioError};
 /// alias for DateTime<Utc>
 pub(crate) type Dt = DateTime<Utc>;
 #[derive(
-    Debug, Serialize, Deserialize, FromStr, Default, Hash, Display, Clone, Copy, PartialEq,
+    Debug, Serialize, Deserialize, FromStr, Default, Hash, Display, Clone, Copy, PartialEq, Eq,
 )]
 #[serde(rename_all = "camelCase")]
 pub enum JobState {
@@ -57,6 +57,16 @@ pub struct Job<D, R, P> {
     pub queue_name: Option<String>,
     pub token: Option<String>, // job_lock token
     pub stalled_counter: u64,
+}
+impl FromRedisValue for JobState {
+    fn from_redis_value(v: &Value) -> RedisResult<Self> {
+        let value_str = String::from_redis_value(v)?;
+        let state = JobState::from_str(&value_str)
+            .or(serde_json::from_str(&value_str))
+            .map_err(std::io::Error::other)?;
+
+        Ok(state)
+    }
 }
 
 // skip comparing the data,progress and return_value field;
