@@ -2,7 +2,7 @@ use crate::{
     error::{BacktraceCatcher, CaughtError, CaughtPanicInfo},
     queue,
     timer::Timer,
-    Job, KioError, KioResult, Queue,
+    Job, JobState, KioError, KioResult, Queue,
 };
 
 use chrono::Utc;
@@ -31,6 +31,9 @@ mod worker_opts;
 use crate::error::WorkerError;
 use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
+mod worker_events;
+pub(crate) use worker_events::EventEmitter;
+pub use worker_events::EventParameters;
 
 use tokio::task::JoinSet;
 type JobMap<D, R, P> = Arc<DashMap<String, (Job<D, R, P>, String, Option<AbortHandle>)>>;
@@ -58,9 +61,9 @@ pub(crate) type WorkerCallback<D, R, P> =
     dyn Fn(Connection, Job<D, R, P>) -> BoxFuture<'static, KioResult<R>> + Send + 'static + Sync;
 
 impl<
-        D: Clone + DeserializeOwned + 'static + Send + Sync,
+        D: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
         R: Clone + DeserializeOwned + 'static + Serialize + Send + Sync,
-        P: Clone + DeserializeOwned + 'static + Send + Sync,
+        P: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
     > Worker<D, R, P>
 {
     pub fn new<C, F, E>(
@@ -85,7 +88,8 @@ impl<
             fut.map_err(|e| e.into()).boxed()
         };
         let id = Uuid::new_v4();
-        let opts = worker_opts.unwrap_or_default();
+        let mut opts = worker_opts.unwrap_or_default();
+        opts.concurrency = 6;
         let queue_clone = queue.clone();
 
         let jobs = jobs_in_progress.clone();
@@ -114,7 +118,7 @@ impl<
             async move {
                 if let Ok((failed, stalled)) = queue.make_stalled_jobs_wait(&opts).await {
                     // do something with results
-                    dbg!(failed, stalled);
+                    //dbg!(failed, stalled);
                 }
             }
         });
@@ -204,6 +208,23 @@ impl<
         }
         Ok(())
     }
+    pub async fn on<F, C>(&self, event: JobState, callback: C) -> String
+    where
+        C: Fn(EventParameters<D, R, P>) -> F + Send + Sync + 'static,
+        F: Future<Output = ()> + Send + Sync + 'static,
+    {
+        self.queue.on(event, callback).await
+    }
+    pub async fn on_all_events<F, C>(&self, callback: C) -> String
+    where
+        C: Fn(EventParameters<D, R, P>) -> F + Send + Sync + 'static,
+        F: Future<Output = ()> + Send + Sync + 'static,
+    {
+        self.queue.on_all_events(callback).await
+    }
+    pub fn remove_event_listener(&self, id: &str) -> Option<String> {
+        self.queue.remove_event_listener(id)
+    }
 }
 
 // ---- UTIL FUNCTIONS
@@ -217,7 +238,9 @@ async fn process_job<D, R, P>(
     callback: Arc<WorkerCallback<D, R, P>>,
 ) -> KioResult<()>
 where
-    R: Serialize + Send,
+    R: Serialize + Send + Clone + DeserializeOwned,
+    D: Clone + Serialize + DeserializeOwned,
+    P: Clone + Serialize + DeserializeOwned,
 {
     use crate::JobState;
     let job_id = job.id.clone();
@@ -232,7 +255,7 @@ where
             {
                 let ts = Utc::now().timestamp_millis();
                 let move_to_state = JobState::Completed;
-                queue
+                let completed = queue
                     .move_job_to_finished_or_failed(
                         job_id,
                         ts,
@@ -242,8 +265,18 @@ where
                         None,
                     )
                     .await?;
-                if let Some((_, (_, _, Some(handle)))) = jobs_in_progress.remove(job_id) {
+                if let Some((_, (job, _, Some(handle)))) = jobs_in_progress.remove(job_id) {
                     //handle.abort(); // remove task from the queue
+                    queue
+                        .emit(
+                            JobState::Completed,
+                            EventParameters::Completed {
+                                prev_state: Some(job.state),
+                                job: completed,
+                                result,
+                            },
+                        )
+                        .await;
                 }
                 // Todo emit event here
                 //
@@ -266,7 +299,7 @@ where
             if let Some(job_id) = job_id.as_ref() {
                 let ts = Utc::now().timestamp_millis();
                 let move_to_state = JobState::Failed;
-                queue
+                let failed_job = queue
                     .move_job_to_finished_or_failed(
                         job_id,
                         ts,
@@ -276,7 +309,18 @@ where
                         frames,
                     )
                     .await?;
-                jobs_in_progress.remove(job_id);
+                if let Some((_, (job, _, Some(handle)))) = jobs_in_progress.remove(job_id) {
+                    queue
+                        .emit(
+                            JobState::Failed,
+                            EventParameters::Failed {
+                                prev_state: job.state,
+                                job: failed_job,
+                                error: failed_reason,
+                            },
+                        )
+                        .await
+                }
             }
         }
     }
@@ -290,9 +334,9 @@ async fn get_next_job<D, R, P>(
     opts: &WorkerOpts,
 ) -> KioResult<Option<Job<D, R, P>>>
 where
-    D: DeserializeOwned,
-    R: DeserializeOwned,
-    P: DeserializeOwned,
+    D: DeserializeOwned + Clone + Serialize,
+    R: DeserializeOwned + Clone + Serialize,
+    P: DeserializeOwned + Clone + Serialize,
 {
     // handle pausing or closing;
     if closed {

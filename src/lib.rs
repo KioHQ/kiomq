@@ -5,6 +5,7 @@ mod queue;
 mod timer;
 mod utils;
 mod worker;
+pub use async_backtrace::framed;
 pub use error::KioError;
 pub use job::*;
 pub use queue::*;

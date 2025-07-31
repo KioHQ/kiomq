@@ -1,3 +1,4 @@
+use futures::future::Future;
 use std::any::Any;
 use std::fmt::format;
 use std::marker::{self, PhantomData};
@@ -73,28 +74,38 @@ impl ToRedisArgs for CollectionSuffix {
         out.write_arg_fmt(self.to_string().to_lowercase());
     }
 }
-
+use crate::worker::{EventEmitter, EventParameters};
 #[derive(Debug, Clone)]
 pub struct Queue<D, R, P> {
     pub(crate) prefix: String,
     pub name: String,
     pub paused: Arc<AtomicBool>,
     #[debug(skip)]
-    pub conn_pool: Arc<Pool>,
+    emitter: EventEmitter<D, R, P>,
+    #[debug(skip)]
+    pub(crate) conn_pool: Arc<Pool>,
     _d: PhantomData<(D, R, P)>,
 }
 
-impl<D, R, P> Queue<D, R, P> {
+impl<
+        D: Clone + Serialize + DeserializeOwned,
+        R: Clone + DeserializeOwned + Serialize,
+        P: Clone + DeserializeOwned + Serialize,
+    > Queue<D, R, P>
+{
     pub async fn new(prefix: Option<&str>, name: &str, cfg: &Config) -> KioResult<Self> {
+        use typed_emitter::TypedEmitter;
         let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
         let prefix = prefix.unwrap_or("kio").to_lowercase();
         let meta_key = CollectionSuffix::Meta.to_collection_name(&prefix, name);
         let name = name.to_lowercase();
+        let emitter = Arc::new(TypedEmitter::new());
         // if queue exists in redis, restore its state;
         let mut conn = pool.get().await?;
         let is_paused = conn.hexists(&meta_key, JobState::Paused).await?;
         //
         Ok(Self {
+            emitter,
             prefix,
             name,
             paused: Arc::new(AtomicBool::new(is_paused)),
@@ -117,12 +128,7 @@ impl<D, R, P> Queue<D, R, P> {
         name: &str,
         data: D,
         job_id: Option<u64>,
-    ) -> Result<Job<D, R, P>, KioError>
-    where
-        D: Serialize,
-        R: Serialize,
-        P: Serialize,
-    {
+    ) -> Result<Job<D, R, P>, KioError> {
         let queue_name = format!("{}:{}", self.prefix, self.name);
         let mut job = Job::<D, R, P>::new(name, Some(data), job_id, Some(&queue_name));
         let mut conn = self.conn_pool.get().await?;
@@ -160,12 +166,7 @@ impl<D, R, P> Queue<D, R, P> {
         let id = conn.incr(&id_key, 1_u64).await?;
         Ok(id)
     }
-    pub async fn get_job(&self, id: &str) -> KioResult<Job<D, R, P>>
-    where
-        D: DeserializeOwned,
-        R: DeserializeOwned,
-        P: DeserializeOwned,
-    {
+    pub async fn get_job(&self, id: &str) -> KioResult<Job<D, R, P>> {
         use redis::Value;
         let job_key =
             CollectionSuffix::Job(id.to_lowercase()).to_collection_name(&self.prefix, &self.name);
@@ -249,12 +250,7 @@ impl<D, R, P> Queue<D, R, P> {
         let _: redis::Value = pipeline.query_async(&mut conn).await?;
         Ok(())
     }
-    pub async fn fetch_waiting_jobs(&self) -> KioResult<Vec<Job<D, R, P>>>
-    where
-        D: DeserializeOwned,
-        R: DeserializeOwned,
-        P: DeserializeOwned,
-    {
+    pub async fn fetch_waiting_jobs(&self) -> KioResult<Vec<Job<D, R, P>>> {
         if self.is_paused().await? {
             return Ok(vec![]);
         }
@@ -370,7 +366,7 @@ impl<D, R, P> Queue<D, R, P> {
         let mut failed = vec![];
         let mut stalled = vec![];
         let stalled_key_exists: bool = conn.exists(&stalled_check).await?;
-        if dbg!(stalled_key_exists) {
+        if stalled_key_exists {
             return Ok((failed, stalled));
         }
         let _: () = conn
@@ -472,12 +468,7 @@ impl<D, R, P> Queue<D, R, P> {
         &self,
         token: &str,
         opts: &WorkerOpts,
-    ) -> KioResult<Option<Job<D, R, P>>>
-    where
-        D: DeserializeOwned,
-        R: DeserializeOwned,
-        P: DeserializeOwned,
-    {
+    ) -> KioResult<Option<Job<D, R, P>>> {
         let ts = Utc::now().timestamp_millis();
         let [wait_key, active_key, events_key, meta_key, paused_key, stalled_key, stalled_check, failed_key, marker_key] =
             [
@@ -501,13 +492,22 @@ impl<D, R, P> Queue<D, R, P> {
                 job_id = conn.rpoplpush(&wait_key, &active_key).await?;
             }
         }
-
         if let Some(job_id) = job_id {
+            let job_id_key =
+                CollectionSuffix::Job(job_id.clone()).to_collection_name(&self.prefix, &self.name);
+            let prev_state: Option<JobState> = conn.hget(job_id_key, "state").await.ok();
             let job = self
                 .prepare_job_for_processing(token, &job_id, ts as u64, opts)
                 .await?;
+            let job_clone = job.clone();
 
-            return Ok(Some(job));
+            self.emit(
+                JobState::Active,
+                EventParameters::Active { job, prev_state },
+            )
+            .await;
+
+            return Ok(Some(job_clone));
         }
         Ok(None)
     }
@@ -517,12 +517,7 @@ impl<D, R, P> Queue<D, R, P> {
         job_id: &str,
         ts: u64,
         opts: &WorkerOpts,
-    ) -> KioResult<Job<D, R, P>>
-    where
-        D: DeserializeOwned,
-        R: DeserializeOwned,
-        P: DeserializeOwned,
-    {
+    ) -> KioResult<Job<D, R, P>> {
         let [wait_key, active_key, events_key, meta_key, paused_key, stalled_key, stalled_check, failed_key, marker_key, job_key, job_lock_key] =
             [
                 CollectionSuffix::Wait,
@@ -562,7 +557,7 @@ impl<D, R, P> Queue<D, R, P> {
         move_to_state: JobState,
         returned_value_or_failed_reason: &str,
         backtrace: Option<String>,
-    ) -> KioResult<()> {
+    ) -> KioResult<Job<D, R, P>> {
         let [job_key, job_lock_key, active_key, completed_key, events_stream_key, stalled_key] = [
             CollectionSuffix::Job(job_id.to_owned()),
             CollectionSuffix::Lock(job_id.to_owned()),
@@ -591,7 +586,6 @@ impl<D, R, P> Queue<D, R, P> {
             return Err(JobError::JobLockNotExist.into());
         }
         // Todo: remove any dependencies too here ;
-
         self.move_job_to_state(
             job_id,
             JobState::Active,
@@ -600,7 +594,30 @@ impl<D, R, P> Queue<D, R, P> {
             Some(ts),
             backtrace,
         )
-        .await
+        .await;
+
+        let job = conn.hgetall(job_key).await?;
+        Ok(job)
+    }
+    pub async fn emit(&self, event: JobState, data: EventParameters<D, R, P>) {
+        self.emitter.emit(event, data).await
+    }
+    pub async fn on<F, C>(&self, event: JobState, callback: C) -> String
+    where
+        C: Fn(EventParameters<D, R, P>) -> F + Send + Sync + 'static,
+        F: Future<Output = ()> + Send + Sync + 'static,
+    {
+        self.emitter.on(event, callback)
+    }
+    pub async fn on_all_events<F, C>(&self, callback: C) -> String
+    where
+        C: Fn(EventParameters<D, R, P>) -> F + Send + Sync + 'static,
+        F: Future<Output = ()> + Send + Sync + 'static,
+    {
+        self.emitter.on_all(callback)
+    }
+    pub fn remove_event_listener(&self, id: &str) -> Option<String> {
+        self.emitter.remove_listener(id)
     }
 }
 
