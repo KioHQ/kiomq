@@ -8,7 +8,8 @@ A simple async background task queue based on redis (inspired by bullmq).
 
 - [x] Queue with job creation, waiting and pausing
 - [x] Jobs (serialisable straight from redis)
-- [x] worker implementation with support for only async tasks
+- [x] Worker implementation with support for only async tasks
+- [x] Queue Events(listenes on either queues or workers)
 
 ### Testing
 
