@@ -47,7 +47,7 @@ pub struct Worker<D, R, P> {
     #[debug(skip)]
     processor: Arc<WorkerCallback<D, R, P>>,
     pub opts: WorkerOpts,
-    cancellation_token: CancellationToken,
+    pub cancellation_token: CancellationToken,
     active: Arc<AtomicBool>,
     processing: ProcessingQueue,
     stalled_check_timer: Timer,
