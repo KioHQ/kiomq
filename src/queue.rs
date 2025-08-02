@@ -2,7 +2,7 @@ use futures::future::Future;
 use std::any::Any;
 use std::fmt::format;
 use std::marker::{self, PhantomData};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 
 use crate::error::{JobError, KioError};
@@ -80,6 +80,7 @@ pub struct Queue<D, R, P> {
     pub(crate) prefix: String,
     pub name: String,
     pub paused: Arc<AtomicBool>,
+    pub job_count: Arc<AtomicU64>,
     #[debug(skip)]
     emitter: EventEmitter<D, R, P>,
     #[debug(skip)]
@@ -103,8 +104,10 @@ impl<
         // if queue exists in redis, restore its state;
         let mut conn = pool.get().await?;
         let is_paused = conn.hexists(&meta_key, JobState::Paused).await?;
+
         //
         Ok(Self {
+            job_count: Arc::default(),
             emitter,
             prefix,
             name,
@@ -133,6 +136,7 @@ impl<
         let mut job = Job::<D, R, P>::new(name, Some(data), job_id, Some(&queue_name));
         let mut conn = self.conn_pool.get().await?;
         let id = self.fetch_id().await?;
+        //self.job_count.
         let prefix = &self.prefix;
         let job_key =
             CollectionSuffix::Job(id.to_string()).to_collection_name(&self.prefix, &self.name);
@@ -164,7 +168,11 @@ impl<
         let mut conn = self.conn_pool.get().await?;
         let id_key = CollectionSuffix::Id.to_collection_name(&self.prefix, &self.name);
         let id = conn.incr(&id_key, 1_u64).await?;
+        self.job_count.swap(id, std::sync::atomic::Ordering::AcqRel);
         Ok(id)
+    }
+    pub fn current_jobs(&self) -> u64 {
+        self.job_count.load(std::sync::atomic::Ordering::Acquire)
     }
     pub async fn get_job(&self, id: &str) -> KioResult<Job<D, R, P>> {
         use redis::Value;
