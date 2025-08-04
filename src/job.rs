@@ -37,12 +37,14 @@ impl ToRedisArgs for JobState {
     }
 }
 
+use chrono::serde::{ts_microseconds, ts_microseconds_option};
 #[derive(Debug, Serialize, Deserialize, Default, Hash, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Job<D, R, P> {
     pub id: Option<String>,
     #[serde(rename = "timestamp", alias = "timestamp")]
-    pub ts: i64,
+    #[serde(with = "ts_microseconds")]
+    pub ts: Dt,
     pub name: String,
     pub state: JobState,
     pub progress: Option<P>,
@@ -52,8 +54,10 @@ pub struct Job<D, R, P> {
     pub returned_value: Option<R>,
     pub stack_trace: Vec<String>,
     pub failed_reason: Option<String>,
-    pub processed_on: Option<u64>,
-    pub finished_on: Option<u64>,
+    #[serde(with = "ts_microseconds_option")]
+    pub processed_on: Option<Dt>,
+    #[serde(with = "ts_microseconds_option")]
+    pub finished_on: Option<Dt>,
     pub queue_name: Option<String>,
     pub token: Option<String>, // job_lock token
     pub stalled_counter: u64,
@@ -72,12 +76,12 @@ impl FromRedisValue for JobState {
 // skip comparing the data,progress and return_value field;
 impl<D, R, P> Job<D, R, P> {
     pub fn new(name: &str, data: Option<D>, id: Option<u64>, queue_name: Option<&str>) -> Self {
-        let ts = Utc::now().timestamp_millis();
+        let ts = Utc::now();
         let id = id.map(|v| v.to_string());
 
         Self {
             queue_name: queue_name.map(|s| s.to_owned()),
-            name: name.to_lowercase(),
+            name: name.to_owned(),
             id,
             ts,
             data,
@@ -126,7 +130,11 @@ where
         for (key, value) in map.iter() {
             match key.to_lowercase().as_str() {
                 "id" => job.id = serde_json::from_str(value)?,
-                "timestamp" => job.ts = serde_json::from_str(value)?,
+                "timestamp" => {
+                    job.ts = serde_json::from_str::<Option<i64>>(value)?
+                        .and_then(Dt::from_timestamp_micros)
+                        .unwrap_or_default();
+                }
                 "name" => job.name = serde_json::from_str(value)?,
                 "queuename" => job.queue_name = serde_json::from_str(value)?,
                 "state" => {
@@ -148,8 +156,14 @@ where
                     job.failed_reason =
                         serde_json::from_str(value).unwrap_or_else(|_| Some(value.to_owned()));
                 }
-                "processedon" => job.processed_on = serde_json::from_str(value)?, // Assuming Dt is handled by serde_json
-                "finishedon" => job.finished_on = serde_json::from_str(value)?,
+                "processedon" => {
+                    job.processed_on = serde_json::from_str::<Option<i64>>(value)?
+                        .and_then(Dt::from_timestamp_micros);
+                } // Assuming Dt is handled by serde_json
+                "finishedon" => {
+                    job.finished_on = serde_json::from_str::<Option<i64>>(value)?
+                        .and_then(Dt::from_timestamp_micros);
+                }
                 "stalledcounter" => job.stalled_counter = serde_json::from_str(value)?,
                 _ => { /* Ignore unknown fields if your hash might contain others */ }
             }
