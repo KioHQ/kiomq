@@ -218,7 +218,7 @@ impl<
             pipeline.lrem(prev_state_key, 1, job_id);
             pipeline.zadd(
                 next_state_key,
-                ts.unwrap_or_else(|| Utc::now().timestamp_millis()),
+                ts.unwrap_or_else(|| Utc::now().timestamp_micros()),
                 job_id,
             );
         } else {
@@ -356,7 +356,7 @@ impl<
         &self,
         opts: &WorkerOpts,
     ) -> KioResult<(Vec<String>, Vec<String>)> {
-        let ts = Utc::now().timestamp_millis();
+        let ts = Utc::now().timestamp_micros();
         let [wait_key, active_key, events_key, meta_key, paused_key, stalled_key, stalled_check, failed_key, marker_key] =
             [
                 CollectionSuffix::Wait,
@@ -477,7 +477,7 @@ impl<
         token: &str,
         opts: &WorkerOpts,
     ) -> KioResult<Option<Job<D, R, P>>> {
-        let ts = Utc::now().timestamp_millis();
+        let ts = Utc::now().timestamp_micros();
         let [wait_key, active_key, events_key, meta_key, paused_key, stalled_key, stalled_check, failed_key, marker_key] =
             [
                 CollectionSuffix::Wait,

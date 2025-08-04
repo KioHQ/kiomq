@@ -9,29 +9,29 @@ mod backtrace_utils;
 pub(crate) use backtrace_utils::{BacktraceCatcher, CaughtError, CaughtPanicInfo};
 #[derive(Debug, Error)]
 pub enum KioError {
-    #[error("RedisError: {0}")]
+    #[error(transparent)]
     RedisError(#[from] redis::RedisError),
-    #[error("DeadPoolError: {0}")]
+    #[error(transparent)]
     DealPoolError(#[from] deadpool_redis::PoolError),
-    #[error("DeadPoolError: {0}")]
+    #[error(transparent)]
     DealPoolConfig(#[from] deadpool_redis::CreatePoolError),
-    #[error("SerdeJsonError: {0}")]
+    #[error(transparent)]
     SerdeJsonError(#[from] serde_json::Error), // Handle serde_json errors
-    #[error("SerdeDeserializeError: {0}")]
+    #[error(transparent)]
     SerdeDeserializeError(#[from] serde::de::value::Error),
     // Standard library errors
-    #[error("IOError: {0}")]
+    #[error(transparent)]
     IoError(#[from] io::Error),
-    #[error("FmtError: {0}")]
+    #[error(transparent)]
     FmtError(#[from] std::fmt::Error),
-    #[error("ParseIntError: {0}")]
+    #[error(transparent)]
     ParseIntError(#[from] std::num::ParseIntError),
     // Dynamic Error type for handling any other errors
-    #[error("GeneralError: {0}")]
+    #[error(transparent)]
     GeneralError(#[from] Box<dyn std::error::Error + Send>),
-    #[error("SystemTimeError: {0}")]
+    #[error(transparent)]
     SystemTimeError(#[from] std::time::SystemTimeError),
-    #[error("QueueError: {0}")]
+    #[error(transparent)]
     QueueError(#[from] QueueError),
     #[error("Failed to Convert: from {from} to {to}")]
     ConversionError {
@@ -41,9 +41,9 @@ pub enum KioError {
     #[error("Emitter: {0}")]
     EmitterError(String),
 
-    #[error("WorkerError: {0}")]
+    #[error(transparent)]
     WorkerError(#[from] WorkerError),
-    #[error("JobError: {0}")]
+    #[error(transparent)]
     JobError(#[from] JobError),
 }
 

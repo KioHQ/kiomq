@@ -253,7 +253,7 @@ where
             if let (Ok(result_str), Some(job_id)) =
                 (serde_json::to_string(&result), job_id.as_ref())
             {
-                let ts = Utc::now().timestamp_millis();
+                let ts = Utc::now().timestamp_micros();
                 let move_to_state = JobState::Completed;
                 let completed = queue
                     .move_job_to_finished_or_failed(
@@ -297,7 +297,7 @@ where
             let frames = backtrace.and_then(|frames| serde_json::to_string(&frames).ok());
             // move job to failed_state
             if let Some(job_id) = job_id.as_ref() {
-                let ts = Utc::now().timestamp_millis();
+                let ts = Utc::now().timestamp_micros();
                 let move_to_state = JobState::Failed;
                 let failed_job = queue
                     .move_job_to_finished_or_failed(
