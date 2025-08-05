@@ -627,6 +627,51 @@ impl<
     pub fn remove_event_listener(&self, id: &str) -> Option<String> {
         self.emitter.remove_listener(id)
     }
+
+    pub async fn obliterate(&self) -> KioResult<()> {
+        self.delete_all_jobs().await?;
+        // delete all other grouped collections;
+        let mut conn = self.conn_pool.get().await?;
+        let mut pipeline = redis::pipe();
+        [
+            CollectionSuffix::Delayed,
+            CollectionSuffix::Wait,
+            CollectionSuffix::Active,
+            CollectionSuffix::Completed,
+            CollectionSuffix::Failed,
+            CollectionSuffix::Events,
+            CollectionSuffix::Meta,
+            CollectionSuffix::Id,
+            CollectionSuffix::Events,
+            CollectionSuffix::Stalled,
+            CollectionSuffix::Marker,
+        ]
+        .iter()
+        .for_each(|name| {
+            let key = name.to_collection_name(&self.prefix, &self.name);
+            pipeline.del(key);
+        });
+
+        let done: () = pipeline.query_async(&mut conn).await?;
+        Ok(done)
+    }
+    async fn delete_all_jobs(&self) -> KioResult<()> {
+        let mut conn = self.conn_pool.get().await?;
+        let id_key = CollectionSuffix::Id.to_collection_name(&self.prefix, &self.name);
+        let mut pipeline = redis::pipe();
+        pipeline.atomic();
+
+        let last_id = self.current_jobs();
+        dbg!(&last_id);
+        (1..=last_id).for_each(|id| {
+            let job_key =
+                CollectionSuffix::Job(id.to_string()).to_collection_name(&self.prefix, &self.name);
+            pipeline.del(job_key);
+        });
+
+        let _: () = pipeline.query_async(&mut conn).await?;
+        Ok(())
+    }
 }
 
 // ----- UTILITY FUNCTIONS -------------------
