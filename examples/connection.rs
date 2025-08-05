@@ -47,6 +47,9 @@ async fn main() -> KioResult<()> {
     };
     queue.on_all_events(event_listener).await;
     worker.run().await?;
+    if worker.closed() {
+        queue.obliterate().await?;
+    }
     //let result = queue.make_stalled_jobs_wait(&worker.opts).await?;
     //let next_job = queue.wait_for_job(100).await?;
     //let done = queue.extend_lock(2, 5000, "test").await?;

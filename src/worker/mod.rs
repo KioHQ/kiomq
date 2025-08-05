@@ -32,10 +32,9 @@ use crate::error::WorkerError;
 use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 mod worker_events;
+use tokio::task::JoinSet;
 pub(crate) use worker_events::EventEmitter;
 pub use worker_events::EventParameters;
-
-use tokio::task::JoinSet;
 type JobMap<D, R, P> = Arc<DashMap<String, (Job<D, R, P>, String, Option<AbortHandle>)>>;
 type ProcessingQueue = Arc<Mutex<JoinSet<KioResult<()>>>>;
 pub use worker_opts::WorkerOpts;
@@ -278,8 +277,6 @@ where
                         )
                         .await;
                 }
-                // Todo emit event here
-                //
             }
         }
         Err(err) => {
