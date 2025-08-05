@@ -11,6 +11,7 @@ use serde::{
     Deserialize, Serialize,
 };
 
+mod backoff;
 use crate::{queue::Queue, CollectionSuffix, KioError};
 /// alias for DateTime<Utc>
 pub(crate) type Dt = DateTime<Utc>;
