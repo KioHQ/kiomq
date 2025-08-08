@@ -3,8 +3,8 @@ use deadpool_redis::redis;
 use derive_more::Display;
 use std::io;
 use thiserror::Error;
+use tokio::task::JoinError;
 use uuid::Uuid;
-
 mod backtrace_utils;
 pub(crate) use backtrace_utils::{BacktraceCatcher, CaughtError, CaughtPanicInfo};
 #[derive(Debug, Error)]
@@ -40,7 +40,8 @@ pub enum KioError {
     },
     #[error("Emitter: {0}")]
     EmitterError(String),
-
+    #[error(transparent)]
+    JoinError(#[from] JoinError),
     #[error(transparent)]
     WorkerError(#[from] WorkerError),
     #[error(transparent)]
