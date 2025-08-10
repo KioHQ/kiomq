@@ -58,11 +58,11 @@ async fn main() -> KioResult<()> {
 }
 #[framed]
 async fn process_callback(
-    con: Connection,
+    mut con: Connection,
     mut job: Job<String, String, i32>,
 ) -> Result<String, std::io::Error> {
     let progress = job.progress.unwrap_or_default();
-    let _ = job.update_progress(progress + 1, con).await;
+    let _ = job.update_progress(progress + 1, &mut con).await;
     if job.id.unwrap_or_default() == "3" {
         panic!("panicked here");
     }

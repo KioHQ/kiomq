@@ -1,6 +1,6 @@
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
-use std::collections::HashMap;
 use std::sync::Arc;
 type BackoffFn = dyn Fn(i64) -> StoredFn + Send + Sync;
 pub type StoredFn = Arc<dyn Fn(i64) -> i64 + Send + Sync>;
@@ -18,10 +18,9 @@ pub enum BackOffJobOptions {
     Opts(BackOffOptions),
 }
 
-//import lazy_static
 #[derive(Clone, Default)]
 pub struct BackOff {
-    pub builtin_strategies: HashMap<&'static str, Arc<BackoffFn>>,
+    pub builtin_strategies: DashMap<String, Arc<BackoffFn>>,
 }
 
 impl BackOff {
@@ -36,11 +35,12 @@ impl BackOff {
     }
 
     pub fn register(
-        &mut self,
-        name: &'static str,
+        &self,
+        name: &str,
         strategy: impl Fn(i64) -> Arc<dyn Fn(i64) -> i64 + Send + Sync> + 'static + Send + Sync,
     ) {
-        self.builtin_strategies.insert(name, Arc::new(strategy));
+        self.builtin_strategies
+            .insert(name.to_owned(), Arc::new(strategy));
     }
     pub fn normalize(backoff: Option<BackOffJobOptions>) -> Option<BackOffOptions> {
         backoff.as_ref()?;
@@ -104,8 +104,14 @@ where {
 
 impl std::fmt::Debug for BackOff {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let keys: Vec<_> = self
+            .builtin_strategies
+            .iter()
+            .map(|v| v.key().clone())
+            .collect();
+
         f.debug_struct("BackOff")
-            .field("builtin_strategies", &self.builtin_strategies.keys())
+            .field("builtin_strategies", &keys)
             .finish()
     }
 }

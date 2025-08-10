@@ -124,9 +124,10 @@ impl<D, R, P> Job<D, R, P> {
             // append the next log;
             let date_time = Utc::now();
             let log_with_dt = format!("{date_time}: {log}");
-            existing_logs.push(log_with_dt);
-            let _: () = conn.hset(job_key, "logs", &existing_logs).await?;
-            self.logs = existing_logs;
+            existing_logs.push(log_with_dt.clone());
+            self.logs.push(log_with_dt);
+            let v: redis::Value = conn.hset(job_key, "logs", existing_logs).await?;
+            dbg!(v);
         }
 
         Ok(())

@@ -2,6 +2,8 @@ use serde::Serialize;
 
 use std::fmt::Write;
 
+use crate::KioResult;
+
 // ---------------- REDIS FUNCTION here
 pub fn fetch_redis_pass() -> Option<String> {
     use dotenv;
@@ -51,4 +53,32 @@ impl Iterator for Batches {
             None
         }
     }
+}
+use crate::{CollectionSuffix, JobMetrics};
+pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
+    prefix: &str,
+    name: &str,
+    conn: &mut C,
+) -> KioResult<JobMetrics> {
+    let [job_id_key, stalled_key, active_key, completed_key] = [
+        CollectionSuffix::Id,
+        CollectionSuffix::Stalled,
+        CollectionSuffix::Active,
+        CollectionSuffix::Completed,
+    ]
+    .map(|key| key.to_collection_name(prefix, name));
+    let mut pipeline = redis::pipe();
+    pipeline.scard(completed_key);
+    pipeline.llen(active_key);
+
+    pipeline.scard(stalled_key);
+    pipeline.get(job_id_key);
+    let (last_id, completed, active, stalled) = pipeline.query_async(conn).await?;
+
+    Ok(JobMetrics {
+        active,
+        last_id,
+        stalled,
+        completed,
+    })
 }

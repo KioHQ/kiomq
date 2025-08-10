@@ -9,7 +9,7 @@ use crate::error::{JobError, KioError};
 use crate::job::{Job, JobState};
 use crate::utils::{serialize_into_pairs, Batches};
 use crate::worker::WorkerOpts;
-use crate::{Dt, KioResult};
+use crate::{get_job_metrics, Dt, KioResult};
 use async_backtrace::backtrace;
 use chrono::Utc;
 use deadpool_redis::{Config, Pool, Runtime};
@@ -26,7 +26,7 @@ use derive_more::{Debug, Display};
 #[derive(Display, Serialize)]
 pub enum CollectionSuffix {
     Active,    // (list)
-    Completed, //
+    Completed, //Sorted Set
     Delayed,
     Stalled, // Set
     Id,      // hash(number)
@@ -74,17 +74,25 @@ impl ToRedisArgs for CollectionSuffix {
         out.write_arg_fmt(self.to_string().to_lowercase());
     }
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct JobMetrics {
+    pub last_id: usize,
+    pub active: usize,
+    pub stalled: usize,
+    pub completed: usize,
+}
 use crate::worker::{EventEmitter, EventParameters};
 #[derive(Debug, Clone)]
 pub struct Queue<D, R, P> {
-    pub(crate) prefix: String,
+    pub prefix: String,
     pub name: String,
     pub paused: Arc<AtomicBool>,
     pub job_count: Arc<AtomicU64>,
     #[debug(skip)]
     emitter: EventEmitter<D, R, P>,
     #[debug(skip)]
-    pub(crate) conn_pool: Arc<Pool>,
+    pub conn_pool: Arc<Pool>,
     _d: PhantomData<(D, R, P)>,
 }
 
@@ -94,6 +102,10 @@ impl<
         P: Clone + DeserializeOwned + Serialize,
     > Queue<D, R, P>
 {
+    pub async fn get_connection(&self) -> KioResult<deadpool_redis::Connection> {
+        let conn = self.conn_pool.get().await?;
+        Ok(conn)
+    }
     pub async fn new(prefix: Option<&str>, name: &str, cfg: &Config) -> KioResult<Self> {
         use typed_emitter::TypedEmitter;
         let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
@@ -662,7 +674,6 @@ impl<
         pipeline.atomic();
 
         let last_id = self.current_jobs();
-        dbg!(&last_id);
         (1..=last_id).for_each(|id| {
             let job_key =
                 CollectionSuffix::Job(id.to_string()).to_collection_name(&self.prefix, &self.name);
@@ -671,6 +682,11 @@ impl<
 
         let _: () = pipeline.query_async(&mut conn).await?;
         Ok(())
+    }
+
+    async fn get_metrics(&self) -> KioResult<JobMetrics> {
+        let mut conn = self.conn_pool.get().await?;
+        get_job_metrics(&self.prefix, &self.name, &mut conn).await
     }
 }
 
