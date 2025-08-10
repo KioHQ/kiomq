@@ -2,6 +2,7 @@ use std::{collections::HashMap, error::Error, fmt::format, str::FromStr};
 
 use chrono::{DateTime, Utc};
 use deadpool_redis::redis::ToRedisArgs;
+use deadpool_redis::Connection;
 use derive_more::{Display, FromStr};
 use redis::{
     from_redis_value, AsyncCommands, ConnectionLike, FromRedisValue, Pipeline, RedisResult, Value,
@@ -12,7 +13,7 @@ use serde::{
 };
 
 mod backoff;
-use crate::{queue::Queue, CollectionSuffix, KioError};
+use crate::{queue::Queue, CollectionSuffix, KioError, KioResult};
 /// alias for DateTime<Utc>
 pub(crate) type Dt = DateTime<Utc>;
 #[derive(
@@ -62,6 +63,7 @@ pub struct Job<D, R, P> {
     pub queue_name: Option<String>,
     pub token: Option<String>, // job_lock token
     pub stalled_counter: u64,
+    pub logs: Vec<String>,
 }
 impl FromRedisValue for JobState {
     fn from_redis_value(v: &Value) -> RedisResult<Self> {
@@ -97,13 +99,10 @@ impl<D, R, P> Job<D, R, P> {
             failed_reason: None,
             token: None,
             stalled_counter: 0,
+            logs: Vec::new(),
         }
     }
-    pub async fn update_progress<C: redis::aio::ConnectionLike>(
-        &mut self,
-        value: P,
-        mut con: C,
-    ) -> Result<(), KioError>
+    pub async fn update_progress(&mut self, value: P, conn: &mut Connection) -> Result<(), KioError>
     where
         P: Serialize,
     {
@@ -111,11 +110,25 @@ impl<D, R, P> Job<D, R, P> {
             let job_key = format!("{queue_name}:{id}");
             let mut pipeline = redis::pipe();
             let job_str = serde_json::to_string_pretty(&value)?;
-            pipeline.hset(job_key, "progress", job_str);
 
-            let result = pipeline.query_async::<redis::Value>(&mut con).await?;
+            let result: () = conn.hset(job_key, "progress", job_str).await?;
             self.progress = Some(value);
         }
+        Ok(())
+    }
+    /// Append log to existing_logs if there is any
+    pub async fn add_log(&mut self, log: &str, conn: &mut Connection) -> KioResult<()> {
+        if let (Some(queue_name), Some(id)) = (&self.queue_name, &self.id) {
+            let job_key = format!("{queue_name}:{id}");
+            let mut existing_logs: Vec<String> = conn.hget(&job_key, "logs").await?;
+            // append the next log;
+            let date_time = Utc::now();
+            let log_with_dt = format!("{date_time}: {log}");
+            existing_logs.push(log_with_dt);
+            let _: () = conn.hset(job_key, "logs", &existing_logs).await?;
+            self.logs = existing_logs;
+        }
+
         Ok(())
     }
 }
@@ -153,6 +166,7 @@ where
                 "data" => job.data = serde_json::from_str(value)?,
                 "returnedvalue" => job.returned_value = serde_json::from_str(value)?,
                 "stacktrace" => job.stack_trace = serde_json::from_str(value)?,
+                "logs" => job.logs = serde_json::from_str(value)?,
                 "failedreason" => {
                     job.failed_reason =
                         serde_json::from_str(value).unwrap_or_else(|_| Some(value.to_owned()));

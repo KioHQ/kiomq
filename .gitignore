@@ -26,3 +26,5 @@ Cargo.lock
 .env
 ## bacon-location files
 .bacon-location*
+## ignore any videos files
+*.mp4
