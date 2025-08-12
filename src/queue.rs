@@ -83,7 +83,7 @@ pub struct JobMetrics {
     pub completed: usize,
 }
 impl JobMetrics {
-    pub fn all_job_completed(&self) -> bool {
+    pub fn all_jobs_completed(&self) -> bool {
         self.completed == self.last_id && self.active == 0
     }
 }
