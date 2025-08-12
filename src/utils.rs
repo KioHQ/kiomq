@@ -68,12 +68,13 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
     ]
     .map(|key| key.to_collection_name(prefix, name));
     let mut pipeline = redis::pipe();
-    pipeline.scard(completed_key);
+    pipeline.atomic();
+    pipeline.zcard(completed_key);
     pipeline.llen(active_key);
 
     pipeline.scard(stalled_key);
     pipeline.get(job_id_key);
-    let (last_id, completed, active, stalled) = pipeline.query_async(conn).await?;
+    let (completed, active, stalled, last_id) = pipeline.query_async(conn).await?;
 
     Ok(JobMetrics {
         active,

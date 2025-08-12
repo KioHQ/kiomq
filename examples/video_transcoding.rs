@@ -1,0 +1,226 @@
+use deadpool_redis::{Config, Connection};
+use kio_mq::{
+    fetch_redis_pass, frame, framed, get_job_metrics, EventParameters, Job, KioError, KioResult,
+    Queue, Worker,
+};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::{mpsc::Sender, Notify};
+type BoxedError = Box<dyn std::error::Error + Send>;
+use ffmpeg_sidecar::{
+    command::FfmpegCommand,
+    event::{FfmpegEvent, LogLevel},
+    log_parser::parse_time_str,
+};
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+struct ProcessData {
+    path: PathBuf,
+    size: Size,
+}
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, Default)]
+struct Size {
+    width: u32,
+    height: u32,
+}
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+struct ReturnData {
+    output_path: PathBuf,
+    processed_size: Size,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, Copy, Default)]
+struct Progress {
+    percentage: f64,
+    current_duration: Option<f64>,
+    size_kb: u32,
+    fps: f32,
+    bitrate_kbps: f32,
+}
+
+#[tokio::main]
+#[framed]
+async fn main() -> KioResult<()> {
+    let mut config = Config::default();
+    if let Some(cfg) = config.connection.as_mut() {
+        cfg.redis.password = fetch_redis_pass();
+    }
+    let queue: Queue<ProcessData, ReturnData, Progress> =
+        Queue::new(None, "video-processing", &config).await?;
+    let processor = |con: _, job: _| process_callback(con, job);
+    for (height, width) in [(1280, 720), (640, 480)] {
+        let size = Size { height, width };
+        let data = ProcessData {
+            size,
+            path: "sampleFHD.mp4".into(),
+        };
+        queue
+            .add_job(height.to_string().as_str(), data, None)
+            .await?;
+    }
+    let worker = Worker::new(&queue, processor, None);
+    let cancel_worker = worker.cancellation_token.clone();
+    let notifier = Arc::new(Notify::new());
+    let last_job_id = queue.job_count.load(std::sync::atomic::Ordering::Relaxed);
+    let notifier_clone = notifier.clone();
+    let prefix = queue.prefix.clone();
+    let name = queue.name.clone();
+    let mut conn = queue.get_connection().await?;
+    let cancellation_task = async move {
+        while !cancel_worker.is_cancelled() {
+            notifier_clone.notified().await;
+            let metrics = get_job_metrics(&prefix, &name, &mut conn).await?;
+            if metrics.all_job_completed() {
+                cancel_worker.cancel();
+            }
+            //if metrics
+        }
+        Ok::<(), KioError>(())
+    };
+
+    worker
+        .on_all_events(move |event| {
+            let notifier = notifier.clone();
+            {
+                async move {
+                    if let EventParameters::Completed {
+                        job,
+                        prev_state: _,
+                        result: _,
+                    } = event
+                    {
+                        let id = job.id.unwrap();
+                        let completed_in =
+                            (job.finished_on.unwrap() - job.processed_on.unwrap()).num_seconds();
+                        println!(" completed job {id} in {completed_in} s");
+                        notifier.notify_one();
+                        if last_job_id.to_string() == id {
+                            //   cancel.cancel();
+                        }
+                    }
+                }
+            }
+        })
+        .await;
+    tokio::select! {
+        err = worker.run() => {
+          return err
+        },
+         next= cancellation_task => {
+         next
+        }
+
+    }
+}
+
+enum Payload {
+    Progress(Progress),
+    Log(String),
+}
+#[framed]
+async fn process_callback(
+    mut conn: Connection,
+    mut job: Job<ProcessData, ReturnData, Progress>,
+) -> KioResult<ReturnData> {
+    let data = job.data.clone();
+    let (sender, mut reciever) = tokio::sync::mpsc::channel(1000000000000);
+    // task that recieves progress
+    tokio::spawn(async move {
+        while let Some(payload) = reciever.recv().await {
+            match payload {
+                Payload::Progress(ffmpeg_progress) => {
+                    job.update_progress(ffmpeg_progress, &mut conn).await?;
+                }
+                Payload::Log(ref _log) => {
+                    // TODO: do something with the logs here
+                }
+            }
+        }
+        Ok::<(), KioError>(())
+    });
+    let task = frame!(tokio::task::spawn_blocking(move || transcode_video(
+        data, sender
+    )));
+    task.await?
+}
+
+#[framed]
+fn transcode_video(
+    data: Option<ProcessData>,
+    payload_sender: Sender<Payload>,
+) -> KioResult<ReturnData> {
+    use uuid::Uuid;
+    let data = data.unwrap_or_default();
+    let input_path = data.path.to_str().expect("failed to extract");
+    let size = data.size;
+    let random = Uuid::new_v4();
+    let output_path = format!(
+        "compressed/{}x{}-{random}-output.mp4",
+        data.size.height, data.size.width
+    );
+    let expected_path = output_path.clone();
+    let mut cmd = FfmpegCommand::new()
+        .input(input_path)
+        .size(size.height, size.width)
+        .output(expected_path)
+        .print_command()
+        .spawn()?;
+    let mut total_duration = 1.0;
+
+    let ffmpeg_iter = cmd.iter().map_err(BoxedError::from)?;
+    for event in ffmpeg_iter {
+        match event {
+            FfmpegEvent::Progress(progress) => {
+                let parsed_duration = parse_time_str(&progress.time);
+                let mut current_progress = Progress {
+                    size_kb: progress.size_kb,
+                    bitrate_kbps: progress.bitrate_kbps,
+                    ..Default::default()
+                };
+
+                if let Some(time) = parsed_duration {
+                    let percent = (time / total_duration) * 100.0;
+                    if percent.is_sign_positive() {
+                        current_progress.percentage = percent;
+                        current_progress.current_duration = parsed_duration;
+                    }
+                }
+
+                payload_sender
+                    .blocking_send(Payload::Progress(current_progress))
+                    .map_err(std::io::Error::other)?;
+            }
+
+            FfmpegEvent::Log(log_level, msg) => {
+                if matches!(log_level, LogLevel::Error | LogLevel::Fatal) {
+                    return Err(std::io::Error::other(msg).into());
+                }
+                if !msg.is_empty() {
+                    let msg = msg.trim_ascii();
+                    let log = format!("{log_level:?}: {msg}");
+                    payload_sender
+                        .blocking_send(Payload::Log(log))
+                        .map_err(std::io::Error::other)?;
+                }
+            }
+
+            FfmpegEvent::Error(failed_reason) => {
+                if failed_reason != "No streams found" {
+                    return Err(std::io::Error::other(failed_reason).into());
+                }
+            }
+            FfmpegEvent::ParsedDuration(duration) => {
+                total_duration = duration.duration;
+            }
+
+            FfmpegEvent::LogEOF => {
+                return Ok(ReturnData {
+                    output_path: output_path.into(),
+                    processed_size: size,
+                });
+            }
+
+            _ => {}
+        }
+    }
+    Err(std::io::Error::other("failed to process video").into())
+}

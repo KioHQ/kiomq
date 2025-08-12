@@ -82,6 +82,11 @@ pub struct JobMetrics {
     pub stalled: usize,
     pub completed: usize,
 }
+impl JobMetrics {
+    pub fn all_job_completed(&self) -> bool {
+        self.completed == self.last_id && self.active == 0
+    }
+}
 use crate::worker::{EventEmitter, EventParameters};
 #[derive(Debug, Clone)]
 pub struct Queue<D, R, P> {
@@ -489,7 +494,6 @@ impl<
         token: &str,
         opts: &WorkerOpts,
     ) -> KioResult<Option<Job<D, R, P>>> {
-        let ts = Utc::now().timestamp_micros();
         let [wait_key, active_key, events_key, meta_key, paused_key, stalled_key, stalled_check, failed_key, marker_key] =
             [
                 CollectionSuffix::Wait,
@@ -516,6 +520,7 @@ impl<
             let job_id_key =
                 CollectionSuffix::Job(job_id.clone()).to_collection_name(&self.prefix, &self.name);
             let prev_state: Option<JobState> = conn.hget(job_id_key, "state").await.ok();
+            let ts = Utc::now().timestamp_micros();
             let job = self
                 .prepare_job_for_processing(token, &job_id, ts as u64, opts)
                 .await?;
@@ -615,6 +620,9 @@ impl<
             backtrace,
         )
         .await;
+
+        //remove element from stalled set too;
+        let _: () = pipeline.query_async(&mut conn).await?;
 
         let job = conn.hgetall(job_key).await?;
         Ok(job)
