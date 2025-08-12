@@ -23,7 +23,12 @@ redis = { version = "0.32.3", features = ["tokio-comp", "streams", "json"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.140", features = ["default", "raw_value"] }
 thiserror = "2.0.12"
-tokio = { version = "1.46.1", features = ["macros", "rt", "rt-multi-thread"] }
+tokio = { version = "1.46.1", features = [
+  "macros",
+  "rt",
+  "rt-multi-thread",
+  "fs",
+] }
 tokio-util = "0.7.15"
 typed-emitter = { git = "https://github.com/spencerjibz/typed-emitter.git", rev = "ef162996c1d1bb2085c01040c7f94cc30075ab83" }
 uuid = { version = "1.17.0", features = ["serde", "v4"] }

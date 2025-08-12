@@ -4,8 +4,9 @@ use kio_mq::{
     Queue, Worker,
 };
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::fs;
 use tokio::sync::{mpsc::Sender, Notify};
 type BoxedError = Box<dyn std::error::Error + Send>;
 use ffmpeg_sidecar::{
@@ -40,6 +41,7 @@ struct Progress {
 #[tokio::main]
 #[framed]
 async fn main() -> KioResult<()> {
+    let input_path = "sampleFHD.mp4";
     let mut config = Config::default();
     if let Some(cfg) = config.connection.as_mut() {
         cfg.redis.password = fetch_redis_pass();
@@ -47,11 +49,19 @@ async fn main() -> KioResult<()> {
     let queue: Queue<ProcessData, ReturnData, Progress> =
         Queue::new(None, "video-processing", &config).await?;
     let processor = |con: _, job: _| process_callback(con, job);
+    if !Path::new(input_path).exists() {
+        tokio::task::spawn_blocking(|| create_h265_source(input_path)).await?;
+    }
+
+    // create the compressed folder if its doesn't exist too;
+    if !Path::new("compressed").exists() {
+        fs::create_dir("compressed").await?;
+    }
     for (height, width) in [(1280, 720), (640, 480)] {
         let size = Size { height, width };
         let data = ProcessData {
             size,
-            path: "sampleFHD.mp4".into(),
+            path: input_path.into(),
         };
         queue
             .add_job(height.to_string().as_str(), data, None)
@@ -69,7 +79,7 @@ async fn main() -> KioResult<()> {
         while !cancel_worker.is_cancelled() {
             notifier_clone.notified().await;
             let metrics = get_job_metrics(&prefix, &name, &mut conn).await?;
-            if metrics.all_job_completed() {
+            if metrics.all_jobs_completed() {
                 cancel_worker.cancel();
             }
             //if metrics
@@ -151,6 +161,7 @@ fn transcode_video(
     use uuid::Uuid;
     let data = data.unwrap_or_default();
     let input_path = data.path.to_str().expect("failed to extract");
+
     let size = data.size;
     let random = Uuid::new_v4();
     let output_path = format!(
@@ -223,4 +234,21 @@ fn transcode_video(
         }
     }
     Err(std::io::Error::other("failed to process video").into())
+}
+/// create a H265 source video from scratch
+fn create_h265_source(path_str: &str) {
+    println!("Creating H265 source video: {path_str}");
+    FfmpegCommand::new()
+        .args("-f lavfi -i testsrc=size=1920x1080:rate=30:duration=15 -c:v libx265".split(' '))
+        .arg(path_str)
+        .spawn()
+        .expect("failed to spawn")
+        .iter()
+        .expect("failed to get iter")
+        .for_each(|e| match e {
+            FfmpegEvent::Log(LogLevel::Error, e) => println!("Error: {e}"),
+            FfmpegEvent::Progress(p) => println!("Progress: {} / 00:00:15", p.time),
+            _ => {}
+        });
+    println!("Created H265 source video: {path_str}");
 }
