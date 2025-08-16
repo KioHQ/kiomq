@@ -88,7 +88,6 @@ impl<
         };
         let id = Uuid::new_v4();
         let mut opts = worker_opts.unwrap_or_default();
-        opts.concurrency = 6;
         let queue_clone = queue.clone();
 
         let jobs = jobs_in_progress.clone();
@@ -207,21 +206,21 @@ impl<
         }
         Ok(())
     }
-    pub async fn on<F, C>(&self, event: JobState, callback: C) -> String
+    pub async fn on<F, C>(&self, event: JobState, callback: C) -> Uuid
     where
         C: Fn(EventParameters<D, R, P>) -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + Sync + 'static,
     {
         self.queue.on(event, callback).await
     }
-    pub async fn on_all_events<F, C>(&self, callback: C) -> String
+    pub async fn on_all_events<F, C>(&self, callback: C) -> Uuid
     where
         C: Fn(EventParameters<D, R, P>) -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + Sync + 'static,
     {
         self.queue.on_all_events(callback).await
     }
-    pub fn remove_event_listener(&self, id: &str) -> Option<String> {
+    pub fn remove_event_listener(&self, id: Uuid) -> Option<Uuid> {
         self.queue.remove_event_listener(id)
     }
 }

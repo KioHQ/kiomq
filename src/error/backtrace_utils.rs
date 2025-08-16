@@ -141,7 +141,7 @@ mod tests {
         assert!(matches!(result, Err(CaughtError::Error(_, _))));
         if let Err(CaughtError::Error(err, backtrace)) = result {
             assert_eq!(err.to_string(), "Test error");
-            assert!(!format!("{:?}", backtrace).is_empty());
+            assert!(!format!("{backtrace:?}").is_empty());
         } else {
             panic!("Expected CaughtError::Error, got something else");
         }
