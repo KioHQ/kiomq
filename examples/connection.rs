@@ -20,12 +20,12 @@ async fn main() -> KioResult<()> {
         let _ = queue.add_job(&name, "data".to_lowercase(), None).await?;
     }
     let opts = WorkerOpts {
-        concurrency: 1,
+        concurrency: count,
         ..Default::default()
     };
     let last_job_id = queue.current_jobs();
     let processor = |con: _, job: Job<_, _, _>| process_callback(con, job);
-    let worker = Worker::new(&queue, processor, Some(opts));
+    let worker = Worker::new(&queue, processor, Some(opts))?;
     let cancel = worker.cancellation_token.clone();
     let event_listener = move |state: _| {
         let cancel = cancel.clone();
@@ -37,7 +37,7 @@ async fn main() -> KioResult<()> {
                 prev_state: _,
             } = dbg!(state)
             {
-                let id = dbg!(last_job_id.to_string());
+                let id = last_job_id.to_string();
                 if job.id.unwrap().contains(&id) {
                     println!("finished in {:#?}", now.elapsed());
                     cancel.cancel();
@@ -46,14 +46,12 @@ async fn main() -> KioResult<()> {
         }
     };
     queue.on_all_events(event_listener).await;
-    worker.run().await?;
+    worker.run()?;
+
+    while worker.is_running() {} // do nothing
     if worker.closed() {
         queue.obliterate().await?;
     }
-    //let result = queue.make_stalled_jobs_wait(&worker.opts).await?;
-    //let next_job = queue.wait_for_job(100).await?;
-    //let done = queue.extend_lock(2, 5000, "test").await?;
-    //dbg!(worker);
     Ok(())
 }
 #[framed]
@@ -64,7 +62,8 @@ async fn process_callback(
     let progress = job.progress.unwrap_or_default();
     let _ = job.update_progress(progress + 1, &mut con).await;
     if job.id.unwrap_or_default() == "3" {
-        panic!("panicked here");
+        // uncomment the line below to test to catching panics
+        //panic!("panicked here");
     }
     Ok("done".to_string())
 }

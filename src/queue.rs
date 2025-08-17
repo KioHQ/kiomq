@@ -4,10 +4,11 @@ use std::fmt::format;
 use std::marker::{self, PhantomData};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::error::{JobError, KioError};
 use crate::job::{Job, JobState};
-use crate::utils::{serialize_into_pairs, Batches};
+use crate::utils::serialize_into_pairs;
 use crate::worker::WorkerOpts;
 use crate::{get_job_metrics, Dt, KioResult};
 use async_backtrace::backtrace;
@@ -467,13 +468,10 @@ impl<
             let mut pipeline = redis::pipe();
             pipeline.atomic();
             if !active.is_empty() {
-                for (from, to) in Batches::new(active.len(), 7000) {
-                    let batch = &active[from..to];
-                    dbg!(&batch);
-                    if !batch.is_empty() {
-                        pipeline.sadd(&stalled_key, batch);
-                    }
-                }
+                active.chunks(2).for_each(|chunk| {
+                    pipeline.sadd(&stalled_key, chunk);
+                });
+
                 let _: () = pipeline.query_async(&mut conn).await?;
             }
         }
@@ -630,21 +628,21 @@ impl<
     pub async fn emit(&self, event: JobState, data: EventParameters<D, R, P>) {
         self.emitter.emit(event, data).await
     }
-    pub async fn on<F, C>(&self, event: JobState, callback: C) -> String
+    pub async fn on<F, C>(&self, event: JobState, callback: C) -> Uuid
     where
         C: Fn(EventParameters<D, R, P>) -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + Sync + 'static,
     {
         self.emitter.on(event, callback)
     }
-    pub async fn on_all_events<F, C>(&self, callback: C) -> String
+    pub async fn on_all_events<F, C>(&self, callback: C) -> Uuid
     where
         C: Fn(EventParameters<D, R, P>) -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + Sync + 'static,
     {
         self.emitter.on_all(callback)
     }
-    pub fn remove_event_listener(&self, id: &str) -> Option<String> {
+    pub fn remove_event_listener(&self, id: Uuid) -> Option<Uuid> {
         self.emitter.remove_listener(id)
     }
 

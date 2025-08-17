@@ -1,7 +1,7 @@
 use deadpool_redis::{Config, Connection};
 use kio_mq::{
     fetch_redis_pass, frame, framed, get_job_metrics, EventParameters, Job, KioError, KioResult,
-    Queue, Worker,
+    Queue, Worker, WorkerOpts,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -27,7 +27,7 @@ struct Size {
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 struct ReturnData {
     output_path: PathBuf,
-    processed_size: Size,
+    pub processed_size: Size,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, Copy, Default)]
 struct Progress {
@@ -57,7 +57,8 @@ async fn main() -> KioResult<()> {
     if !Path::new("compressed").exists() {
         fs::create_dir("compressed").await?;
     }
-    for (height, width) in [(1280, 720), (640, 480)] {
+    let sizes = [(1280, 720), (640, 480), (1920, 1080), (3840, 2160)];
+    for (height, width) in sizes {
         let size = Size { height, width };
         let data = ProcessData {
             size,
@@ -67,7 +68,11 @@ async fn main() -> KioResult<()> {
             .add_job(height.to_string().as_str(), data, None)
             .await?;
     }
-    let worker = Worker::new(&queue, processor, None);
+    let opts = WorkerOpts {
+        concurrency: sizes.len(),
+        ..Default::default()
+    };
+    let worker = Worker::new(&queue, processor, Some(opts))?;
     let cancel_worker = worker.cancellation_token.clone();
     let notifier = Arc::new(Notify::new());
     let last_job_id = queue.job_count.load(std::sync::atomic::Ordering::Relaxed);
@@ -75,17 +80,16 @@ async fn main() -> KioResult<()> {
     let prefix = queue.prefix.clone();
     let name = queue.name.clone();
     let mut conn = queue.get_connection().await?;
-    let cancellation_task = async move {
+    tokio::spawn(async move {
         while !cancel_worker.is_cancelled() {
             notifier_clone.notified().await;
             let metrics = get_job_metrics(&prefix, &name, &mut conn).await?;
             if metrics.all_jobs_completed() {
                 cancel_worker.cancel();
             }
-            //if metrics
         }
         Ok::<(), KioError>(())
-    };
+    });
 
     worker
         .on_all_events(move |event| {
@@ -95,13 +99,14 @@ async fn main() -> KioResult<()> {
                     if let EventParameters::Completed {
                         job,
                         prev_state: _,
-                        result: _,
+                        result,
                     } = event
                     {
                         let id = job.id.unwrap();
-                        let completed_in =
-                            (job.finished_on.unwrap() - job.processed_on.unwrap()).num_seconds();
-                        println!(" completed job {id} in {completed_in} s");
+                        let completed_in = (job.finished_on.unwrap() - job.processed_on.unwrap())
+                            .num_milliseconds();
+                        let size = result.processed_size;
+                        println!(" completed job {id}  for {size:?} in {completed_in} mills");
                         notifier.notify_one();
                         if last_job_id.to_string() == id {
                             //   cancel.cancel();
@@ -111,15 +116,10 @@ async fn main() -> KioResult<()> {
             }
         })
         .await;
-    tokio::select! {
-        err = worker.run() => {
-          return err
-        },
-         next= cancellation_task => {
-         next
-        }
+    worker.run()?;
+    while worker.is_running() {}
 
-    }
+    Ok(())
 }
 
 enum Payload {
@@ -191,7 +191,7 @@ fn transcode_video(
                 if let Some(time) = parsed_duration {
                     let percent = (time / total_duration) * 100.0;
                     if percent.is_sign_positive() {
-                        current_progress.percentage = percent;
+                        current_progress.percentage = percent.round();
                         current_progress.current_duration = parsed_duration;
                     }
                 }
