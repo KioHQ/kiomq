@@ -118,6 +118,7 @@ async fn main() -> KioResult<()> {
         .await;
     worker.run()?;
     while worker.is_running() {}
+    queue.obliterate().await?;
 
     Ok(())
 }
