@@ -176,7 +176,9 @@ impl<
     pub fn closed(&self) -> bool {
         self.cancellation_token.is_cancelled()
     }
-    pub fn close(&self) {
+    /// Stops the worker from running (adding more jobs to run)
+    /// If true is passed as an argument, all actively running jobs are stopped too.
+    pub fn close(&self, stop_active_jobs: bool) {
         if !self.is_running() {
             return;
         }
@@ -185,6 +187,16 @@ impl<
         self.cancellation_token.cancel();
         self.active
             .store(false, std::sync::atomic::Ordering::Release);
+        if stop_active_jobs {
+            self.jobs_in_progress.iter().for_each(|pair| {
+                let (job, _, current_handle) = pair.value();
+                if let Some(handle) = current_handle {
+                    handle.abort();
+                }
+            });
+
+            self.jobs_in_progress.clear();
+        }
     }
 
     pub async fn on<F, C>(&self, event: JobState, callback: C) -> Uuid
