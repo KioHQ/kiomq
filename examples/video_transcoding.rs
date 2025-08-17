@@ -93,7 +93,7 @@ async fn main() -> KioResult<()> {
 
     worker
         .on_all_events(move |event| {
-            let notifier = notifier.clone() ;
+            let notifier = notifier.clone();
             {
                 async move {
                     if let EventParameters::Completed {
