@@ -70,7 +70,7 @@ impl<
         queue: &Queue<D, R, P>,
         processor: C,
         worker_opts: Option<WorkerOpts>,
-    ) -> Self
+    ) -> KioResult<Self>
     where
         KioError: From<E>,
         C: Fn(Connection, Job<D, R, P>) -> F + Send + 'static + Sync,
@@ -122,7 +122,7 @@ impl<
             }
         });
 
-        Self {
+        let worker = Self {
             block_until: Arc::default(),
             stalled_check_timer,
             extend_lock_timer,
@@ -136,14 +136,19 @@ impl<
             processing: Arc::default(),
             mini_block_timout: 10000, // 10s
             active_job_count: Arc::default(),
+        };
+        if worker.opts.autorun {
+            worker.run()?;
         }
+
+        Ok(worker)
     }
 
     pub fn is_running(&self) -> bool {
         self.active.load(std::sync::atomic::Ordering::Acquire)
             && !self.cancellation_token.is_cancelled()
     }
-    pub async fn run(&self) -> KioResult<()> {
+    pub fn run(&self) -> KioResult<()> {
         if self.is_running() {
             return Err(WorkerError::WorkerAlreadyRunningWithId(self.id).into());
         }

@@ -25,7 +25,7 @@ async fn main() -> KioResult<()> {
     };
     let last_job_id = queue.current_jobs();
     let processor = |con: _, job: Job<_, _, _>| process_callback(con, job);
-    let worker = Worker::new(&queue, processor, Some(opts));
+    let worker = Worker::new(&queue, processor, Some(opts))?;
     let cancel = worker.cancellation_token.clone();
     let event_listener = move |state: _| {
         let cancel = cancel.clone();
@@ -46,7 +46,7 @@ async fn main() -> KioResult<()> {
         }
     };
     queue.on_all_events(event_listener).await;
-    worker.run().await?;
+    worker.run()?;
 
     while worker.is_running() {} // do nothing
     if worker.closed() {

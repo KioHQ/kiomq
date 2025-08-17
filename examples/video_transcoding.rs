@@ -72,7 +72,7 @@ async fn main() -> KioResult<()> {
         concurrency: sizes.len(),
         ..Default::default()
     };
-    let worker = Worker::new(&queue, processor, Some(opts));
+    let worker = Worker::new(&queue, processor, Some(opts))?;
     let cancel_worker = worker.cancellation_token.clone();
     let notifier = Arc::new(Notify::new());
     let last_job_id = queue.job_count.load(std::sync::atomic::Ordering::Relaxed);
@@ -115,7 +115,7 @@ async fn main() -> KioResult<()> {
             }
         })
         .await;
-    worker.run().await?;
+    worker.run()?;
     while worker.is_running() {}
 
     Ok(())
