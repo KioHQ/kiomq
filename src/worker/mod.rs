@@ -5,6 +5,7 @@ use crate::{
     Job, JobState, KioError, KioResult, Queue,
 };
 
+use crate::utils::{get_next_job, main_loop};
 use chrono::Utc;
 use dashmap::DashMap;
 use deadpool_redis::Pool;
@@ -35,8 +36,8 @@ mod worker_events;
 use tokio::task::JoinSet;
 pub(crate) use worker_events::EventEmitter;
 pub use worker_events::EventParameters;
-type JobMap<D, R, P> = Arc<DashMap<String, (Job<D, R, P>, String, Option<AbortHandle>)>>;
-type ProcessingQueue = Arc<Mutex<JoinSet<KioResult<()>>>>;
+pub(crate) type JobMap<D, R, P> = Arc<DashMap<String, (Job<D, R, P>, String, Option<AbortHandle>)>>;
+pub(crate) type ProcessingQueue = Arc<Mutex<JoinSet<KioResult<()>>>>;
 pub use worker_opts::WorkerOpts;
 #[derive(Clone, Debug)]
 pub struct Worker<D, R, P> {
@@ -138,7 +139,7 @@ impl<
         }
     }
 
-    fn is_running(&self) -> bool {
+    pub fn is_running(&self) -> bool {
         self.active.load(std::sync::atomic::Ordering::Acquire)
             && !self.cancellation_token.is_cancelled()
     }
@@ -147,7 +148,23 @@ impl<
             return Err(WorkerError::WorkerAlreadyRunningWithId(self.id).into());
         }
         let handle = self.stalled_check_timer.run();
-        self.main_loop().await;
+        self.extend_lock_timer.run();
+        let params = (
+            self.id,
+            self.cancellation_token.clone(),
+            self.processing.clone(),
+            self.opts.clone(),
+            self.block_until.clone(),
+            self.jobs_in_progress.clone(),
+            self.active_job_count.clone(),
+            self.processor.clone(),
+            self.queue.clone(),
+            self.active.clone(),
+        );
+        let main = main_loop(params);
+        tokio::spawn(main);
+        self.active
+            .store(true, std::sync::atomic::Ordering::Release);
 
         Ok(())
     }
@@ -155,57 +172,16 @@ impl<
         self.cancellation_token.is_cancelled()
     }
     pub fn close(&self) {
+        if !self.is_running() {
+            return;
+        }
         self.stalled_check_timer.stop();
         self.extend_lock_timer.stop();
         self.cancellation_token.cancel();
         self.active
             .store(false, std::sync::atomic::Ordering::Release);
     }
-    async fn main_loop(&self) -> KioResult<()> {
-        self.extend_lock_timer.run();
-        while !self.closed() {
-            while !self.closed() && self.processing.lock().await.len() < self.opts.concurrency {
-                let token_prefix = self
-                    .active_job_count
-                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                let token = format!("{}:{token_prefix}", self.id);
-                let block_delay = self.block_until.load(std::sync::atomic::Ordering::Acquire);
-                if let Some(job) =
-                    get_next_job(&self.queue, &token, block_delay, self.closed(), &self.opts)
-                        .await?
-                {
-                    let id = job.id.clone().unwrap();
-                    self.jobs_in_progress.insert(
-                        job.id.clone().unwrap_or_default(),
-                        (job.clone(), token.clone(), None),
-                    );
-                    let jobs_in_progress = self.jobs_in_progress.clone();
-                    let queue = self.queue.clone();
-                    let callback = self.processor.clone();
 
-                    let task = async_backtrace::frame!(process_job(
-                        job,
-                        token,
-                        jobs_in_progress,
-                        queue,
-                        callback
-                    ));
-                    let handle = self.processing.lock().await.spawn(task);
-                    // task handle
-                    if let Some(mut re) = self.jobs_in_progress.get_mut(&id) {
-                        let (_, _, stored_handle) = re.value_mut();
-                        stored_handle.replace(handle);
-                    }
-                }
-            }
-
-            if self.processing.lock().await.len() == self.opts.concurrency {
-                // we wait for current jobs to complete before adding others;
-                if let Some(done) = self.processing.lock().await.join_next().await {}
-            }
-        }
-        Ok(())
-    }
     pub async fn on<F, C>(&self, event: JobState, callback: C) -> Uuid
     where
         C: Fn(EventParameters<D, R, P>) -> F + Send + Sync + 'static,
@@ -223,121 +199,4 @@ impl<
     pub fn remove_event_listener(&self, id: Uuid) -> Option<Uuid> {
         self.queue.remove_event_listener(id)
     }
-}
-
-// ---- UTIL FUNCTIONS
-
-#[async_backtrace::framed]
-async fn process_job<D, R, P>(
-    job: Job<D, R, P>,
-    token: String,
-    jobs_in_progress: JobMap<D, R, P>,
-    queue: Arc<Queue<D, R, P>>,
-    callback: Arc<WorkerCallback<D, R, P>>,
-) -> KioResult<()>
-where
-    R: Serialize + Send + Clone + DeserializeOwned,
-    D: Clone + Serialize + DeserializeOwned,
-    P: Clone + Serialize + DeserializeOwned,
-{
-    use crate::JobState;
-    let job_id = job.id.clone();
-    let conn = queue.conn_pool.get().await?;
-    let callback = async_backtrace::frame!(callback(conn, job));
-    let returned = BacktraceCatcher::catch(callback).await;
-    match returned {
-        Ok(result) => {
-            // move the job to failed state here;
-            if let (Ok(result_str), Some(job_id)) =
-                (serde_json::to_string(&result), job_id.as_ref())
-            {
-                let ts = Utc::now().timestamp_micros();
-                let move_to_state = JobState::Completed;
-                let completed = queue
-                    .move_job_to_finished_or_failed(
-                        job_id,
-                        ts,
-                        &token,
-                        move_to_state,
-                        &result_str,
-                        None,
-                    )
-                    .await?;
-                if let Some((_, (job, _, Some(handle)))) = jobs_in_progress.remove(job_id) {
-                    //handle.abort(); // remove task from the queue
-                    queue
-                        .emit(
-                            JobState::Completed,
-                            EventParameters::Completed {
-                                prev_state: Some(job.state),
-                                job: completed,
-                                result,
-                            },
-                        )
-                        .await;
-                }
-            }
-        }
-        Err(err) => {
-            let (failed_reason, backtrace) = match err {
-                CaughtError::Panic(CaughtPanicInfo {
-                    backtrace,
-                    payload,
-                    location,
-                }) => (payload, backtrace),
-                CaughtError::Error(error, backtrace) => (error.to_string(), backtrace),
-            };
-            let backtrace: Option<Vec<String>> =
-                backtrace.map(|trace| trace.iter().map(|loc| loc.to_string()).collect());
-
-            let frames = backtrace.and_then(|frames| serde_json::to_string(&frames).ok());
-            // move job to failed_state
-            if let Some(job_id) = job_id.as_ref() {
-                let ts = Utc::now().timestamp_micros();
-                let move_to_state = JobState::Failed;
-                let failed_job = queue
-                    .move_job_to_finished_or_failed(
-                        job_id,
-                        ts,
-                        &token,
-                        move_to_state,
-                        &serde_json::to_string(&failed_reason)?,
-                        frames,
-                    )
-                    .await?;
-                if let Some((_, (job, _, Some(handle)))) = jobs_in_progress.remove(job_id) {
-                    queue
-                        .emit(
-                            JobState::Failed,
-                            EventParameters::Failed {
-                                prev_state: job.state,
-                                job: failed_job,
-                                error: failed_reason,
-                            },
-                        )
-                        .await
-                }
-            }
-        }
-    }
-    Ok(())
-}
-async fn get_next_job<D, R, P>(
-    queue: &Queue<D, R, P>,
-    token: &str,
-    block_delay: u64,
-    closed: bool,
-    opts: &WorkerOpts,
-) -> KioResult<Option<Job<D, R, P>>>
-where
-    D: DeserializeOwned + Clone + Serialize,
-    R: DeserializeOwned + Clone + Serialize,
-    P: DeserializeOwned + Clone + Serialize,
-{
-    // handle pausing or closing;
-    if closed {
-        return Ok(None);
-    }
-    //let waiting = queue.wait_for_job(block_delay as i64).await?;
-    queue.move_to_active(token, opts).await
 }
