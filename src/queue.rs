@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::error::{JobError, KioError};
 use crate::job::{Job, JobState};
-use crate::utils::{serialize_into_pairs, Batches};
+use crate::utils::serialize_into_pairs;
 use crate::worker::WorkerOpts;
 use crate::{get_job_metrics, Dt, KioResult};
 use async_backtrace::backtrace;
@@ -468,13 +468,10 @@ impl<
             let mut pipeline = redis::pipe();
             pipeline.atomic();
             if !active.is_empty() {
-                for (from, to) in Batches::new(active.len(), 7000) {
-                    let batch = &active[from..to];
-                    dbg!(&batch);
-                    if !batch.is_empty() {
-                        pipeline.sadd(&stalled_key, batch);
-                    }
-                }
+                active.chunks(2).for_each(|chunk| {
+                    pipeline.sadd(&stalled_key, chunk);
+                });
+
                 let _: () = pipeline.query_async(&mut conn).await?;
             }
         }

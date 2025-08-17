@@ -116,6 +116,7 @@ impl<
             let opts = opts_clone.clone();
             async move {
                 if let Ok((failed, stalled)) = queue.make_stalled_jobs_wait(&opts).await {
+
                     // do something with results
                     //dbg!(failed, stalled);
                 }
