@@ -10,7 +10,7 @@ use crate::error::{JobError, KioError};
 use crate::job::{Job, JobState};
 use crate::utils::{calculate_next_priority_score, serialize_into_pairs};
 use crate::worker::WorkerOpts;
-use crate::{get_job_metrics, Dt, KioResult};
+use crate::{get_job_metrics, Dt, JobOptions, KioResult};
 use async_backtrace::backtrace;
 use chrono::Utc;
 use deadpool_redis::{Config, Pool, Runtime};
@@ -150,11 +150,19 @@ impl<
         &self,
         name: &str,
         data: D,
-        job_id: Option<u64>,
+        opts: Option<JobOptions>,
     ) -> Result<Job<D, R, P>, KioError> {
+        let opts = opts.unwrap_or_default();
+        let JobOptions {
+            priority,
+            delay,
+            id,
+        } = opts;
         let queue_name = format!("{}:{}", self.prefix, self.name);
-        let mut job = Job::<D, R, P>::new(name, Some(data), job_id, Some(&queue_name));
+        let mut job = Job::<D, R, P>::new(name, Some(data), id, Some(&queue_name));
+        job.add_opts(opts);
         let mut conn = self.conn_pool.get().await?;
+
         let id = self.fetch_id().await?;
         //self.job_count.
         let prefix = &self.prefix;
@@ -493,8 +501,8 @@ impl<
         &self,
         token: &str,
         opts: &WorkerOpts,
-    ) -> KioResult<Option<Job<D, R, P>>> {
-        let [wait_key, active_key, events_key, meta_key, paused_key, stalled_key, stalled_check, failed_key, marker_key] =
+    ) -> KioResult<MoveToActiveResult<D, R, P>> {
+        let [wait_key, active_key, events_key, meta_key, paused_key, stalled_key, stalled_check, failed_key, marker_key, delayed_key] =
             [
                 CollectionSuffix::Wait,
                 CollectionSuffix::Active,
@@ -505,6 +513,7 @@ impl<
                 CollectionSuffix::StalledCheck,
                 CollectionSuffix::Failed,
                 CollectionSuffix::Marker,
+                CollectionSuffix::Delayed,
             ]
             .map(|s| s.to_collection_name(&self.prefix, &self.name));
         let ts = Utc::now().timestamp_micros();
@@ -522,24 +531,41 @@ impl<
                 job_id = conn.rpoplpush(&wait_key, &active_key).await?;
             }
         }
-        if let Some(job_id) = job_id {
+        let mut prepare_job = |id: String, mut conn: redis::aio::MultiplexedConnection| async move {
             let job_id_key =
-                CollectionSuffix::Job(job_id.clone()).to_collection_name(&self.prefix, &self.name);
+                CollectionSuffix::Job(id.clone()).to_collection_name(&self.prefix, &self.name);
             let prev_state: Option<JobState> = conn.hget(job_id_key, "state").await.ok();
             let job = self
-                .prepare_job_for_processing(token, &job_id, ts as u64, opts)
+                .prepare_job_for_processing(token, &id, ts as u64, opts)
                 .await?;
+            Ok::<_, KioError>(Some((job, prev_state)))
+        };
+        let current_job = match job_id {
+            Some(job_id) => prepare_job(job_id.to_owned(), conn.clone()).await?,
+            None => {
+                if let Some(id) = self.move_job_from_priorty_to_active().await? {
+                    prepare_job(id, conn.clone()).await.ok().flatten();
+                }
+                None
+            }
+        };
+        if let Some((job, prev_state)) = current_job {
             let job_clone = job.clone();
-
             self.emit(
                 JobState::Active,
                 EventParameters::Active { job, prev_state },
             )
             .await;
 
-            return Ok(Some(job_clone));
+            return Ok(MoveToActiveResult::ProcessJob(job_clone.boxed()));
         }
-        Ok(None)
+        // fetch the next delayed_timestamp;
+        let mut next_delayed_timestamp: Vec<(u64, u64)> =
+            conn.zrange_withscores(&delayed_key, 0, 0).await?;
+        let mut next_delay = next_delayed_timestamp.pop().unwrap_or_default().1;
+        next_delay /= 0x1000;
+
+        Ok(MoveToActiveResult::DelayUntil(next_delay))
     }
     pub async fn prepare_job_for_processing(
         &self,
@@ -774,4 +800,11 @@ impl<
     }
 }
 
+#[derive(Debug)]
+pub enum MoveToActiveResult<D, R, P> {
+    Paused,
+    RateLimit(u64),
+    DelayUntil(u64),
+    ProcessJob(Box<Job<D, R, P>>),
+}
 // ----- UTILITY FUNCTIONS -------------------
