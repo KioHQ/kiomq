@@ -1,6 +1,7 @@
 use deadpool_redis::{Config, Connection};
 use kio_mq::{
-    fetch_redis_pass, framed, EventParameters, Job, KioResult, Queue, Worker, WorkerOpts,
+    fetch_redis_pass, framed, EventParameters, Job, JobOptions, KioResult, Queue, Worker,
+    WorkerOpts,
 };
 use uuid::Uuid;
 #[tokio::main]
@@ -15,9 +16,15 @@ async fn main() -> KioResult<()> {
     let queue = Queue::<String, String, i32>::new(None, "trial", &config).await?;
 
     let count = 3;
-    for _ in 0..count {
+    for i in 0..count {
+        let job_opts = JobOptions {
+            delay: 100 * i as u64,
+            ..Default::default()
+        };
         let name = Uuid::new_v4().to_string();
-        let _ = queue.add_job(&name, "data".to_lowercase(), None).await?;
+        let _ = queue
+            .add_job(&name, "data".to_lowercase(), Some(job_opts))
+            .await?;
     }
     let opts = WorkerOpts {
         concurrency: count,
