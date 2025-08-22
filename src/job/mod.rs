@@ -64,6 +64,7 @@ pub struct Job<D, R, P> {
     pub token: Option<String>, // job_lock token
     pub stalled_counter: u64,
     pub logs: Vec<String>,
+    pub priority: u64,
 }
 impl FromRedisValue for JobState {
     fn from_redis_value(v: &Value) -> RedisResult<Self> {
@@ -100,6 +101,7 @@ impl<D, R, P> Job<D, R, P> {
             token: None,
             stalled_counter: 0,
             logs: Vec::new(),
+            priority: 0,
         }
     }
     pub async fn update_progress(&mut self, value: P, conn: &mut Connection) -> Result<(), KioError>
@@ -164,6 +166,7 @@ where
                 "progress" => job.progress = serde_json::from_str(value)?,
                 "attemptsmade" => job.attempts_made = serde_json::from_str(value)?,
                 "delay" => job.delay = serde_json::from_str(value)?,
+                "priority" => job.priority = serde_json::from_str(value)?,
                 "data" => job.data = serde_json::from_str(value)?,
                 "returnedvalue" => job.returned_value = serde_json::from_str(value)?,
                 "stacktrace" => job.stack_trace = serde_json::from_str(value)?,

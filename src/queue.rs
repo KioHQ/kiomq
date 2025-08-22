@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::error::{JobError, KioError};
 use crate::job::{Job, JobState};
-use crate::utils::serialize_into_pairs;
+use crate::utils::{calculate_next_priority_score, serialize_into_pairs};
 use crate::worker::WorkerOpts;
 use crate::{get_job_metrics, Dt, KioResult};
 use async_backtrace::backtrace;
@@ -28,14 +28,16 @@ use derive_more::{Debug, Display};
 pub enum CollectionSuffix {
     Active,    // (list)
     Completed, //Sorted Set
-    Delayed,
-    Stalled, // Set
-    Id,      // hash(number)
-    Meta,    // key
-    Events,  // stream
-    Wait,    // LIST
-    Paused,  // LIST
-    Failed,  // ZSET
+    Delayed,   // ZSET
+    Stalled,   // Set
+    Prioritized,
+    PriorityCounter, // (hash(number))
+    Id,              // hash(number)
+    Meta,            // key
+    Events,          // stream
+    Wait,            // LIST
+    Paused,          // LIST
+    Failed,          // ZSET
     Marker,
     #[display("{_0}")]
     Job(String),
@@ -505,8 +507,14 @@ impl<
                 CollectionSuffix::Marker,
             ]
             .map(|s| s.to_collection_name(&self.prefix, &self.name));
+        let ts = Utc::now().timestamp_micros();
         let mut conn = self.conn_pool.get().await?;
         let (is_paused, target_state) = self.get_target_list().await;
+        let target_key =
+            CollectionSuffix::from(target_state).to_collection_name(&self.prefix, &self.name);
+        // promote any delayed jobs here
+        self.promote_delayed_jobs(&target_key, ts.into(), is_paused)
+            .await?;
         let mut job_id: Option<String> = conn.rpoplpush(&wait_key, &active_key).await?;
         if let Some(id) = job_id.as_ref() {
             if id.starts_with("0:") {
@@ -518,7 +526,6 @@ impl<
             let job_id_key =
                 CollectionSuffix::Job(job_id.clone()).to_collection_name(&self.prefix, &self.name);
             let prev_state: Option<JobState> = conn.hget(job_id_key, "state").await.ok();
-            let ts = Utc::now().timestamp_micros();
             let job = self
                 .prepare_job_for_processing(token, &job_id, ts as u64, opts)
                 .await?;
@@ -693,6 +700,77 @@ impl<
     async fn get_metrics(&self) -> KioResult<JobMetrics> {
         let mut conn = self.conn_pool.get().await?;
         get_job_metrics(&self.prefix, &self.name, &mut conn).await
+    }
+    async fn promote_delayed_jobs(
+        &self,
+        target_key: &str,
+        timestamp: i128,
+        paused: bool,
+    ) -> KioResult<()> {
+        let [delayed_key, marker_key, events_stream_key, prioritized_key, priority_counter_key] = [
+            CollectionSuffix::Delayed,
+            CollectionSuffix::Marker,
+            CollectionSuffix::Events,
+            CollectionSuffix::Prioritized,
+            CollectionSuffix::PriorityCounter,
+        ]
+        .map(|collection| collection.to_collection_name(&self.prefix, &self.name));
+        let mut conn = self.conn_pool.get().await?;
+        let stop = (timestamp + 1) * 0x1000;
+        let jobs: Vec<(u64, String)> = conn
+            .zrangebyscore_limit(&delayed_key, 0, stop, 0, 1000)
+            .await?;
+        let mut pipeline = redis::pipe();
+        pipeline.atomic();
+        if !jobs.is_empty() {
+            for (_, job_id) in jobs.iter() {
+                let job_key = CollectionSuffix::Job(job_id.to_owned())
+                    .to_collection_name(&self.prefix, &self.name);
+                let priority: u64 = conn.hget(&job_key, "priority").await?;
+                if priority == 0 {
+                    pipeline.lpush(target_key, job_id);
+                } else {
+                    let prior_counter: u64 = conn.incr(&priority_counter_key, 1).await?;
+                    let score = calculate_next_priority_score(priority, prior_counter);
+                    pipeline.zadd(&prioritized_key, score, job_id);
+                }
+
+                self.add_base_marker(paused, &mut pipeline);
+                let items = [("event", "wait"), ("job_id", job_id), ("prev", "delayed")];
+                pipeline.xadd(&events_stream_key, "*", &items);
+                pipeline.hset(job_key, "delay", 0);
+            }
+            let members: Vec<_> = jobs.into_iter().map(|pair| pair.1).collect();
+            pipeline.zrem(&delayed_key, members);
+        }
+
+        pipeline.query_async::<()>(&mut conn).await?;
+        Ok(())
+    }
+    fn add_base_marker(&self, is_paused: bool, pipeline: &mut Pipeline) {
+        let marker_key = CollectionSuffix::Marker.to_collection_name(&self.prefix, &self.name);
+        if !is_paused {
+            pipeline.zadd(marker_key, 0, "0");
+        }
+    }
+
+    async fn move_job_from_priorty_to_active(&self) -> KioResult<Option<String>> {
+        let [active_key, prioritized_key, priority_counter_key] = [
+            CollectionSuffix::Active,
+            CollectionSuffix::Prioritized,
+            CollectionSuffix::PriorityCounter,
+        ]
+        .map(|collection| collection.to_collection_name(&self.prefix, &self.name));
+        let mut conn = self.conn_pool.get().await?;
+        let mut min_priority_job: Vec<(u64, String)> = conn.zpopmin(&prioritized_key, 1).await?;
+        if let Some((score, job_id)) = min_priority_job.pop() {
+            let _: () = conn.lpush(&active_key, &job_id).await?;
+            return Ok(Some(job_id));
+        }
+
+        let _: () = conn.del(&priority_counter_key).await?;
+
+        Ok(None)
     }
 }
 

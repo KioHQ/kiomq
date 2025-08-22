@@ -33,6 +33,10 @@ pub fn serialize_into_pairs<V: Serialize>(item: &V) -> Vec<(String, String)> {
     }
     vec![]
 }
+pub fn calculate_next_priority_score(priority: u64, prio_counter: u64) -> u64 {
+    let result = (priority << 32) + (prio_counter & 0xffffffffffff);
+    result
+}
 
 use crate::{CollectionSuffix, JobMetrics};
 pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
