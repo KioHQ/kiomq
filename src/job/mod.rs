@@ -38,6 +38,13 @@ impl ToRedisArgs for JobState {
         out.write_arg_fmt(self.to_string().to_lowercase());
     }
 }
+#[derive(Debug, Serialize, Deserialize, Default, Hash, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct JobOptions {
+    pub priority: u64,
+    pub delay: u64,
+    pub id: Option<u64>,
+}
 
 use chrono::serde::{ts_microseconds, ts_microseconds_option};
 #[derive(Debug, Serialize, Deserialize, Default, Hash, Clone, PartialEq)]
@@ -51,6 +58,7 @@ pub struct Job<D, R, P> {
     pub state: JobState,
     pub progress: Option<P>,
     pub attempts_made: u64,
+    pub opts: JobOptions,
     pub delay: u64,
     pub data: Option<D>,
     pub returned_value: Option<R>,
@@ -78,11 +86,15 @@ impl FromRedisValue for JobState {
 
 // skip comparing the data,progress and return_value field;
 impl<D, R, P> Job<D, R, P> {
+    pub fn boxed(self) -> Box<Self> {
+        Box::new(self)
+    }
     pub fn new(name: &str, data: Option<D>, id: Option<u64>, queue_name: Option<&str>) -> Self {
         let ts = Utc::now();
         let id = id.map(|v| v.to_string());
 
         Self {
+            opts: JobOptions::default(),
             queue_name: queue_name.map(|s| s.to_owned()),
             name: name.to_owned(),
             id,
@@ -101,6 +113,12 @@ impl<D, R, P> Job<D, R, P> {
             stalled_counter: 0,
             logs: Vec::new(),
         }
+    }
+
+    pub fn add_opts(&mut self, opts: JobOptions) {
+        self.priority = opts.priority;
+        self.delay = opts.delay;
+        self.opts = opts;
     }
     pub async fn update_progress(&mut self, value: P, conn: &mut Connection) -> Result<(), KioError>
     where
@@ -150,6 +168,7 @@ where
                         .and_then(Dt::from_timestamp_micros)
                         .unwrap_or_default();
                 }
+                "opts" => job.opts = serde_json::from_str(value)?,
                 "name" => job.name = serde_json::from_str(value)?,
                 "queuename" => job.queue_name = serde_json::from_str(value)?,
                 "state" => {
