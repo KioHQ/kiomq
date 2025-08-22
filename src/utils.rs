@@ -1,6 +1,6 @@
 use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo};
 use crate::worker::{JobMap, ProcessingQueue, WorkerCallback};
-use crate::{EventParameters, MoveToActiveResult, WorkerOpts};
+use crate::{EventParameters, WorkerOpts};
 use chrono::Utc;
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Write;
@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::KioResult;
+use crate::MoveToActiveResult;
 use crate::{Job, Queue};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 
@@ -34,7 +35,8 @@ pub fn serialize_into_pairs<V: Serialize>(item: &V) -> Vec<(String, String)> {
     vec![]
 }
 pub fn calculate_next_priority_score(priority: u64, prio_counter: u64) -> u64 {
-    (priority << 32) + (prio_counter & 0xffffffffffff)
+    let result = (priority << 32) + (prio_counter & 0xffffffffffff);
+    result
 }
 
 use crate::{CollectionSuffix, JobMetrics};
@@ -181,8 +183,8 @@ where
         return Ok(None);
     }
     //let waiting = queue.wait_for_job(block_delay as i64).await?;
-    if let MoveToActiveResult::ProcessJob(boxed_job) = queue.move_to_active(token, opts).await? {
-        return Ok(Some(*boxed_job));
+    if let MoveToActiveResult::ProcessJob(job) = queue.move_to_active(token, opts).await? {
+        return Ok(Some(*job));
     }
 
     Ok(None)
