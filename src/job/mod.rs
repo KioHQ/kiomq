@@ -29,6 +29,7 @@ pub enum JobState {
     Resumed,
     Completed,
     Failed,
+    Delayed,
 }
 impl ToRedisArgs for JobState {
     fn write_redis_args<W>(&self, out: &mut W)
@@ -46,13 +47,13 @@ pub struct JobOptions {
     pub id: Option<u64>,
 }
 
-use chrono::serde::{ts_microseconds, ts_microseconds_option};
+use chrono::serde::{ts_milliseconds, ts_milliseconds_option};
 #[derive(Debug, Serialize, Deserialize, Default, Hash, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Job<D, R, P> {
     pub id: Option<String>,
     #[serde(rename = "timestamp", alias = "timestamp")]
-    #[serde(with = "ts_microseconds")]
+    #[serde(with = "ts_milliseconds")]
     pub ts: Dt,
     pub name: String,
     pub state: JobState,
@@ -64,9 +65,9 @@ pub struct Job<D, R, P> {
     pub returned_value: Option<R>,
     pub stack_trace: Vec<String>,
     pub failed_reason: Option<String>,
-    #[serde(with = "ts_microseconds_option")]
+    #[serde(with = "ts_milliseconds_option")]
     pub processed_on: Option<Dt>,
-    #[serde(with = "ts_microseconds_option")]
+    #[serde(with = "ts_milliseconds_option")]
     pub finished_on: Option<Dt>,
     pub queue_name: Option<String>,
     pub token: Option<String>, // job_lock token
@@ -136,6 +137,22 @@ impl<D, R, P> Job<D, R, P> {
         }
         Ok(())
     }
+    pub async fn update_processing_time(
+        &mut self,
+        time: DateTime<Utc>,
+        conn: &mut Connection,
+    ) -> KioResult<()> {
+        if let (Some(queue_name), Some(id)) = (&self.queue_name, &self.id) {
+            let job_key = format!("{queue_name}:{id}");
+            let mut pipeline = redis::pipe();
+
+            let result: () = conn
+                .hset(job_key, "processedOn", time.timestamp_millis())
+                .await?;
+            self.processed_on = Some(time);
+        }
+        Ok(())
+    }
     /// Append log to existing_logs if there is any
     pub async fn add_log(&mut self, log: &str, conn: &mut Connection) -> KioResult<()> {
         if let (Some(queue_name), Some(id)) = (&self.queue_name, &self.id) {
@@ -167,7 +184,7 @@ where
                 "id" => job.id = serde_json::from_str(value)?,
                 "timestamp" => {
                     job.ts = serde_json::from_str::<Option<i64>>(value)?
-                        .and_then(Dt::from_timestamp_micros)
+                        .and_then(Dt::from_timestamp_millis)
                         .unwrap_or_default();
                 }
                 "opts" => job.opts = serde_json::from_str(value)?,
@@ -196,11 +213,11 @@ where
                 }
                 "processedon" => {
                     job.processed_on = serde_json::from_str::<Option<i64>>(value)?
-                        .and_then(Dt::from_timestamp_micros);
+                        .and_then(Dt::from_timestamp_millis);
                 } // Assuming Dt is handled by serde_json
                 "finishedon" => {
                     job.finished_on = serde_json::from_str::<Option<i64>>(value)?
-                        .and_then(Dt::from_timestamp_micros);
+                        .and_then(Dt::from_timestamp_millis);
                 }
                 "stalledcounter" => job.stalled_counter = serde_json::from_str(value)?,
                 _ => { /* Ignore unknown fields if your hash might contain others */ }

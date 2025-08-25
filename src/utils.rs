@@ -4,6 +4,7 @@ use crate::{EventParameters, MoveToActiveResult, WorkerOpts};
 use chrono::Utc;
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Write;
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -35,6 +36,9 @@ pub fn serialize_into_pairs<V: Serialize>(item: &V) -> Vec<(String, String)> {
 }
 pub fn calculate_next_priority_score(priority: u64, prio_counter: u64) -> u64 {
     (priority << 32) + (prio_counter & 0xffffffffffff)
+}
+pub fn make_score(delayed_timestamp: i64, job_counter: i64) -> i64 {
+    (delayed_timestamp << 12) | (job_counter & 0xFFF)
 }
 
 use crate::{CollectionSuffix, JobMetrics};
@@ -71,7 +75,7 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
 
 #[async_backtrace::framed]
 pub(crate) async fn process_job<D, R, P>(
-    job: Job<D, R, P>,
+    mut job: Job<D, R, P>,
     token: String,
     jobs_in_progress: JobMap<D, R, P>,
     queue: Arc<Queue<D, R, P>>,
@@ -84,7 +88,13 @@ where
 {
     use crate::JobState;
     let job_id = job.id.clone();
-    let conn = queue.conn_pool.get().await?;
+    let mut conn = queue.conn_pool.get().await?;
+    // add delay here;
+    let delay = job.opts.delay;
+    tokio::time::sleep(Duration::from_millis(delay)).await;
+    let time = Utc::now();
+    job.update_processing_time(time, &mut conn).await?;
+
     let callback = async_backtrace::frame!(callback(conn, job));
     let returned = BacktraceCatcher::catch(callback).await;
     match returned {
@@ -93,7 +103,7 @@ where
             if let (Ok(result_str), Some(job_id)) =
                 (serde_json::to_string(&result), job_id.as_ref())
             {
-                let ts = Utc::now().timestamp_micros();
+                let ts = Utc::now().timestamp_millis();
                 let move_to_state = JobState::Completed;
                 let completed = queue
                     .move_job_to_finished_or_failed(
@@ -135,7 +145,7 @@ where
             let frames = backtrace.and_then(|frames| serde_json::to_string(&frames).ok());
             // move job to failed_state
             if let Some(job_id) = job_id.as_ref() {
-                let ts = Utc::now().timestamp_micros();
+                let ts = Utc::now().timestamp_millis();
                 let move_to_state = JobState::Failed;
                 let failed_job = queue
                     .move_job_to_finished_or_failed(
@@ -181,8 +191,12 @@ where
         return Ok(None);
     }
     //let waiting = queue.wait_for_job(block_delay as i64).await?;
-    if let MoveToActiveResult::ProcessJob(boxed_job) = queue.move_to_active(token, opts).await? {
+    let result = queue.move_to_active(token, opts).await?;
+    if let MoveToActiveResult::ProcessJob(boxed_job) = result {
         return Ok(Some(*boxed_job));
+    }
+    if let MoveToActiveResult::DelayUntil(ts) = result {
+        dbg!(ts);
     }
 
     Ok(None)

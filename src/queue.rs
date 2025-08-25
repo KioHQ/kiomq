@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::error::{JobError, KioError};
 use crate::job::{Job, JobState};
-use crate::utils::{calculate_next_priority_score, serialize_into_pairs};
+use crate::utils::{calculate_next_priority_score, make_score, serialize_into_pairs};
 use crate::worker::WorkerOpts;
 use crate::{get_job_metrics, Dt, JobOptions, KioResult};
 use async_backtrace::backtrace;
@@ -65,6 +65,7 @@ impl From<JobState> for CollectionSuffix {
             JobState::Completed => CollectionSuffix::Completed,
             JobState::Resumed => CollectionSuffix::Active,
             JobState::Failed => CollectionSuffix::Failed,
+            JobState::Delayed => CollectionSuffix::Delayed,
         }
     }
 }
@@ -152,6 +153,7 @@ impl<
         data: D,
         opts: Option<JobOptions>,
     ) -> Result<Job<D, R, P>, KioError> {
+        use chrono::TimeDelta;
         let opts = opts.unwrap_or_default();
         let JobOptions {
             priority,
@@ -178,15 +180,46 @@ impl<
         let waiting_key = waiting_or_paused.to_collection_name(&self.prefix, &self.name);
         let mut pipeline = redis::pipe();
         pipeline.atomic();
+        let is_delayed = job.delay > 0;
         job.id = Some(id.to_string());
         pipeline.lpush(&waiting_key, id.to_string());
+        if is_delayed {
+            job.state = JobState::Delayed;
+        }
         let fields = serialize_into_pairs(&job);
         pipeline.hset_multiple(&job_key, &fields);
-        let items = [
-            ("event", CollectionSuffix::Wait.to_string().to_lowercase()),
+        let event = if is_delayed {
+            CollectionSuffix::Delayed
+        } else {
+            CollectionSuffix::Wait
+        };
+        let mut items = vec![
+            ("event", event.to_string().to_lowercase()),
             ("job_id", id.to_string()),
             ("name", name.to_string()),
         ];
+
+        // handle delayed jobs
+        if job.delay > 0 {
+            let delayed_ts =
+                (job.ts + TimeDelta::milliseconds(job.delay as i64)).timestamp_millis();
+            let score = make_score(delayed_ts, id as i64);
+            let delayed_key =
+                CollectionSuffix::Delayed.to_collection_name(&self.prefix, &self.name);
+            pipeline.zadd(delayed_key, score, id.to_string());
+            items.push(("delay", delayed_ts.to_string()));
+        }
+
+        if job.priority > 0 {
+            let pc_key =
+                CollectionSuffix::PriorityCounter.to_collection_name(&self.prefix, &self.name);
+            let prioritized_key =
+                CollectionSuffix::Prioritized.to_collection_name(&self.prefix, &self.name);
+            let priority_counter: u64 = conn.incr(pc_key, 1).await?;
+            let score = calculate_next_priority_score(job.priority, priority_counter);
+            pipeline.zadd(prioritized_key, score, id.to_string());
+        }
+
         pipeline.xadd(events_keys, "*", &items);
         pipeline.query_async::<()>(&mut conn).await?;
 
@@ -516,7 +549,7 @@ impl<
                 CollectionSuffix::Delayed,
             ]
             .map(|s| s.to_collection_name(&self.prefix, &self.name));
-        let ts = Utc::now().timestamp_micros();
+        let ts = Utc::now().timestamp_millis();
         let mut conn = self.conn_pool.get().await?;
         let (is_paused, target_state) = self.get_target_list().await;
         let target_key =
@@ -524,6 +557,7 @@ impl<
         // promote any delayed jobs here
         self.promote_delayed_jobs(&target_key, ts.into(), is_paused)
             .await?;
+
         let mut job_id: Option<String> = conn.rpoplpush(&wait_key, &active_key).await?;
         if let Some(id) = job_id.as_ref() {
             if id.starts_with("0:") {
@@ -535,6 +569,7 @@ impl<
             let job_id_key =
                 CollectionSuffix::Job(id.clone()).to_collection_name(&self.prefix, &self.name);
             let prev_state: Option<JobState> = conn.hget(job_id_key, "state").await.ok();
+            // check if any delay here;
             let job = self
                 .prepare_job_for_processing(token, &id, ts as u64, opts)
                 .await?;
@@ -744,7 +779,7 @@ impl<
         let mut conn = self.conn_pool.get().await?;
         let stop = (timestamp + 1) * 0x1000;
         let jobs: Vec<(u64, String)> = conn
-            .zrangebyscore_limit(&delayed_key, 0, stop, 0, 1000)
+            .zrangebyscore_limit_withscores(&delayed_key, 0, stop, 0, 1000)
             .await?;
         let mut pipeline = redis::pipe();
         pipeline.atomic();
@@ -766,7 +801,7 @@ impl<
                 pipeline.xadd(&events_stream_key, "*", &items);
                 pipeline.hset(job_key, "delay", 0);
             }
-            let members: Vec<_> = jobs.into_iter().map(|pair| pair.1).collect();
+            let members: Vec<_> = jobs.into_iter().map(|pair| pair.0).collect();
             pipeline.zrem(&delayed_key, members);
         }
 
@@ -799,12 +834,20 @@ impl<
         Ok(None)
     }
 }
-
-#[derive(Debug)]
 pub enum MoveToActiveResult<D, R, P> {
     Paused,
     RateLimit(u64),
     DelayUntil(u64),
     ProcessJob(Box<Job<D, R, P>>),
+}
+impl<D, R, P> std::fmt::Debug for MoveToActiveResult<D, R, P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Paused => write!(f, "Paused"),
+            Self::RateLimit(arg0) => f.debug_tuple("RateLimit").field(arg0).finish(),
+            Self::DelayUntil(arg0) => f.debug_tuple("DelayUntil").field(arg0).finish(),
+            Self::ProcessJob(arg0) => f.debug_tuple("ProcessJob").field(&arg0.opts).finish(),
+        }
+    }
 }
 // ----- UTILITY FUNCTIONS -------------------

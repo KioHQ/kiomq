@@ -45,7 +45,15 @@ async fn main() -> KioResult<()> {
             } = dbg!(state)
             {
                 let id = last_job_id.to_string();
-                if job.id.unwrap().contains(&id) {
+                let delay_before_processing = job
+                    .processed_on
+                    .map(|time| (time - job.ts).num_milliseconds())
+                    .expect("failed");
+                let job_id = job.id.unwrap_or_default();
+                println!(
+                    "proccessed job {job_id} with a delay of {delay_before_processing} millis"
+                );
+                if job_id.contains(&id) {
                     println!("finished in {:#?}", now.elapsed());
                     cancel.cancel();
                 }
