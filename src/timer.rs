@@ -1,8 +1,8 @@
 use derive_more::Debug;
 use futures::future::{BoxFuture, Future, FutureExt};
-use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::Duration;
+use std::{cell::RefCell, sync::atomic::AtomicBool};
 use tokio::{
     task::{self, JoinHandle},
     time::{sleep, Instant},
@@ -14,6 +14,7 @@ pub struct Timer {
     interval: Duration,
     #[debug(skip)]
     callback: Arc<EmptyCb>,
+    pub skip_first_tick: Arc<AtomicBool>,
     cancel: CancellationToken,
 }
 
@@ -30,16 +31,32 @@ impl Timer {
             interval,
             callback: Arc::new(parsed_cb),
             cancel: Default::default(),
+            skip_first_tick: Arc::default(),
         }
+    }
+    pub fn should_skip_first_tick(&self) -> bool {
+        self.skip_first_tick
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .unwrap_or_default()
     }
 
     pub fn run(&self) -> JoinHandle<()> {
         let mut interval = tokio::time::interval(self.interval);
         let callback = Arc::clone(&self.callback);
         let token = self.cancel.clone();
+        let skip_first_tick = self
+            .skip_first_tick
+            .load(std::sync::atomic::Ordering::Relaxed);
         let mut task = task::spawn(async move {
             // wait for the first tick to ensure the initial delay;
-            interval.tick().await;
+            if !skip_first_tick {
+                interval.tick().await;
+            }
             while !token.is_cancelled() {
                 callback().await;
                 interval.tick().await;
@@ -58,6 +75,8 @@ impl Timer {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicI8, AtomicUsize};
+
     use super::*;
     #[tokio::test]
     async fn runs_and_stops() {
@@ -70,5 +89,29 @@ mod tests {
         timer.stop();
         assert!(!timer.is_running());
         println!("{:?}", now.elapsed());
+    }
+    #[tokio::test]
+    async fn skips_first_ticks() {
+        // without the first_tick, timer runs immediately and wait for n ms, so our counter is always going to be one a head
+        let now = tokio::time::Instant::now();
+        let counter: Arc<AtomicUsize> = Arc::default();
+        let counter_clone = counter.clone();
+        let mut timer = Timer::new(100, move || {
+            let counter_clone = counter_clone.clone();
+            async move {
+                println!("hello");
+                counter_clone.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            }
+        });
+        timer.should_skip_first_tick();
+        timer.run();
+        assert!(timer
+            .skip_first_tick
+            .load(std::sync::atomic::Ordering::Acquire));
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        timer.stop();
+        assert!(!timer.is_running());
+        assert_eq!(counter.load(std::sync::atomic::Ordering::Acquire), 2);
     }
 }
