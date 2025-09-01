@@ -19,6 +19,7 @@ derive_more = { version = "2.0.1", features = [
 ] }
 dotenv = "0.15.0"
 futures = "0.3.31"
+num_cpus = "1.17.0"
 redis = { version = "0.32.3", features = ["tokio-comp", "streams", "json"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.140", features = ["default", "raw_value"] }
