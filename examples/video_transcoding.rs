@@ -11,6 +11,7 @@ use tokio::sync::{mpsc::Sender, Notify};
 type BoxedError = Box<dyn std::error::Error + Send>;
 use ffmpeg_sidecar::{
     command::FfmpegCommand,
+    download::auto_download,
     event::{FfmpegEvent, LogLevel},
     log_parser::parse_time_str,
 };
@@ -49,10 +50,12 @@ async fn main() -> KioResult<()> {
     let queue: Queue<ProcessData, ReturnData, Progress> =
         Queue::new(None, "video-processing", &config).await?;
     let processor = |con: _, job: _| process_callback(con, job);
+    // auto download ffmpeg if it's not installed;
+    tokio::task::spawn_blocking(|| auto_download()).await?;
+
     if !Path::new(input_path).exists() {
         tokio::task::spawn_blocking(|| create_h265_source(input_path)).await?;
     }
-
     // create the compressed folder if its doesn't exist too;
     if !Path::new("compressed").exists() {
         fs::create_dir("compressed").await?;
