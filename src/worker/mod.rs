@@ -1,6 +1,6 @@
 use crate::{
     error::{BacktraceCatcher, CaughtError, CaughtPanicInfo},
-    queue,
+    job, queue,
     timer::Timer,
     Job, JobState, KioError, KioResult, Queue,
 };
@@ -50,6 +50,7 @@ pub struct Worker<D, R, P> {
     pub cancellation_token: CancellationToken,
     active: Arc<AtomicBool>,
     processing: ProcessingQueue,
+    job_scheduling_timer: Timer,
     stalled_check_timer: Timer,
     extend_lock_timer: Timer,
     block_until: Arc<AtomicU64>,
@@ -92,6 +93,12 @@ impl<
         let queue_clone = queue.clone();
 
         let jobs = jobs_in_progress.clone();
+        let now = tokio::time::Instant::now();
+        let job_scheduling_timer = Timer::new(100, move || async move {
+            println!("checking for delayed jobs; {:?}", now.elapsed())
+        });
+        job_scheduling_timer.should_skip_first_tick();
+        job_scheduling_timer.run();
 
         let opts_clone = opts.clone();
         let extend_lock_timer = Timer::new(opts.lock_duration, move || {
@@ -124,6 +131,7 @@ impl<
         });
 
         let worker = Self {
+            job_scheduling_timer,
             block_until: Arc::default(),
             stalled_check_timer,
             extend_lock_timer,
@@ -184,6 +192,7 @@ impl<
             return;
         }
         self.stalled_check_timer.stop();
+        self.job_scheduling_timer.stop();
         self.extend_lock_timer.stop();
         self.cancellation_token.cancel();
         self.active
