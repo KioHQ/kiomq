@@ -51,7 +51,9 @@ async fn main() -> KioResult<()> {
         Queue::new(None, "video-processing", &config).await?;
     let processor = |con: _, job: _| process_callback(con, job);
     // auto download ffmpeg if it's not installed;
-    tokio::task::spawn_blocking(|| auto_download()).await?;
+    tokio::task::spawn_blocking(auto_download)
+        .await?
+        .map_err(std::io::Error::other)?;
 
     if !Path::new(input_path).exists() {
         tokio::task::spawn_blocking(|| create_h265_source(input_path)).await?;
