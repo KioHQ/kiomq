@@ -10,7 +10,6 @@ pub struct WorkerOpts {
     /// move back to wait so that another worker can process it again.
     /// @default 30000
     pub lock_duration: u64,
-
     /// The time in milliseconds before the lock is automatically renewed.
     /// It is not recommended to modify this value, which is by default set to halv the lockDuration value,
     /// which is optimal for most use cases.
@@ -20,12 +19,16 @@ pub struct WorkerOpts {
     pub max_stalled_count: u64,
     /// The numbers of tasks running concurrency with the current executor thread pool.
     pub concurrency: usize,
+
+    pub schedule_checking_interval: u64,
     pub autorun: bool,
 }
 impl Default for WorkerOpts {
     fn default() -> Self {
         Self {
             concurrency: num_cpus::get(),
+            schedule_checking_interval: 10,
+
             stalled_interval: 30000,
             lock_duration: 30000,
             lock_renew_time: 15000,

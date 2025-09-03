@@ -94,11 +94,21 @@ impl<
 
         let jobs = jobs_in_progress.clone();
         let now = tokio::time::Instant::now();
-        let job_scheduling_timer = Timer::new(100, move || async move {
-            println!("checking for delayed jobs; {:?}", now.elapsed())
+        let schedule_checking_interval = opts.schedule_checking_interval;
+        let job_scheduling_timer = Timer::new(schedule_checking_interval, move || {
+            let queue = queue_clone.clone();
+            async move {
+                let date_time = Utc::now();
+                let jobs = queue
+                    .promote_delayed_jobs(date_time, schedule_checking_interval as i64)
+                    .await
+                    .unwrap_or_default();
+                dbg!(jobs);
+            }
         });
         job_scheduling_timer.should_skip_first_tick();
         job_scheduling_timer.run();
+        let queue_clone = queue.clone();
 
         let opts_clone = opts.clone();
         let extend_lock_timer = Timer::new(opts.lock_duration, move || {

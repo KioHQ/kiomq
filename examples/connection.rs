@@ -15,7 +15,7 @@ async fn main() -> KioResult<()> {
     }
     let queue = Queue::<String, String, i32>::new(None, "trial", &config).await?;
 
-    let count = 3;
+    let count = 9;
     for i in 0..count {
         let job_opts = JobOptions {
             delay: 100 * i as u64,
@@ -27,7 +27,7 @@ async fn main() -> KioResult<()> {
             .await?;
     }
     let opts = WorkerOpts {
-        concurrency: count,
+        //concurrency: count,
         ..Default::default()
     };
     let last_job_id = queue.current_jobs();
@@ -42,13 +42,20 @@ async fn main() -> KioResult<()> {
                 job,
                 result: _,
                 prev_state: _,
-            } = dbg!(state)
+            } = state
             {
+                let diff = (job.processed_on.unwrap_or_default() - job.ts).num_milliseconds();
                 let id = last_job_id.to_string();
-                if job.id.unwrap().contains(&id) {
-                    println!("finished in {:#?}", now.elapsed());
+                if job.id.as_ref().unwrap().contains(&id) {
+                    println!("finished in {:#?}: delay_ms: {diff}", now.elapsed());
                     cancel.cancel();
                 }
+                println!(
+                    "finished job {} delayed for {} ms, expected_delay: {}",
+                    job.id.unwrap_or_default(),
+                    diff,
+                    job.opts.delay,
+                );
             }
         }
     };
