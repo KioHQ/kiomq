@@ -1,6 +1,6 @@
 use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo};
 use crate::worker::{JobMap, ProcessingQueue, WorkerCallback};
-use crate::{EventParameters, WorkerOpts};
+use crate::{utils, EventParameters, JobState, WorkerOpts};
 use chrono::Utc;
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Write;
@@ -35,8 +35,7 @@ pub fn serialize_into_pairs<V: Serialize>(item: &V) -> Vec<(String, String)> {
     vec![]
 }
 pub fn calculate_next_priority_score(priority: u64, prio_counter: u64) -> u64 {
-    let result = (priority << 32) + (prio_counter & 0xffffffffffff);
-    result
+    (priority << 32) + (prio_counter & 0xffffffffffff)
 }
 
 use crate::{CollectionSuffix, JobMetrics};
@@ -182,7 +181,14 @@ where
     if closed {
         return Ok(None);
     }
-    //let waiting = queue.wait_for_job(block_delay as i64).await?;
+
+    let date_time = Utc::now();
+    let interval_ms = 10;
+    if let Ok(promoted_jobs) = queue.promote_delayed_jobs(date_time, interval_ms).await {
+        if !promoted_jobs.is_empty() {
+            dbg!(promoted_jobs);
+        }
+    }
     if let MoveToActiveResult::ProcessJob(job) = queue.move_to_active(token, opts).await? {
         return Ok(Some(*job));
     }
@@ -223,12 +229,14 @@ where
         queue,
         is_active,
     ) = params;
+    let now = tokio::time::Instant::now();
     while !cancellation_token.is_cancelled() {
         while !cancellation_token.is_cancelled() && processing.lock().await.len() < opts.concurrency
         {
             let token_prefix = active_job_count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             let token = format!("{id}:{token_prefix}");
             let block_delay = block_until.load(std::sync::atomic::Ordering::Acquire);
+
             if let Some(job) = get_next_job(
                 queue.as_ref(),
                 &token,
@@ -273,4 +281,59 @@ where
         is_active.compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed);
     }
     Ok(())
+}
+use crate::Dt;
+use chrono::TimeDelta;
+use redis::AsyncCommands;
+use std::time::Duration;
+
+pub async fn promote_jobs(
+    prefix: &str,
+    name: &str,
+    date_time: Dt,
+    paused: bool,
+    target_state: JobState,
+    mut interval_ms: i64,
+    mut conn: deadpool_redis::Connection,
+) -> KioResult<Vec<String>> {
+    let [delayed_key, marker_key, events_stream_key, prioritized_key, priority_counter_key] = [
+        CollectionSuffix::Delayed,
+        CollectionSuffix::Marker,
+        CollectionSuffix::Events,
+        CollectionSuffix::Prioritized,
+        CollectionSuffix::PriorityCounter,
+    ]
+    .map(|collection| collection.to_collection_name(prefix, name));
+    let target_key = CollectionSuffix::from(target_state).to_collection_name(prefix, name);
+    let stop = (date_time + TimeDelta::milliseconds(interval_ms)).timestamp_millis();
+    let start = date_time.timestamp_millis();
+    let mut pipeline = redis::pipe();
+    let jobs: Vec<String> = conn
+        .zrangebyscore_limit(&delayed_key, start, stop, 0, 1000)
+        .await?;
+    let removed: redis::Value = conn.zrem(&delayed_key, &jobs).await?;
+    pipeline.atomic();
+    if !jobs.is_empty() {
+        for job_id in jobs.iter() {
+            let job_key = CollectionSuffix::Job(job_id.to_owned()).to_collection_name(prefix, name);
+            let priority: u64 = conn.hget(&job_key, "priority").await?;
+            if priority == 0 {
+                pipeline.lpush(&target_key, job_id);
+            } else {
+                let prior_counter: u64 = conn.incr(&priority_counter_key, 1).await?;
+                let score = calculate_next_priority_score(priority, prior_counter);
+                pipeline.zadd(&prioritized_key, score, job_id);
+            }
+
+            //self.add_base_marker(paused, &mut pipeline);
+            let items = [("event", "wait"), ("job_id", job_id), ("prev", "delayed")];
+            pipeline.xadd(&events_stream_key, "*", &items);
+            pipeline.hset(job_key, "delay", 0);
+        }
+    }
+    if !pipeline.is_empty() {
+        tokio::time::sleep(Duration::from_millis((interval_ms) as u64)).await;
+        pipeline.query_async::<()>(&mut conn).await?;
+    }
+    Ok(jobs)
 }

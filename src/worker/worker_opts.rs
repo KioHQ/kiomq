@@ -1,6 +1,7 @@
 use derive_more::Debug;
 
 use crate::Dt;
+pub(crate) const MIN_DELAY_MS_LIMIT: u64 = 100;
 #[derive(Debug, Clone)]
 pub struct WorkerOpts {
     /// Number of milliseconds between stallness checks. Default is 30000
@@ -19,15 +20,13 @@ pub struct WorkerOpts {
     pub max_stalled_count: u64,
     /// The numbers of tasks running concurrency with the current executor thread pool.
     pub concurrency: usize,
-
-    pub schedule_checking_interval: u64,
+    /// The interval to check for delayed jobs or next jobs to schedule
     pub autorun: bool,
 }
 impl Default for WorkerOpts {
     fn default() -> Self {
         Self {
             concurrency: num_cpus::get(),
-            schedule_checking_interval: 10,
 
             stalled_interval: 30000,
             lock_duration: 30000,

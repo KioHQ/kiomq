@@ -58,6 +58,11 @@ pub enum QueueError {
     FailedToObliterate,
     CantObliterateWhileJobsActive,
     CantOperateWhenPaused,
+    #[display("DelayBelowAllowedLimit {{limit:{limit_ms}, current: {current_ms}}}")]
+    DelayBelowAllowedLimit {
+        limit_ms: u64,
+        current_ms: u64,
+    },
 }
 #[repr(i8)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Error)]

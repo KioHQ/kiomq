@@ -39,6 +39,7 @@ pub use worker_events::EventParameters;
 pub(crate) type JobMap<D, R, P> = Arc<DashMap<String, (Job<D, R, P>, String, Option<AbortHandle>)>>;
 pub(crate) type ProcessingQueue = Arc<Mutex<JoinSet<KioResult<()>>>>;
 pub use worker_opts::WorkerOpts;
+pub(crate) use worker_opts::MIN_DELAY_MS_LIMIT;
 #[derive(Clone, Debug)]
 pub struct Worker<D, R, P> {
     id: Uuid,
@@ -50,7 +51,6 @@ pub struct Worker<D, R, P> {
     pub cancellation_token: CancellationToken,
     active: Arc<AtomicBool>,
     processing: ProcessingQueue,
-    job_scheduling_timer: Timer,
     stalled_check_timer: Timer,
     extend_lock_timer: Timer,
     block_until: Arc<AtomicU64>,
@@ -94,20 +94,6 @@ impl<
 
         let jobs = jobs_in_progress.clone();
         let now = tokio::time::Instant::now();
-        let schedule_checking_interval = opts.schedule_checking_interval;
-        let job_scheduling_timer = Timer::new(schedule_checking_interval, move || {
-            let queue = queue_clone.clone();
-            async move {
-                let date_time = Utc::now();
-                let jobs = queue
-                    .promote_delayed_jobs(date_time, schedule_checking_interval as i64)
-                    .await
-                    .unwrap_or_default();
-                dbg!(jobs);
-            }
-        });
-        job_scheduling_timer.should_skip_first_tick();
-        job_scheduling_timer.run();
         let queue_clone = queue.clone();
 
         let opts_clone = opts.clone();
@@ -141,7 +127,6 @@ impl<
         });
 
         let worker = Self {
-            job_scheduling_timer,
             block_until: Arc::default(),
             stalled_check_timer,
             extend_lock_timer,
@@ -202,7 +187,6 @@ impl<
             return;
         }
         self.stalled_check_timer.stop();
-        self.job_scheduling_timer.stop();
         self.extend_lock_timer.stop();
         self.cancellation_token.cancel();
         self.active

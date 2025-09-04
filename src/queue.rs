@@ -4,12 +4,13 @@ use std::fmt::format;
 use std::marker::{self, PhantomData};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
+use std::time::Duration;
 use uuid::Uuid;
 
-use crate::error::{JobError, KioError};
+use crate::error::{JobError, KioError, QueueError};
 use crate::job::{Job, JobState};
-use crate::utils::{calculate_next_priority_score, serialize_into_pairs};
-use crate::worker::WorkerOpts;
+use crate::utils::{calculate_next_priority_score, promote_jobs, serialize_into_pairs};
+use crate::worker::{WorkerOpts, MIN_DELAY_MS_LIMIT};
 use crate::{get_job_metrics, Dt, JobOptions, KioResult};
 use async_backtrace::backtrace;
 use chrono::{TimeDelta, Utc};
@@ -164,6 +165,13 @@ impl<
         let mut conn = self.conn_pool.get().await?;
 
         let id = self.fetch_id().await?;
+        if delay > 0 && delay < MIN_DELAY_MS_LIMIT {
+            return Err(QueueError::DelayBelowAllowedLimit {
+                limit_ms: MIN_DELAY_MS_LIMIT,
+                current_ms: delay,
+            }
+            .into());
+        };
         //self.job_count.
         let prefix = &self.prefix;
         let job_key =
@@ -735,49 +743,20 @@ impl<
     pub async fn promote_delayed_jobs(
         &self,
         date_time: Dt,
-        interval_ms: i64,
+        mut interval_ms: i64,
     ) -> KioResult<Vec<String>> {
-        let [delayed_key, marker_key, events_stream_key, prioritized_key, priority_counter_key] = [
-            CollectionSuffix::Delayed,
-            CollectionSuffix::Marker,
-            CollectionSuffix::Events,
-            CollectionSuffix::Prioritized,
-            CollectionSuffix::PriorityCounter,
-        ]
-        .map(|collection| collection.to_collection_name(&self.prefix, &self.name));
         let (paused, target_state) = self.get_target_list().await;
-        let target_key =
-            CollectionSuffix::from(target_state).to_collection_name(&self.prefix, &self.name);
-        let mut conn = self.conn_pool.get().await?;
-        let stop = (date_time + TimeDelta::milliseconds(interval_ms)).timestamp_millis();
-        let start = date_time.timestamp_millis();
-        let jobs: Vec<String> = conn
-            .zrangebyscore_limit(&delayed_key, start, stop, 0, 1000)
-            .await?;
-        let mut pipeline = redis::pipe();
-        pipeline.atomic();
-        if !jobs.is_empty() {
-            for job_id in jobs.iter() {
-                let job_key = CollectionSuffix::Job(job_id.to_owned())
-                    .to_collection_name(&self.prefix, &self.name);
-                let priority: u64 = conn.hget(&job_key, "priority").await?;
-                if priority == 0 {
-                    pipeline.lpush(&target_key, job_id);
-                } else {
-                    let prior_counter: u64 = conn.incr(&priority_counter_key, 1).await?;
-                    let score = calculate_next_priority_score(priority, prior_counter);
-                    pipeline.zadd(&prioritized_key, score, job_id);
-                }
-
-                self.add_base_marker(paused, &mut pipeline);
-                let items = [("event", "wait"), ("job_id", job_id), ("prev", "delayed")];
-                pipeline.xadd(&events_stream_key, "*", &items);
-                pipeline.hset(job_key, "delay", 0);
-            }
-        }
-
-        pipeline.query_async::<()>(&mut conn).await?;
-        Ok(jobs)
+        let conn = self.conn_pool.get().await?;
+        promote_jobs(
+            &self.prefix,
+            &self.name,
+            date_time,
+            paused,
+            target_state,
+            interval_ms,
+            conn,
+        )
+        .await
     }
     fn add_base_marker(&self, is_paused: bool, pipeline: &mut Pipeline) {
         let marker_key = CollectionSuffix::Marker.to_collection_name(&self.prefix, &self.name);
