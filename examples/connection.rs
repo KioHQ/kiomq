@@ -15,7 +15,7 @@ async fn main() -> KioResult<()> {
     }
     let queue = Queue::<String, String, i32>::new(None, "trial", &config).await?;
 
-    let count = 9;
+    let count = 12;
     for i in 0..count {
         let job_opts = JobOptions {
             delay: 100 * i as u64,
@@ -27,9 +27,10 @@ async fn main() -> KioResult<()> {
             .await?;
     }
     let opts = WorkerOpts {
-        //concurrency: count,
+        concurrency: 1,
         ..Default::default()
     };
+    dbg!(&opts);
     let last_job_id = queue.current_jobs();
     let processor = |con: _, job: Job<_, _, _>| process_callback(con, job);
     let worker = Worker::new(&queue, processor, Some(opts))?;

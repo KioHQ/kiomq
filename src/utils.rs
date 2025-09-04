@@ -70,8 +70,11 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
 
 // ---- UTIL FUNCTIONS for the worker
 
+use futures_concurrency::future::future_group::Key;
+use tokio::sync::mpsc::UnboundedSender;
 #[async_backtrace::framed]
 pub(crate) async fn process_job<D, R, P>(
+    task_sender: UnboundedSender<Key>,
     job: Job<D, R, P>,
     token: String,
     jobs_in_progress: JobMap<D, R, P>,
@@ -108,6 +111,7 @@ where
                     .await?;
                 if let Some((_, (job, _, Some(handle)))) = jobs_in_progress.remove(job_id) {
                     //handle.abort(); // remove task from the queue
+
                     queue
                         .emit(
                             JobState::Completed,
@@ -118,6 +122,7 @@ where
                             },
                         )
                         .await;
+                    task_sender.send(handle);
                 }
             }
         }
@@ -158,7 +163,9 @@ where
                                 error: failed_reason,
                             },
                         )
-                        .await
+                        .await;
+
+                    task_sender.send(handle);
                 }
             }
         }
@@ -229,9 +236,14 @@ where
         queue,
         is_active,
     ) = params;
+
     let now = tokio::time::Instant::now();
+    use futures_concurrency::future::future_group::Key;
+    let (sender, mut reciver) = tokio::sync::mpsc::unbounded_channel::<Key>();
+
     while !cancellation_token.is_cancelled() {
-        while !cancellation_token.is_cancelled() && processing.lock().await.len() < opts.concurrency
+        while !cancellation_token.is_cancelled()
+            && processing.clone().lock().await.len() < opts.concurrency
         {
             let token_prefix = active_job_count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             let token = format!("{id}:{token_prefix}");
@@ -255,14 +267,15 @@ where
                 let queue = queue.clone();
                 let callback = processor.clone();
 
-                let task = async_backtrace::frame!(process_job(
+                let task = tokio::spawn(async_backtrace::frame!(process_job(
+                    sender.clone(),
                     job,
                     token,
                     jobs_in_progress.clone(),
                     queue,
                     callback
-                ));
-                let handle = processing.lock().await.spawn(task);
+                )));
+                let handle = processing.lock().await.insert(task);
                 // task handle
                 if let Some(mut re) = jobs_in_progress.get_mut(&id) {
                     let (_, _, stored_handle) = re.value_mut();
@@ -270,11 +283,15 @@ where
                 }
             }
         }
-        if processing.lock().await.len() == opts.concurrency {
-            // we wait for current jobs to complete before adding others;
-            while let Some(done) = processing.lock().await.join_next().await {
-                active_job_count.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-            }
+        //if processing.lock().await.len() == opts.concurrency {
+        //    // we wait for current jobs to complete before adding others;
+        //    while let Some(done) = processing.lock().await.join_next().await {
+        //    }
+        //}
+        if let Some(key) = reciver.recv().await {
+            processing.clone().lock().await.remove(key);
+            active_job_count.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            dbg!(key, processing.lock().await.len());
         }
     }
     if cancellation_token.is_cancelled() {
