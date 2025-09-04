@@ -15,6 +15,7 @@ use futures::{
     stream::FuturesUnordered,
 };
 use futures::{lock::Mutex, stream::TryReadyChunksError};
+use futures_concurrency::future::FutureGroup;
 use redis::aio::ConnectionLike;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::json;
@@ -30,14 +31,16 @@ use std::{
 use uuid::Uuid;
 mod worker_opts;
 use crate::error::WorkerError;
-use tokio::task::AbortHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 use tokio_util::sync::CancellationToken;
 mod worker_events;
-use tokio::task::JoinSet;
+use futures_concurrency::future::future_group::Key;
 pub(crate) use worker_events::EventEmitter;
 pub use worker_events::EventParameters;
-pub(crate) type JobMap<D, R, P> = Arc<DashMap<String, (Job<D, R, P>, String, Option<AbortHandle>)>>;
-pub(crate) type ProcessingQueue = Arc<Mutex<JoinSet<KioResult<()>>>>;
+pub(crate) type JobMap<D, R, P> = Arc<DashMap<String, (Job<D, R, P>, String, Option<Key>)>>;
+type Task = JoinHandle<KioResult<()>>;
+pub(crate) type ProcessingQueue = Arc<Mutex<FutureGroup<Task>>>;
+use tokio::sync::mpsc::UnboundedReceiver;
 pub use worker_opts::WorkerOpts;
 pub(crate) use worker_opts::MIN_DELAY_MS_LIMIT;
 #[derive(Clone, Debug)]
@@ -195,7 +198,7 @@ impl<
             self.jobs_in_progress.iter().for_each(|pair| {
                 let (job, _, current_handle) = pair.value();
                 if let Some(handle) = current_handle {
-                    handle.abort();
+                    //self.processing.lock()
                 }
             });
 

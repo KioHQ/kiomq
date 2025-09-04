@@ -6,8 +6,7 @@ pub(crate) const MIN_DELAY_MS_LIMIT: u64 = 100;
 pub struct WorkerOpts {
     /// Number of milliseconds between stallness checks. Default is 30000
     pub stalled_interval: u64,
-    /// Duration of the lock for the job in milliseconds. The lock represents that a worker is processing the job.
-    /// If the lock is lost, the job will be eventually be picked up by the stalled checker and
+    /// Durat up by the sdtalled checker and
     /// move back to wait so that another worker can process it again.
     /// @default 30000
     pub lock_duration: u64,
