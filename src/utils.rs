@@ -328,7 +328,9 @@ pub async fn promote_jobs(
     let jobs: Vec<String> = conn
         .zrangebyscore_limit(&delayed_key, start, stop, 0, 1000)
         .await?;
-    let removed: redis::Value = conn.zrem(&delayed_key, &jobs).await?;
+    if !jobs.is_empty() {
+        let removed: redis::Value = conn.zrem(&delayed_key, &jobs).await?;
+    }
     pipeline.atomic();
     if !jobs.is_empty() {
         for job_id in jobs.iter() {
