@@ -785,11 +785,12 @@ impl<
     }
 }
 
-#[derive(Debug)]
+#[derive(derive_more::Debug)]
 pub enum MoveToActiveResult<D, R, P> {
     Paused,
     RateLimit(u64),
     DelayUntil(u64),
+    #[debug("ProcessJob({0})", _0.id.clone().unwrap_or_default())]
     ProcessJob(Box<Job<D, R, P>>),
 }
 // ----- UTILITY FUNCTIONS -------------------
