@@ -7,7 +7,6 @@ use uuid::Uuid;
 #[tokio::main]
 #[framed]
 async fn main() -> KioResult<()> {
-    let now = tokio::time::Instant::now();
     let password = fetch_redis_pass();
     let mut config = Config::default();
     if let Some(cfg) = config.connection.as_mut() {
@@ -15,7 +14,7 @@ async fn main() -> KioResult<()> {
     }
     let queue = Queue::<String, String, i32>::new(None, "trial", &config).await?;
 
-    let count = 12;
+    let count = 10;
     for i in 0..count {
         let job_opts = JobOptions {
             delay: 100 * i as u64,
@@ -27,7 +26,7 @@ async fn main() -> KioResult<()> {
             .await?;
     }
     let opts = WorkerOpts {
-        concurrency: 1,
+        //concurrency: 1,
         ..Default::default()
     };
     dbg!(&opts);
@@ -48,7 +47,7 @@ async fn main() -> KioResult<()> {
                 let diff = (job.processed_on.unwrap_or_default() - job.ts).num_milliseconds();
                 let id = last_job_id.to_string();
                 if job.id.as_ref().unwrap().contains(&id) {
-                    println!("finished in {:#?}: delay_ms: {diff}", now.elapsed());
+                    //println!("finished in {:#?}: delay_ms: {diff}", now.elapsed());
                     cancel.cancel();
                 }
                 println!(

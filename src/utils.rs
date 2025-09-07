@@ -2,8 +2,10 @@ use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo};
 use crate::worker::{JobMap, ProcessingQueue, WorkerCallback};
 use crate::{utils, EventParameters, JobState, WorkerOpts};
 use chrono::Utc;
+use crossbeam_queue::SegQueue;
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Write;
+use tokio::task_local;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -12,7 +14,7 @@ use crate::MoveToActiveResult;
 use crate::{Job, Queue};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 // ---------------- REDIS FUNCTION here
 pub fn fetch_redis_pass() -> Option<String> {
@@ -70,11 +72,9 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
 
 // ---- UTIL FUNCTIONS for the worker
 
-use futures_concurrency::future::future_group::Key;
-use tokio::sync::mpsc::UnboundedSender;
 #[async_backtrace::framed]
 pub(crate) async fn process_job<D, R, P>(
-    task_sender: UnboundedSender<Key>,
+    task_sender: TaskToRemove,
     job: Job<D, R, P>,
     token: String,
     jobs_in_progress: JobMap<D, R, P>,
@@ -93,7 +93,6 @@ where
     let returned = BacktraceCatcher::catch(callback).await;
     match returned {
         Ok(result) => {
-            // move the job to failed state here;
             if let (Ok(result_str), Some(job_id)) =
                 (serde_json::to_string(&result), job_id.as_ref())
             {
@@ -122,7 +121,7 @@ where
                             },
                         )
                         .await;
-                    task_sender.send(handle);
+                    task_sender.push(handle);
                 }
             }
         }
@@ -165,7 +164,7 @@ where
                         )
                         .await;
 
-                    task_sender.send(handle);
+                    task_sender.push(handle)
                 }
             }
         }
@@ -189,13 +188,6 @@ where
         return Ok(None);
     }
 
-    let date_time = Utc::now();
-    let interval_ms = 10;
-    if let Ok(promoted_jobs) = queue.promote_delayed_jobs(date_time, interval_ms).await {
-        if !promoted_jobs.is_empty() {
-            dbg!(promoted_jobs);
-        }
-    }
     if let MoveToActiveResult::ProcessJob(job) = queue.move_to_active(token, opts).await? {
         return Ok(Some(*job));
     }
@@ -215,7 +207,8 @@ type MainLoopParams<D, R, P> = (
     Arc<Queue<D, R, P>>,
     Arc<AtomicBool>,
 );
-
+use tokio::task::Id;
+type TaskToRemove = Arc<SegQueue<Id>>;
 #[async_backtrace::framed]
 pub(crate) async fn main_loop<D, R, P>(params: MainLoopParams<D, R, P>) -> KioResult<()>
 where
@@ -237,18 +230,29 @@ where
         is_active,
     ) = params;
 
-    let now = tokio::time::Instant::now();
-    use futures_concurrency::future::future_group::Key;
-    let (sender, mut reciver) = tokio::sync::mpsc::unbounded_channel::<Key>();
+    let to_remove = TaskToRemove::default();
+    let task_queue = to_remove.clone();
+    let running = processing.clone();
+    let cancel_token = cancellation_token.clone();
+    let job_count = active_job_count.clone();
+    tokio::spawn(async move {
+        while !cancel_token.is_cancelled() {
+            while let Some(key) = task_queue.pop() {
+                if let Some((id, handle)) = running.remove(&key) {
+                    handle.abort();
+                }
+                //dbg!(key, job_count);
+            }
+            tokio::task::yield_now().await;
+        }
+    });
 
+    let now = Instant::now();
     while !cancellation_token.is_cancelled() {
-        while !cancellation_token.is_cancelled()
-            && processing.clone().lock().await.len() < opts.concurrency
-        {
+        while !cancellation_token.is_cancelled() && processing.len() < opts.concurrency {
             let token_prefix = active_job_count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             let token = format!("{id}:{token_prefix}");
             let block_delay = block_until.load(std::sync::atomic::Ordering::Acquire);
-
             if let Some(job) = get_next_job(
                 queue.as_ref(),
                 &token,
@@ -268,31 +272,22 @@ where
                 let callback = processor.clone();
 
                 let task = tokio::spawn(async_backtrace::frame!(process_job(
-                    sender.clone(),
+                    to_remove.clone(),
                     job,
                     token,
                     jobs_in_progress.clone(),
                     queue,
                     callback
                 )));
-                let handle = processing.lock().await.insert(task);
-                // task handle
+                let task_id = task.id();
+                let handle = processing.insert(task_id, task);
                 if let Some(mut re) = jobs_in_progress.get_mut(&id) {
                     let (_, _, stored_handle) = re.value_mut();
-                    stored_handle.replace(handle);
+                    stored_handle.replace(task_id);
                 }
             }
         }
-        //if processing.lock().await.len() == opts.concurrency {
-        //    // we wait for current jobs to complete before adding others;
-        //    while let Some(done) = processing.lock().await.join_next().await {
-        //    }
-        //}
-        if let Some(key) = reciver.recv().await {
-            processing.clone().lock().await.remove(key);
-            active_job_count.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-            dbg!(key, processing.lock().await.len());
-        }
+        tokio::task::yield_now().await;
     }
     if cancellation_token.is_cancelled() {
         is_active.compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed);
@@ -302,7 +297,7 @@ where
 use crate::Dt;
 use chrono::TimeDelta;
 use redis::AsyncCommands;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub async fn promote_jobs(
     prefix: &str,
