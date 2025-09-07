@@ -10,12 +10,7 @@ use chrono::Utc;
 use dashmap::DashMap;
 use deadpool_redis::Pool;
 use derive_more::Debug;
-use futures::{
-    future::{BoxFuture, Future, FutureExt, TryFutureExt},
-    stream::FuturesUnordered,
-};
-use futures::{lock::Mutex, stream::TryReadyChunksError};
-use futures_concurrency::future::FutureGroup;
+use futures::future::{BoxFuture, Future, FutureExt, TryFutureExt};
 use redis::aio::ConnectionLike;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::json;
@@ -34,13 +29,12 @@ use crate::error::WorkerError;
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio_util::sync::CancellationToken;
 mod worker_events;
-use futures_concurrency::future::future_group::Key;
 pub(crate) use worker_events::EventEmitter;
 pub use worker_events::EventParameters;
-pub(crate) type JobMap<D, R, P> = Arc<DashMap<String, (Job<D, R, P>, String, Option<Key>)>>;
+pub(crate) type JobMap<D, R, P> = Arc<DashMap<String, (Job<D, R, P>, String, Option<Id>)>>;
 type Task = JoinHandle<KioResult<()>>;
-pub(crate) type ProcessingQueue = Arc<Mutex<FutureGroup<Task>>>;
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::task::Id;
+pub(crate) type ProcessingQueue = Arc<DashMap<Id, Task>>;
 pub use worker_opts::WorkerOpts;
 pub(crate) use worker_opts::MIN_DELAY_MS_LIMIT;
 #[derive(Clone, Debug)]
@@ -55,6 +49,7 @@ pub struct Worker<D, R, P> {
     active: Arc<AtomicBool>,
     processing: ProcessingQueue,
     stalled_check_timer: Timer,
+    job_scheduling_timer: Timer,
     extend_lock_timer: Timer,
     block_until: Arc<AtomicU64>,
     mini_block_timout: u64,
@@ -122,14 +117,30 @@ impl<
             let opts = opts_clone.clone();
             async move {
                 if let Ok((failed, stalled)) = queue.make_stalled_jobs_wait(&opts).await {
-
                     // do something with results
                     //dbg!(failed, stalled);
                 }
             }
         });
+        let queue_clone = queue.clone();
+        let job_scheduling_timer = Timer::new(MIN_DELAY_MS_LIMIT, move || {
+            let queue = queue_clone.clone();
+            async move {
+                let date_time = Utc::now();
+                let interval_ms = (MIN_DELAY_MS_LIMIT) as i64;
+                if let Ok(promoted_jobs) = queue.promote_delayed_jobs(date_time, interval_ms).await
+                {
+                    if !promoted_jobs.is_empty() {
+                        //dbg!(promoted_jobs);
+                    }
+                }
+            }
+        });
+        job_scheduling_timer.should_skip_first_tick();
+        job_scheduling_timer.run();
 
         let worker = Self {
+            job_scheduling_timer,
             block_until: Arc::default(),
             stalled_check_timer,
             extend_lock_timer,
@@ -189,9 +200,11 @@ impl<
         if !self.is_running() {
             return;
         }
+        self.job_scheduling_timer.stop();
         self.stalled_check_timer.stop();
         self.extend_lock_timer.stop();
         self.cancellation_token.cancel();
+
         self.active
             .store(false, std::sync::atomic::Ordering::Release);
         if stop_active_jobs {
