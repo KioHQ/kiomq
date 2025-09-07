@@ -66,6 +66,7 @@ impl From<JobState> for CollectionSuffix {
             JobState::Completed => CollectionSuffix::Completed,
             JobState::Resumed => CollectionSuffix::Active,
             JobState::Failed => CollectionSuffix::Failed,
+            JobState::Delayed => CollectionSuffix::Delayed,
         }
     }
 }
@@ -194,12 +195,18 @@ impl<
                 CollectionSuffix::Delayed.to_collection_name(&self.prefix, &self.name);
             let expected_active_time = job.ts + TimeDelta::milliseconds(delay as i64);
             pipeline.zadd(delayed_key, id, expected_active_time.timestamp_millis());
+            job.state = JobState::Delayed;
         }
         job.id = Some(id.to_string());
         let fields = serialize_into_pairs(&job);
         pipeline.hset_multiple(&job_key, &fields);
+        let event = if to_delay {
+            JobState::Delayed
+        } else {
+            JobState::Wait
+        };
         let items = [
-            ("event", CollectionSuffix::Wait.to_string().to_lowercase()),
+            ("event", event.to_string().to_lowercase()),
             ("job_id", id.to_string()),
             ("name", name.to_string()),
         ];
