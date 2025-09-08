@@ -46,8 +46,28 @@ pub struct JobOptions {
     pub priority: u64,
     pub delay: u64,
     pub id: Option<u64>,
+    /// total number of attempts to try the job until it completes.
+    pub remove_on_complete: RemoveOnCompletionOrFailure,
+    pub remove_on_fail: RemoveOnCompletionOrFailure,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, Hash, PartialEq)]
+#[serde(untagged)]
+pub enum RemoveOnCompletionOrFailure {
+    Bool(bool), // if true, remove the job when it completes
+    Int(i64),   //  number is passed, its specifies the maximum amount of jobs to keeps
+    Opts(KeepJobs),
+}
+impl Default for RemoveOnCompletionOrFailure {
+    fn default() -> Self {
+        Self::Bool(false)
+    }
+}
+#[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, Hash, PartialEq)]
+pub struct KeepJobs {
+    pub age: Option<i64>,   // Maximum age in seconds for jobs to kept;
+    pub count: Option<i64>, // Maximum Number of jobs to keep
+}
 use chrono::serde::{ts_microseconds, ts_microseconds_option};
 #[derive(Debug, Serialize, Deserialize, Default, Hash, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
