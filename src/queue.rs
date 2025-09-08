@@ -10,11 +10,10 @@ use crate::events::QueueStreamEvent;
 use crate::job::{Job, JobState};
 use crate::utils::{calculate_next_priority_score, promote_jobs, serialize_into_pairs};
 use crate::worker::{WorkerOpts, MIN_DELAY_MS_LIMIT};
-use crate::{get_job_metrics, Dt, JobOptions, KioResult};
+use crate::{get_job_metrics, Dt, JobOptions, KeepJobs, KioResult, RemoveOnCompletionOrFailure};
 use async_backtrace::backtrace;
 use chrono::{TimeDelta, Utc};
 use deadpool_redis::{Config, Pool, Runtime};
-use futures::stream::FuturesUnordered;
 use serde::de::{DeserializeOwned, Error};
 use serde::{Deserialize, Serialize};
 
@@ -188,6 +187,8 @@ impl<
             priority,
             delay,
             id,
+            remove_on_fail,
+            remove_on_complete,
         } = opts;
         let queue_name = format!("{}:{}", self.prefix, self.name);
         let mut job = Job::<D, R, P>::new(name, Some(data), id, Some(&queue_name));
@@ -821,6 +822,45 @@ impl<
         let _: () = conn.del(&priority_counter_key).await?;
 
         Ok(None)
+    }
+
+    pub async fn clean_up_job(
+        &self,
+        job_id: &str,
+        remove_options: RemoveOnCompletionOrFailure,
+    ) -> KioResult<()> {
+        let id = job_id;
+        let id_num: i64 = id.parse()?;
+        let job_id_key =
+            CollectionSuffix::Job(id.to_owned()).to_collection_name(&self.prefix, &self.name);
+        let mut conn = self.conn_pool.get().await?;
+        let mut pipeline = redis::pipe();
+        match remove_options {
+            RemoveOnCompletionOrFailure::Bool(remove_immediately) => {
+                if remove_immediately {
+                    pipeline.del(&job_id_key);
+                }
+            }
+            RemoveOnCompletionOrFailure::Int(max_to_keep) => {
+                if max_to_keep.is_positive() && id_num > max_to_keep {
+                    pipeline.del(&job_id_key);
+                }
+            }
+            RemoveOnCompletionOrFailure::Opts(KeepJobs { age, count }) => {
+                if let Some(expire_in_secs) = age {
+                    pipeline.expire(&job_id_key, expire_in_secs);
+                }
+                if let Some(max_to_keep) = count {
+                    if max_to_keep.is_positive() && id_num > max_to_keep {
+                        pipeline.del(&job_id_key);
+                    }
+                }
+            }
+        }
+        if !pipeline.is_empty() {
+            let done: redis::Value = pipeline.query_async(&mut conn).await?;
+        }
+        Ok(())
     }
 }
 
