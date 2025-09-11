@@ -93,7 +93,7 @@ impl JobMetrics {
         self.completed == self.last_id && self.active == 0
     }
 }
-use crate::worker::{EventEmitter, EventParameters};
+use crate::{EventEmitter, EventParameters};
 #[derive(Debug, Clone)]
 pub struct Queue<D, R, P> {
     pub prefix: String,
