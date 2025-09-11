@@ -206,11 +206,14 @@ impl<
         } else {
             JobState::Wait
         };
-        let items = [
+        let mut items = vec![
             ("event", event.to_string().to_lowercase()),
             ("job_id", id.to_string()),
             ("name", name.to_string()),
         ];
+        if to_delay {
+            items.push(("delay", delay.to_string()));
+        }
         pipeline.xadd(events_keys, "*", &items);
         pipeline.query_async::<()>(&mut conn).await?;
 
