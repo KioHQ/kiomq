@@ -67,6 +67,7 @@ impl From<JobState> for CollectionSuffix {
             JobState::Resumed => CollectionSuffix::Active,
             JobState::Failed => CollectionSuffix::Failed,
             JobState::Delayed => CollectionSuffix::Delayed,
+            JobState::Progress => CollectionSuffix::Prefix,
         }
     }
 }

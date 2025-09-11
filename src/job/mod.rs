@@ -30,6 +30,7 @@ pub enum JobState {
     Completed,
     Failed,
     Delayed,
+    Progress,
 }
 impl ToRedisArgs for JobState {
     fn write_redis_args<W>(&self, out: &mut W)
@@ -130,9 +131,18 @@ impl<D, R, P> Job<D, R, P> {
         if let (Some(queue_name), Some(id)) = (&self.queue_name, &self.id) {
             let job_key = format!("{queue_name}:{id}");
             let mut pipeline = redis::pipe();
-            let job_str = serde_json::to_string_pretty(&value)?;
-
-            let result: () = conn.hset(job_key, "progress", job_str).await?;
+            pipeline.atomic();
+            let progress_str = serde_json::to_string_pretty(&value)?;
+            let events_stream_key = format!("{queue_name}:events");
+            pipeline.hset(job_key, "progress", &progress_str);
+            let items = [
+                ("event", JobState::Progress.to_string().to_lowercase()),
+                ("job_id", id.to_string()),
+                ("data", progress_str),
+                ("name", self.name.to_string()),
+            ];
+            pipeline.xadd(&events_stream_key, "*", &items);
+            let _: redis::Value = pipeline.query_async(conn).await?;
             self.progress = Some(value);
         }
         Ok(())
