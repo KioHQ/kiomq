@@ -82,9 +82,9 @@ pub(crate) async fn process_job<D, R, P>(
     callback: Arc<WorkerCallback<D, R, P>>,
 ) -> KioResult<()>
 where
-    R: Serialize + Send + Clone + DeserializeOwned,
+    R: Serialize + Send + Clone + DeserializeOwned + 'static,
     D: Clone + Serialize + DeserializeOwned,
-    P: Clone + Serialize + DeserializeOwned,
+    P: Clone + Serialize + DeserializeOwned + Send + 'static,
 {
     use crate::JobState;
     let job_id = job.id.clone();
@@ -180,8 +180,8 @@ pub(crate) async fn get_next_job<D, R, P>(
 ) -> KioResult<Option<Job<D, R, P>>>
 where
     D: DeserializeOwned + Clone + Serialize,
-    R: DeserializeOwned + Clone + Serialize,
-    P: DeserializeOwned + Clone + Serialize,
+    R: DeserializeOwned + Clone + Serialize + Send + 'static,
+    P: DeserializeOwned + Clone + Serialize + Send + 'static,
 {
     // handle pausing or closing;
     if closed {

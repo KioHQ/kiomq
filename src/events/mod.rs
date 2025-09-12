@@ -34,3 +34,6 @@ use std::sync::Arc;
 pub type Events = JobState;
 use typed_emitter::TypedEmitter;
 pub(crate) type EventEmitter<D, R, P> = Arc<TypedEmitter<JobState, EventParameters<D, R, P>>>;
+mod redis_events;
+pub use redis_events::QueueStreamEvent;
+
