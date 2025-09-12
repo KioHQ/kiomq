@@ -5,9 +5,11 @@ use std::marker::{self, PhantomData};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::error::{JobError, KioError, QueueError};
+use crate::events::QueueStreamEvent;
 use crate::job::{Job, JobState};
 use crate::utils::{calculate_next_priority_score, promote_jobs, serialize_into_pairs};
 use crate::worker::{WorkerOpts, MIN_DELAY_MS_LIMIT};
@@ -109,8 +111,8 @@ pub struct Queue<D, R, P> {
 
 impl<
         D: Clone + Serialize + DeserializeOwned,
-        R: Clone + DeserializeOwned + Serialize,
-        P: Clone + DeserializeOwned + Serialize,
+        R: Clone + DeserializeOwned + Serialize + Send + 'static,
+        P: Clone + DeserializeOwned + Serialize + Send + 'static,
     > Queue<D, R, P>
 {
     pub async fn get_connection(&self) -> KioResult<deadpool_redis::Connection> {
@@ -118,6 +120,7 @@ impl<
         Ok(conn)
     }
     pub async fn new(prefix: Option<&str>, name: &str, cfg: &Config) -> KioResult<Self> {
+        use redis::streams::{StreamReadOptions, StreamReadReply};
         use typed_emitter::TypedEmitter;
         let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
         let prefix = prefix.unwrap_or("kio").to_lowercase();
@@ -127,7 +130,26 @@ impl<
         // if queue exists in redis, restore its state;
         let mut conn = pool.get().await?;
         let is_paused = conn.hexists(&meta_key, JobState::Paused).await?;
+        let mut connection = pool.get().await?;
+        let stream_key = CollectionSuffix::Events.to_collection_name(&prefix, &name);
+        let task: JoinHandle<KioResult<()>> = tokio::spawn(async move {
+            let block_interval = 1000000; // 100 seconds
+            loop {
+                let options = StreamReadOptions::default().block(block_interval);
+                let reply: StreamReadReply = connection
+                    .xread_options(&[&stream_key], &["$"], &options)
+                    .await?;
+                let events: Vec<QueueStreamEvent<R, P>> =
+                    QueueStreamEvent::from_stream_read_reply(&stream_key, reply);
+                if !events.is_empty() {
+                    dbg!(&events);
+                }
 
+                tokio::task::yield_now().await;
+            }
+
+            Ok(())
+        });
         //
         Ok(Self {
             job_count: Arc::default(),
