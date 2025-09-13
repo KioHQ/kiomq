@@ -1,6 +1,20 @@
 use crate::{Job, JobState};
+use derive_more::Debug;
+use redis::AsyncCommands;
 #[derive(Clone, Debug)]
 pub enum EventParameters<D, R, P> {
+    Added {
+        job_id: String,
+        name: Option<String>,
+    },
+    WaitingToRun {
+        job_id: String,
+        prev_state: Option<JobState>,
+    },
+    Delayed {
+        job_id: String,
+        delay: u64,
+    },
     Active {
         job: Job<D, R, P>,
         prev_state: Option<JobState>,
@@ -10,30 +24,85 @@ pub enum EventParameters<D, R, P> {
         prev_state: Option<JobState>,
         result: R,
     },
-    Error(String),
-    JobIdStatePair {
-        job_id: String,
-        prev: JobState,
-    },
     Void, // drained, closed,
     Progress {
-        job: Job<D, R, P>,
-        progress: P,
+        job_id: String,
+        data: P,
     },
     Stalled {
         job_id: String,
         prev_state: JobState,
     },
     Failed {
-        job: Job<D, R, P>,
-        error: String,
+        reason: String,
+        job_id: String,
         prev_state: JobState,
     },
 }
 use std::sync::Arc;
 pub type Events = JobState;
+use serde::de::DeserializeOwned;
 use typed_emitter::TypedEmitter;
 pub(crate) type EventEmitter<D, R, P> = Arc<TypedEmitter<JobState, EventParameters<D, R, P>>>;
 mod redis_events;
 pub use redis_events::QueueStreamEvent;
 
+use crate::KioResult;
+impl<D: DeserializeOwned, R: DeserializeOwned, P: DeserializeOwned> EventParameters<D, R, P> {
+    pub async fn from_queue_event(
+        queue_name: &str,
+        event: QueueStreamEvent<R, P>,
+        mut conn: &mut deadpool_redis::Connection,
+    ) -> KioResult<Self> {
+        let job_state = event.event;
+        let job_id = &event.job_id;
+        let job_id_key = format!("{queue_name}{job_id}");
+        let fetch_job = conn.hgetall::<_, Job<D, R, P>>(&job_id_key);
+        let parameter = match job_state {
+            JobState::Wait if event.prev.is_none() => Self::Added {
+                job_id: event.job_id,
+                name: event.name,
+            },
+            JobState::Wait => Self::WaitingToRun {
+                job_id: event.job_id,
+                prev_state: event.prev,
+            },
+            JobState::Stalled => Self::Stalled {
+                job_id: event.job_id,
+                prev_state: event.prev.unwrap_or_default(),
+            },
+            JobState::Active => {
+                let job = fetch_job.await?;
+                Self::Active {
+                    job,
+                    prev_state: event.prev,
+                }
+            }
+            JobState::Paused => Self::Void,
+            JobState::Resumed => Self::Void,
+            JobState::Completed => {
+                let job = fetch_job.await?;
+                Self::Completed {
+                    job,
+                    prev_state: event.prev,
+                    result: event.retuned_value.expect("there is no result"),
+                }
+            }
+            JobState::Failed => Self::Failed {
+                reason: event.failed_reason.unwrap_or_default(),
+                job_id: event.job_id,
+                prev_state: event.prev.unwrap_or_default(),
+            },
+            JobState::Delayed => Self::Delayed {
+                job_id: event.job_id,
+                delay: event.delay.unwrap_or_default(),
+            },
+            JobState::Progress => Self::Progress {
+                job_id: event.job_id,
+                data: event.progress_data.expect("expecting a value"),
+            },
+        };
+
+        Ok(parameter)
+    }
+}

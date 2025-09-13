@@ -1,7 +1,4 @@
 use futures::future::Future;
-use std::any::Any;
-use std::fmt::format;
-use std::marker::{self, PhantomData};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,7 +17,6 @@ use deadpool_redis::{Config, Pool, Runtime};
 use futures::stream::FuturesUnordered;
 use serde::de::{DeserializeOwned, Error};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 use redis::{
     self, AsyncCommands, JsonAsyncCommands, LposOptions, Pipeline, RedisResult, ToRedisArgs, Value,
@@ -104,15 +100,15 @@ pub struct Queue<D, R, P> {
     pub job_count: Arc<AtomicU64>,
     #[debug(skip)]
     emitter: EventEmitter<D, R, P>,
+    pub stream_listener: Arc<JoinHandle<KioResult<()>>>,
     #[debug(skip)]
     pub conn_pool: Arc<Pool>,
-    _d: PhantomData<(D, R, P)>,
 }
 
 impl<
-        D: Clone + Serialize + DeserializeOwned,
-        R: Clone + DeserializeOwned + Serialize + Send + 'static,
-        P: Clone + DeserializeOwned + Serialize + Send + 'static,
+        D: Clone + Serialize + DeserializeOwned + Send + 'static,
+        R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
+        P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
     > Queue<D, R, P>
 {
     pub async fn get_connection(&self) -> KioResult<deadpool_redis::Connection> {
@@ -127,11 +123,12 @@ impl<
         let meta_key = CollectionSuffix::Meta.to_collection_name(&prefix, name);
         let name = name.to_lowercase();
         let emitter = Arc::new(TypedEmitter::new());
-        // if queue exists in redis, restore its state;
         let mut conn = pool.get().await?;
         let is_paused = conn.hexists(&meta_key, JobState::Paused).await?;
         let mut connection = pool.get().await?;
         let stream_key = CollectionSuffix::Events.to_collection_name(&prefix, &name);
+        let queue_name = CollectionSuffix::Prefix.to_collection_name(&prefix, &name);
+        let emitter_clone = emitter.clone();
         let task: JoinHandle<KioResult<()>> = tokio::spawn(async move {
             let block_interval = 1000000; // 100 seconds
             loop {
@@ -142,23 +139,32 @@ impl<
                 let events: Vec<QueueStreamEvent<R, P>> =
                     QueueStreamEvent::from_stream_read_reply(&stream_key, reply);
                 if !events.is_empty() {
-                    dbg!(&events);
+                    for event in events.into_iter() {
+                        let state = event.event;
+                        let param = EventParameters::<D, R, P>::from_queue_event(
+                            &queue_name,
+                            event,
+                            &mut connection,
+                        )
+                        .await?;
+                        emitter_clone.emit(state, param).await;
+                    }
                 }
-
                 tokio::task::yield_now().await;
             }
 
             Ok(())
         });
+        let stream_listener = Arc::new(task);
         //
         Ok(Self {
+            stream_listener,
             job_count: Arc::default(),
             emitter,
             prefix,
             name,
             paused: Arc::new(AtomicBool::new(is_paused)),
             conn_pool: Arc::new(pool),
-            _d: PhantomData,
         })
     }
     pub async fn is_paused(&self) -> KioResult<bool> {
@@ -329,9 +335,9 @@ impl<
             items.push((key, data.to_owned()));
             pipeline.hset(&job_key, "finishedOn", ts);
         }
-        pipeline.xadd(events_key, "*", &items);
         // check of retries_exhausion here;
 
+        pipeline.xadd(events_key, "*", &items);
         let _: redis::Value = pipeline.query_async(&mut conn).await?;
         Ok(())
     }
@@ -382,8 +388,8 @@ impl<
             _ => pipeline.hdel(meta_key, CollectionSuffix::Paused),
         };
         let items = [("event", state)];
-        pipeline.xadd(events_key, "*", &items);
 
+        pipeline.xadd(events_key, "*", &items);
         let _: redis::Value = pipeline.query_async(&mut conn).await?;
         self.paused
             .store(pause, std::sync::atomic::Ordering::Relaxed);

@@ -82,9 +82,9 @@ pub(crate) async fn process_job<D, R, P>(
     callback: Arc<WorkerCallback<D, R, P>>,
 ) -> KioResult<()>
 where
-    R: Serialize + Send + Clone + DeserializeOwned + 'static,
-    D: Clone + Serialize + DeserializeOwned,
-    P: Clone + Serialize + DeserializeOwned + Send + 'static,
+    R: Serialize + Send + Clone + DeserializeOwned + 'static + Sync,
+    D: Clone + Serialize + DeserializeOwned + Send + 'static,
+    P: Clone + Serialize + DeserializeOwned + Send + 'static + Sync,
 {
     use crate::JobState;
     let job_id = job.id.clone();
@@ -111,16 +111,6 @@ where
                 if let Some((_, (job, _, Some(handle)))) = jobs_in_progress.remove(job_id) {
                     //handle.abort(); // remove task from the queue
 
-                    queue
-                        .emit(
-                            JobState::Completed,
-                            EventParameters::Completed {
-                                prev_state: Some(job.state),
-                                job: completed,
-                                result,
-                            },
-                        )
-                        .await;
                     task_sender.push(handle);
                 }
             }
@@ -153,17 +143,6 @@ where
                     )
                     .await?;
                 if let Some((_, (job, _, Some(handle)))) = jobs_in_progress.remove(job_id) {
-                    queue
-                        .emit(
-                            JobState::Failed,
-                            EventParameters::Failed {
-                                prev_state: job.state,
-                                job: failed_job,
-                                error: failed_reason,
-                            },
-                        )
-                        .await;
-
                     task_sender.push(handle)
                 }
             }
@@ -179,9 +158,9 @@ pub(crate) async fn get_next_job<D, R, P>(
     opts: &WorkerOpts,
 ) -> KioResult<Option<Job<D, R, P>>>
 where
-    D: DeserializeOwned + Clone + Serialize,
-    R: DeserializeOwned + Clone + Serialize + Send + 'static,
-    P: DeserializeOwned + Clone + Serialize + Send + 'static,
+    D: DeserializeOwned + Clone + Serialize + Send + 'static + Sync,
+    R: DeserializeOwned + Clone + Serialize + Send + 'static + Sync,
+    P: DeserializeOwned + Clone + Serialize + Send + 'static + Sync,
 {
     // handle pausing or closing;
     if closed {
