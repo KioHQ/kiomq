@@ -3,22 +3,23 @@ use serde::de::{value, DeserializeOwned};
 use crate::{JobState, KioError, KioResult};
 use derive_more::Debug;
 use std::str::FromStr;
-#[derive(Debug)]
+#[derive(Debug, Hash, Clone)]
 pub struct QueueStreamEvent<R, P> {
-    id: String,
-    event: JobState,
-    delay: Option<u64>,
-    prev: Option<JobState>,
-    job_id: String,
-    #[debug(skip)]
-    retuned_value: Option<R>,
-    #[debug(skip)]
-    progress_data: Option<P>,
-    name: Option<String>,
+    pub id: String,
+    pub event: JobState,
+    pub delay: Option<u64>,
+    pub prev: Option<JobState>,
+    pub job_id: String,
+    pub retuned_value: Option<R>,
+    pub failed_reason: Option<String>,
+    pub progress_data: Option<P>,
+    pub name: Option<String>,
 }
+
 impl<R, P> Default for QueueStreamEvent<R, P> {
     fn default() -> Self {
         Self {
+            failed_reason: None,
             id: Default::default(),
             delay: None,
             event: Default::default(),
@@ -60,6 +61,7 @@ impl<R: DeserializeOwned, P: DeserializeOwned> TryFrom<&StreamId> for QueueStrea
                 "data" => event.progress_data = serde_json::from_str(&val_str)?,
 
                 "returnedvalue" => event.retuned_value = serde_json::from_str(&val_str)?,
+                "failedreason" => event.failed_reason = Some(val_str),
 
                 "event" => {
                     let parsed = JobState::from_str(&val_str).map_err(std::io::Error::other)?;
@@ -69,7 +71,6 @@ impl<R: DeserializeOwned, P: DeserializeOwned> TryFrom<&StreamId> for QueueStrea
                 _ => { /* Ignore unknown fields if your hash might contain others */ }
             }
         }
-
         Ok(event)
     }
 }
