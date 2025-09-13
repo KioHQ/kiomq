@@ -146,7 +146,6 @@ where
                     )
                     .await?;
                 if let Some((_, (job, _, Some(handle)))) = jobs_in_progress.remove(job_id) {
-
                     queue.clean_up_job(job_id, job.opts.remove_on_fail).await?;
                     task_sender.push(handle)
                 }
