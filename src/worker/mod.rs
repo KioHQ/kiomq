@@ -7,7 +7,6 @@ use crate::{
 
 use crate::utils::{get_next_job, main_loop};
 use chrono::Utc;
-use dashmap::DashMap;
 use deadpool_redis::Pool;
 use derive_more::Debug;
 use futures::future::{BoxFuture, Future, FutureExt, TryFutureExt};
@@ -26,14 +25,16 @@ use std::{
 use uuid::Uuid;
 mod worker_opts;
 use crate::error::WorkerError;
+use crossbeam_skiplist::SkipMap;
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio_util::sync::CancellationToken;
 mod worker_events;
 use crate::events::{EventEmitter, EventParameters};
-pub(crate) type JobMap<D, R, P> = Arc<DashMap<String, (Job<D, R, P>, String, Option<Id>)>>;
+type JobMeta<D, R, P> = (Job<D, R, P>, String, AtomicU64);
+pub(crate) type JobMap<D, R, P> = Arc<SkipMap<String, JobMeta<D, R, P>>>;
 type Task = JoinHandle<KioResult<()>>;
 use tokio::task::Id;
-pub(crate) type ProcessingQueue = Arc<DashMap<Id, Task>>;
+pub(crate) type ProcessingQueue = Arc<SkipMap<u64, Task>>;
 pub use worker_opts::WorkerOpts;
 pub(crate) use worker_opts::MIN_DELAY_MS_LIMIT;
 #[derive(Clone, Debug)]
@@ -80,7 +81,7 @@ impl<
     {
         let queue = Arc::new(queue.clone());
         let pool = queue.conn_pool.clone();
-        let jobs_in_progress: JobMap<_, _, _> = Arc::new(DashMap::new());
+        let jobs_in_progress: JobMap<_, _, _> = Arc::new(SkipMap::new());
         let callback = move |conn: Connection, job: Job<D, R, P>| {
             let fut = async_backtrace::frame!(processor(conn, job));
             fut.map_err(|e| e.into()).boxed()
@@ -101,6 +102,7 @@ impl<
             async move {
                 for pair in jobs.iter() {
                     let (job, token, handle) = pair.value();
+
                     if let Some(id) = job.id.as_ref() {
                         let done = queue.extend_lock(id, opts.lock_duration, token).await;
                     }
@@ -208,10 +210,10 @@ impl<
             .store(false, std::sync::atomic::Ordering::Release);
         if stop_active_jobs {
             self.jobs_in_progress.iter().for_each(|pair| {
-                let (job, _, current_handle) = pair.value();
-                if let Some(handle) = current_handle {
-                    //self.processing.lock()
-                }
+                //let (job, _, current_handle) = pair.value();
+                //if let Some(handle) = current_handle {
+                //    //self.processing.lock()
+                //}
             });
 
             self.jobs_in_progress.clear();

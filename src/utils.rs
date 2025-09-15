@@ -5,6 +5,7 @@ use chrono::Utc;
 use crossbeam_queue::SegQueue;
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Write;
+use std::num::NonZero;
 use tokio::task_local;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -120,13 +121,14 @@ where
                         None,
                     )
                     .await?;
-                if let Some((_, (job, _, Some(handle)))) = jobs_in_progress.remove(job_id) {
+                if let Some(entry) = jobs_in_progress.remove(job_id) {
                     //handle.abort(); // remove task from the queue
-
+                    let (job, _, handle) = entry.value();
                     queue
                         .clean_up_job(job_id, job.opts.remove_on_complete)
                         .await?;
-                    task_sender.push(handle);
+                    let handle_id = handle.load(std::sync::atomic::Ordering::Acquire);
+                    task_sender.push(handle_id);
                 }
             }
         }
@@ -157,9 +159,11 @@ where
                         frames,
                     )
                     .await?;
-                if let Some((_, (job, _, Some(handle)))) = jobs_in_progress.remove(job_id) {
+                if let Some(entry) = jobs_in_progress.remove(job_id) {
+                    let (job, _, handle) = entry.value();
                     queue.clean_up_job(job_id, job.opts.remove_on_fail).await?;
-                    task_sender.push(handle)
+                    let handle_id = handle.load(std::sync::atomic::Ordering::Acquire);
+                    task_sender.push(handle_id)
                 }
             }
         }
@@ -203,7 +207,7 @@ type MainLoopParams<D, R, P> = (
     Arc<AtomicBool>,
 );
 use tokio::task::Id;
-type TaskToRemove = Arc<SegQueue<Id>>;
+type TaskToRemove = Arc<SegQueue<u64>>;
 #[async_backtrace::framed]
 pub(crate) async fn main_loop<D, R, P>(params: MainLoopParams<D, R, P>) -> KioResult<()>
 where
@@ -233,7 +237,9 @@ where
     tokio::spawn(async move {
         while !cancel_token.is_cancelled() {
             while let Some(key) = task_queue.pop() {
-                if let Some((id, handle)) = running.remove(&key) {
+                if let Some(entry) = running.remove(&key) {
+                    let handle = entry.value();
+                    let id = entry.key();
                     handle.abort();
                 }
                 //dbg!(key, job_count);
@@ -260,7 +266,7 @@ where
                 let id = job.id.clone().unwrap();
                 jobs_in_progress.insert(
                     job.id.clone().unwrap_or_default(),
-                    (job.clone(), token.clone(), None),
+                    (job.clone(), token.clone(), AtomicU64::default()),
                 );
 
                 let queue = queue.clone();
@@ -274,11 +280,12 @@ where
                     queue,
                     callback
                 )));
-                let task_id = task.id();
+                let task_id: u64 = task.id().to_string().parse()?;
                 let handle = processing.insert(task_id, task);
-                if let Some(mut re) = jobs_in_progress.get_mut(&id) {
-                    let (_, _, stored_handle) = re.value_mut();
-                    stored_handle.replace(task_id);
+                if let Some(mut re) = jobs_in_progress.get(&id) {
+                    let (_, _, stored_handle) = re.value();
+
+                    stored_handle.swap(task_id, Ordering::AcqRel);
                 }
             }
         }

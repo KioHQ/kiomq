@@ -1,4 +1,4 @@
-use dashmap::DashMap;
+use crossbeam_skiplist::SkipMap;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::sync::Arc;
@@ -20,7 +20,7 @@ pub enum BackOffJobOptions {
 
 #[derive(Clone, Default)]
 pub struct BackOff {
-    pub builtin_strategies: DashMap<String, Arc<BackoffFn>>,
+    pub builtin_strategies: Arc<SkipMap<String, Arc<BackoffFn>>>,
 }
 
 impl BackOff {
@@ -87,9 +87,10 @@ impl BackOff {
     ) -> Option<StoredFn>
 where {
         if let (Some(t)) = backoff.type_ {
-            if let (Some(strategy), Some(delay)) =
+            if let (Some(entry), Some(delay)) =
                 (self.builtin_strategies.get(t.as_str()), backoff.delay)
             {
+                let strategy = entry.value();
                 return Some(strategy(delay));
             }
         }
