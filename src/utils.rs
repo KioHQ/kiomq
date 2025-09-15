@@ -46,28 +46,40 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
     name: &str,
     conn: &mut C,
 ) -> KioResult<JobMetrics> {
-    let [job_id_key, stalled_key, active_key, completed_key] = [
+    let [job_id_key, stalled_key, active_key, completed_key, meta_key, delayed_key] = [
         CollectionSuffix::Id,
         CollectionSuffix::Stalled,
         CollectionSuffix::Active,
         CollectionSuffix::Completed,
+        CollectionSuffix::Meta,
+        CollectionSuffix::Delayed,
     ]
     .map(|key| key.to_collection_name(prefix, name));
     let mut pipeline = redis::pipe();
     pipeline.atomic();
     pipeline.zcard(completed_key);
     pipeline.llen(active_key);
-
     pipeline.scard(stalled_key);
+    pipeline.zcard(delayed_key);
     pipeline.get(job_id_key);
-    let (completed, active, stalled, last_id) = pipeline.query_async(conn).await?;
+    pipeline.hexists(&meta_key, JobState::Paused);
+    let (completed, active, stalled, delayed, last_id, paused): (
+        Option<u64>,
+        Option<u64>,
+        Option<u64>,
+        Option<u64>,
+        u64,
+        bool,
+    ) = pipeline.query_async(conn).await?;
 
-    Ok(JobMetrics {
-        active,
+    Ok(JobMetrics::new(
         last_id,
-        stalled,
-        completed,
-    })
+        active.unwrap_or_default(),
+        stalled.unwrap_or_default(),
+        completed.unwrap_or_default(),
+        delayed.unwrap_or_default(),
+        paused,
+    ))
 }
 
 // ---- UTIL FUNCTIONS for the worker
