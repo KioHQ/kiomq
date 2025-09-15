@@ -1,4 +1,5 @@
 use futures::future::Future;
+use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use std::time::Duration;
@@ -78,16 +79,58 @@ impl ToRedisArgs for CollectionSuffix {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Default)]
+pub struct QueueOpts {
+    pub default_job_options: Option<JobOptions>,
+}
+type Counter = Arc<AtomicU64>;
+fn create_counter(count: u64) -> Counter {
+    Counter::new(count.into())
+}
+#[derive(Debug, Clone, Default)]
 pub struct JobMetrics {
-    pub last_id: usize,
-    pub active: usize,
-    pub stalled: usize,
-    pub completed: usize,
+    pub last_id: Counter,
+    pub active: Counter,
+    pub stalled: Counter,
+    pub delayed: Counter,
+    pub completed: Counter,
+    pub paused: Arc<AtomicBool>,
 }
 impl JobMetrics {
     pub fn all_jobs_completed(&self) -> bool {
-        self.completed == self.last_id && self.active == 0
+        self.completed.load(Ordering::Relaxed) == self.last_id.load(Ordering::Relaxed)
+            && self.active.load(Ordering::Relaxed) == 0
+    }
+    pub fn new(
+        last_id: u64,
+        active: u64,
+        stalled: u64,
+        completed: u64,
+        delayed: u64,
+        paused: bool,
+    ) -> Self {
+        Self {
+            last_id: create_counter(last_id),
+            active: create_counter(active),
+            stalled: create_counter(stalled),
+            completed: create_counter(completed),
+            delayed: create_counter(delayed),
+            paused: Arc::new(paused.into()),
+        }
+    }
+    pub fn update(&self, other: &Self) {
+        self.paused
+            .swap(other.paused.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.completed
+            .swap(other.completed.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.stalled
+            .swap(other.stalled.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.active
+            .swap(other.active.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.last_id
+            .swap(other.last_id.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.delayed
+            .swap(other.delayed.load(Ordering::Relaxed), Ordering::Relaxed);
     }
 }
 use crate::{EventEmitter, EventParameters};
@@ -97,8 +140,10 @@ pub struct Queue<D, R, P> {
     pub name: String,
     pub paused: Arc<AtomicBool>,
     pub job_count: Arc<AtomicU64>,
-    #[debug(skip)]
+    pub current_metrics: Arc<JobMetrics>,
+    pub opts: QueueOpts,
     emitter: EventEmitter<D, R, P>,
+    #[debug(skip)]
     pub stream_listener: Arc<JoinHandle<KioResult<()>>>,
     #[debug(skip)]
     pub conn_pool: Arc<Pool>,
@@ -114,20 +159,35 @@ impl<
         let conn = self.conn_pool.get().await?;
         Ok(conn)
     }
-    pub async fn new(prefix: Option<&str>, name: &str, cfg: &Config) -> KioResult<Self> {
+    pub async fn new(
+        prefix: Option<&str>,
+        name: &str,
+        cfg: &Config,
+        queue_opts: Option<QueueOpts>,
+    ) -> KioResult<Self> {
         use redis::streams::{StreamReadOptions, StreamReadReply};
         use typed_emitter::TypedEmitter;
+        let opts = queue_opts.unwrap_or_default();
         let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
         let prefix = prefix.unwrap_or("kio").to_lowercase();
         let meta_key = CollectionSuffix::Meta.to_collection_name(&prefix, name);
         let name = name.to_lowercase();
         let emitter = Arc::new(TypedEmitter::new());
         let mut conn = pool.get().await?;
-        let is_paused = conn.hexists(&meta_key, JobState::Paused).await?;
+        let mut metrics = JobMetrics::default();
+        if let Ok(current_metrics) = get_job_metrics(&prefix, &name, &mut conn).await {
+            metrics = current_metrics;
+        }
+
+        let current_metrics = Arc::new(metrics);
+        let is_paused = current_metrics.paused.load(Ordering::Relaxed);
         let mut connection = pool.get().await?;
         let stream_key = CollectionSuffix::Events.to_collection_name(&prefix, &name);
         let queue_name = CollectionSuffix::Prefix.to_collection_name(&prefix, &name);
         let emitter_clone = emitter.clone();
+        let metrics = current_metrics.clone();
+        let prefix_clone = prefix.clone();
+        let name_clone = name.clone();
         let task: JoinHandle<KioResult<()>> = tokio::spawn(async move {
             let block_interval = 1000000; // 100 seconds
             loop {
@@ -146,10 +206,15 @@ impl<
                             &mut connection,
                         )
                         .await?;
+                        if let Ok(updated) =
+                            get_job_metrics(&prefix_clone, &name_clone, &mut conn).await
+                        {
+                            metrics.update(&updated);
+                        }
                         emitter_clone.emit(state, param).await;
                     }
+                    // keep the queue's metrics up to date
                 }
-                tokio::task::yield_now().await;
             }
 
             Ok(())
@@ -157,6 +222,8 @@ impl<
         let stream_listener = Arc::new(task);
         //
         Ok(Self {
+            opts,
+            current_metrics,
             stream_listener,
             job_count: Arc::default(),
             emitter,
@@ -182,7 +249,8 @@ impl<
         data: D,
         opts: Option<JobOptions>,
     ) -> Result<Job<D, R, P>, KioError> {
-        let opts = opts.unwrap_or_default();
+        let opts =
+            opts.unwrap_or_else(|| self.opts.default_job_options.clone().unwrap_or_default());
         let JobOptions {
             priority,
             delay,

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use deadpool_redis::{Config, Connection};
 use kio_mq::{
     fetch_redis_pass, framed, EventParameters, Job, JobOptions, KioResult, Queue, Worker,
@@ -12,7 +14,7 @@ async fn main() -> KioResult<()> {
     if let Some(cfg) = config.connection.as_mut() {
         cfg.redis.password = password;
     }
-    let queue = Queue::<String, String, i32>::new(None, "trial", &config).await?;
+    let queue = Queue::<String, String, i32>::new(None, "trial", &config, None).await?;
 
     let count = 10;
     for i in 0..count {
@@ -29,7 +31,6 @@ async fn main() -> KioResult<()> {
         //concurrency: 1,
         ..Default::default()
     };
-    dbg!(&opts);
     let last_job_id = queue.current_jobs();
     let processor = |con: _, job: Job<_, _, _>| process_callback(con, job);
     let worker = Worker::new(&queue, processor, Some(opts))?;

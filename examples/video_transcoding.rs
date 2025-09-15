@@ -1,13 +1,12 @@
 use deadpool_redis::{Config, Connection};
 use kio_mq::{
-    fetch_redis_pass, frame, framed, get_job_metrics, EventParameters, Job, KioError, KioResult,
-    Queue, Worker, WorkerOpts,
+    fetch_redis_pass, frame, framed, EventParameters, Job, KioError, KioResult, Queue, Worker,
+    WorkerOpts,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use tokio::fs;
-use tokio::sync::{mpsc::Sender, Notify};
+use tokio::sync::mpsc::Sender;
 type BoxedError = Box<dyn std::error::Error + Send>;
 use ffmpeg_sidecar::{
     command::FfmpegCommand,
@@ -48,7 +47,7 @@ async fn main() -> KioResult<()> {
         cfg.redis.password = fetch_redis_pass();
     }
     let queue: Queue<ProcessData, ReturnData, Progress> =
-        Queue::new(None, "video-processing", &config).await?;
+        Queue::new(None, "video-processing", &config, None).await?;
     let processor = |con: _, job: _| process_callback(con, job);
     // auto download ffmpeg if it's not installed;
     tokio::task::spawn_blocking(auto_download)
@@ -79,43 +78,26 @@ async fn main() -> KioResult<()> {
     };
     let worker = Worker::new(&queue, processor, Some(opts))?;
     let cancel_worker = worker.cancellation_token.clone();
-    let notifier = Arc::new(Notify::new());
-    let last_job_id = queue.job_count.load(std::sync::atomic::Ordering::Relaxed);
-    let notifier_clone = notifier.clone();
-    let prefix = queue.prefix.clone();
-    let name = queue.name.clone();
-    let mut conn = queue.get_connection().await?;
-    tokio::spawn(async move {
-        while !cancel_worker.is_cancelled() {
-            notifier_clone.notified().await;
-            let metrics = get_job_metrics(&prefix, &name, &mut conn).await?;
-            if metrics.all_jobs_completed() {
-                cancel_worker.cancel();
-            }
-        }
-        Ok::<(), KioError>(())
-    });
+    let updating_metrics = queue.current_metrics.clone();
 
     worker
         .on_all_events(move |event| {
-            let notifier = notifier.clone();
-            {
-                async move {
-                    if let EventParameters::Completed {
-                        job,
-                        prev_state: _,
-                        result,
-                    } = event
-                    {
-                        let id = job.id.unwrap();
-                        let completed_in = (job.finished_on.unwrap() - job.processed_on.unwrap())
-                            .num_milliseconds();
-                        let size = result.processed_size;
-                        println!(" completed job {id}  for {size:?} in {completed_in} mills");
-                        notifier.notify_one();
-                        if last_job_id.to_string() == id {
-                            //   cancel.cancel();
-                        }
+            let cancel_worker = cancel_worker.clone();
+            let updating_metrics = updating_metrics.clone();
+            async move {
+                if let EventParameters::Completed {
+                    job,
+                    prev_state: _,
+                    result,
+                } = event
+                {
+                    let id = job.id.unwrap();
+                    let completed_in =
+                        (job.finished_on.unwrap() - job.processed_on.unwrap()).num_milliseconds();
+                    let size = result.processed_size;
+                    println!(" completed job {id}  for {size:?} in {completed_in} mills");
+                    if updating_metrics.all_jobs_completed() {
+                        cancel_worker.cancel();
                     }
                 }
             }
