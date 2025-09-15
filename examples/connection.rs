@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use deadpool_redis::{Config, Connection};
 use kio_mq::{
     fetch_redis_pass, framed, EventParameters, Job, JobOptions, KioResult, Queue, Worker,

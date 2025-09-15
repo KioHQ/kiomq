@@ -19,7 +19,8 @@ use serde::de::{DeserializeOwned, Error};
 use serde::{Deserialize, Serialize};
 
 use redis::{
-    self, AsyncCommands, JsonAsyncCommands, LposOptions, Pipeline, RedisResult, ToRedisArgs, Value,
+    self, pipe, AsyncCommands, JsonAsyncCommands, LposOptions, Pipeline, RedisResult, ToRedisArgs,
+    Value,
 };
 
 use derive_more::{Debug, Display};
@@ -215,6 +216,7 @@ impl<
                     }
                     // keep the queue's metrics up to date
                 }
+                tokio::task::yield_now().await;
             }
 
             Ok(())
@@ -903,6 +905,7 @@ impl<
             CollectionSuffix::Job(id.to_owned()).to_collection_name(&self.prefix, &self.name);
         let mut conn = self.conn_pool.get().await?;
         let mut pipeline = redis::pipe();
+        pipeline.atomic();
         match remove_options {
             RemoveOnCompletionOrFailure::Bool(remove_immediately) => {
                 if remove_immediately {
