@@ -122,17 +122,17 @@ impl JobMetrics {
     }
     pub fn update(&self, other: &Self) {
         self.paused
-            .swap(other.paused.load(Ordering::Relaxed), Ordering::Relaxed);
+            .swap(other.paused.load(Ordering::Acquire), Ordering::AcqRel);
         self.completed
-            .swap(other.completed.load(Ordering::Relaxed), Ordering::Relaxed);
+            .swap(other.completed.load(Ordering::Acquire), Ordering::AcqRel);
         self.stalled
-            .swap(other.stalled.load(Ordering::Relaxed), Ordering::Relaxed);
+            .swap(other.stalled.load(Ordering::Acquire), Ordering::AcqRel);
         self.active
-            .swap(other.active.load(Ordering::Relaxed), Ordering::Relaxed);
+            .swap(other.active.load(Ordering::Acquire), Ordering::AcqRel);
         self.last_id
-            .swap(other.last_id.load(Ordering::Relaxed), Ordering::Relaxed);
+            .swap(other.last_id.load(Ordering::Acquire), Ordering::AcqRel);
         self.delayed
-            .swap(other.delayed.load(Ordering::Relaxed), Ordering::Relaxed);
+            .swap(other.delayed.load(Ordering::Acquire), Ordering::AcqRel);
     }
 }
 use crate::{EventEmitter, EventParameters};
@@ -201,6 +201,8 @@ impl<
                     QueueStreamEvent::from_stream_read_reply(&stream_key, reply);
                 if !events.is_empty() {
                     for event in events.into_iter() {
+                        //print!("{event:#?}");
+
                         let state = event.event;
                         let param = EventParameters::<D, R, P>::from_queue_event(
                             &queue_name,

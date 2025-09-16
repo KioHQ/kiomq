@@ -210,10 +210,13 @@ impl<
             .store(false, std::sync::atomic::Ordering::Release);
         if stop_active_jobs {
             self.jobs_in_progress.iter().for_each(|pair| {
-                //let (job, _, current_handle) = pair.value();
-                //if let Some(handle) = current_handle {
-                //    //self.processing.lock()
-                //}
+                let (job, _, current_handle) = pair.value();
+                if let Some(entry) = self
+                    .processing
+                    .get(&current_handle.load(std::sync::atomic::Ordering::Acquire))
+                {
+                    entry.value().abort();
+                }
             });
 
             self.jobs_in_progress.clear();
