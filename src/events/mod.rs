@@ -3,6 +3,11 @@ use derive_more::Debug;
 use redis::AsyncCommands;
 #[derive(Clone, Debug)]
 pub enum EventParameters<D, R, P> {
+    Prioritized {
+        job_id: String,
+        name: Option<String>,
+        priority: u64,
+    },
     Added {
         job_id: String,
         name: Option<String>,
@@ -59,6 +64,11 @@ impl<D: DeserializeOwned, R: DeserializeOwned, P: DeserializeOwned> EventParamet
         let job_id_key = format!("{queue_name}{job_id}");
         let fetch_job = conn.hgetall::<_, Job<D, R, P>>(&job_id_key);
         let parameter = match job_state {
+            JobState::Priorized => Self::Prioritized {
+                job_id: event.job_id,
+                name: event.name,
+                priority: event.priority.unwrap_or_default(),
+            },
             JobState::Wait if event.prev.is_none() => Self::Added {
                 job_id: event.job_id,
                 name: event.name,

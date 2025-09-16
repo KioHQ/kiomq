@@ -67,6 +67,7 @@ impl From<JobState> for CollectionSuffix {
             JobState::Failed => CollectionSuffix::Failed,
             JobState::Delayed => CollectionSuffix::Delayed,
             JobState::Progress => CollectionSuffix::Prefix,
+            JobState::Priorized => CollectionSuffix::Prioritized,
         }
     }
 }
@@ -216,7 +217,6 @@ impl<
                     }
                     // keep the queue's metrics up to date
                 }
-                tokio::task::yield_now().await;
             }
 
             Ok(())
@@ -286,22 +286,36 @@ impl<
         };
         let mut pipeline = redis::pipe();
         let to_delay = delay > 0;
+        let to_priorize = priority > 0 && !to_delay;
         let waiting_key = waiting_or_paused.to_collection_name(&self.prefix, &self.name);
         pipeline.atomic();
-        if !to_delay {
-            pipeline.lpush(&waiting_key, id.to_string());
-        } else {
+        if to_delay {
             let delayed_key =
                 CollectionSuffix::Delayed.to_collection_name(&self.prefix, &self.name);
             let expected_active_time = job.ts + TimeDelta::milliseconds(delay as i64);
             pipeline.zadd(delayed_key, id, expected_active_time.timestamp_millis());
             job.state = JobState::Delayed;
         }
+        // handle prioritized_jobs
+        else if to_priorize {
+            let priority_counter_key =
+                CollectionSuffix::PriorityCounter.to_collection_name(&self.prefix, &self.name);
+            let prioritized_key =
+                CollectionSuffix::Prioritized.to_collection_name(&self.prefix, &self.name);
+            let prior_counter: u64 = conn.incr(&priority_counter_key, 1).await?;
+            let score = calculate_next_priority_score(priority, prior_counter);
+            pipeline.zadd(&prioritized_key, id, score);
+            job.state = JobState::Priorized;
+        } else {
+            pipeline.lpush(&waiting_key, id.to_string());
+        }
         job.id = Some(id.to_string());
         let fields = serialize_into_pairs(&job);
         pipeline.hset_multiple(&job_key, &fields);
         let event = if to_delay {
             JobState::Delayed
+        } else if to_priorize {
+            JobState::Priorized
         } else {
             JobState::Wait
         };
@@ -312,6 +326,9 @@ impl<
         ];
         if to_delay {
             items.push(("delay", delay.to_string()));
+        }
+        if to_priorize {
+            items.push(("priority", priority.to_string()));
         }
         pipeline.xadd(events_keys, "*", &items);
         pipeline.query_async::<()>(&mut conn).await?;
@@ -654,41 +671,43 @@ impl<
                 job_id = conn.rpoplpush(&wait_key, &active_key).await?;
             }
         }
-        let mut prepare_job = |id: String, mut conn: redis::aio::MultiplexedConnection| async move {
+        let mut prepare_job = |id: String, mut conn: deadpool_redis::Connection| async move {
             let job_id_key =
                 CollectionSuffix::Job(id.clone()).to_collection_name(&self.prefix, &self.name);
-            let prev_state: Option<JobState> = conn.hget(job_id_key, "state").await.ok();
+            let prev_state: Option<JobState> = conn.hget(&job_id_key, "state").await.ok();
             let job = self
-                .prepare_job_for_processing(token, &id, ts as u64, opts)
+                .prepare_job_for_processing(
+                    token,
+                    &id,
+                    ts as u64,
+                    opts,
+                    prev_state.unwrap_or_default(),
+                )
                 .await?;
-            Ok::<_, KioError>(Some((job, prev_state)))
-        };
-        let current_job = match job_id {
-            Some(job_id) => prepare_job(job_id.to_owned(), conn.clone()).await?,
-            None => {
-                if let Some(id) = self.move_job_from_priorty_to_active().await? {
-                    prepare_job(id, conn.clone()).await.ok().flatten();
-                }
-                None
-            }
-        };
-        if let Some((job, prev_state)) = current_job {
-            let job_clone = job.clone();
-            self.emit(
-                JobState::Active,
-                EventParameters::Active { job, prev_state },
-            )
-            .await;
 
-            return Ok(MoveToActiveResult::ProcessJob(job_clone.boxed()));
+            Ok::<_, KioError>((job, prev_state))
+        };
+        let connection = self.conn_pool.get().await?;
+        match job_id {
+            Some(job_id) => Ok(MoveToActiveResult::from_job_state_pair(
+                prepare_job(job_id.to_owned(), connection).await?,
+            )),
+            None => {
+                let connection = self.conn_pool.get().await?;
+                if let Some(id) = self.move_job_from_priorty_to_active().await? {
+                    let (job, state) = prepare_job(id, connection).await?;
+                    return Ok(MoveToActiveResult::ProcessJob(job.boxed()));
+                }
+
+                let mut next_delayed_timestamp: Vec<(u64, u64)> =
+                    conn.zrange_withscores(&delayed_key, 0, 0).await?;
+                let mut next_delay = next_delayed_timestamp.pop().unwrap_or_default().1;
+                next_delay /= 0x1000;
+
+                Ok(MoveToActiveResult::DelayUntil(next_delay))
+            }
         }
         // fetch the next delayed_timestamp;
-        let mut next_delayed_timestamp: Vec<(u64, u64)> =
-            conn.zrange_withscores(&delayed_key, 0, 0).await?;
-        let mut next_delay = next_delayed_timestamp.pop().unwrap_or_default().1;
-        next_delay /= 0x1000;
-
-        Ok(MoveToActiveResult::DelayUntil(next_delay))
     }
     pub async fn prepare_job_for_processing(
         &self,
@@ -696,6 +715,7 @@ impl<
         job_id: &str,
         ts: u64,
         opts: &WorkerOpts,
+        prev_state: JobState,
     ) -> KioResult<Job<D, R, P>> {
         let [wait_key, active_key, events_key, meta_key, paused_key, stalled_key, stalled_check, failed_key, marker_key, job_key, job_lock_key] =
             [
@@ -717,7 +737,7 @@ impl<
         let _: () = conn
             .pset_ex(&job_lock_key, token, opts.lock_duration)
             .await?;
-        self.move_job_to_state(job_id, JobState::Wait, JobState::Active, None, None, None)
+        self.move_job_to_state(job_id, prev_state, JobState::Active, None, None, None)
             .await?;
         let items = [
             ("processedOn", serde_json::to_string(&ts)?),
@@ -883,8 +903,8 @@ impl<
         ]
         .map(|collection| collection.to_collection_name(&self.prefix, &self.name));
         let mut conn = self.conn_pool.get().await?;
-        let mut min_priority_job: Vec<(u64, String)> = conn.zpopmin(&prioritized_key, 1).await?;
-        if let Some((score, job_id)) = min_priority_job.pop() {
+        let mut min_priority_job: Vec<(String, u64)> = conn.zpopmin(&prioritized_key, 1).await?;
+        if let Some((job_id, score)) = min_priority_job.pop() {
             let _: () = conn.lpush(&active_key, &job_id).await?;
             return Ok(Some(job_id));
         }
@@ -940,7 +960,12 @@ pub enum MoveToActiveResult<D, R, P> {
     Paused,
     RateLimit(u64),
     DelayUntil(u64),
-    #[debug("ProcessJob({0})", _0.id.clone().unwrap_or_default())]
+    #[debug("ProcessJob({0}) from state{1}", _0.id.clone().unwrap_or_default(), _0.state)]
     ProcessJob(Box<Job<D, R, P>>),
+}
+impl<D, R, P> MoveToActiveResult<D, R, P> {
+    fn from_job_state_pair((job, state): (Job<D, R, P>, Option<JobState>)) -> Self {
+        Self::ProcessJob(job.boxed())
+    }
 }
 // ----- UTILITY FUNCTIONS -------------------

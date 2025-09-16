@@ -23,6 +23,7 @@ pub(crate) type Dt = DateTime<Utc>;
 pub enum JobState {
     #[default]
     Wait,
+    Priorized,
     Stalled,
     Active,
     Paused,

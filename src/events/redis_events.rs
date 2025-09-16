@@ -6,12 +6,15 @@ use std::str::FromStr;
 #[derive(Debug, Hash, Clone)]
 pub struct QueueStreamEvent<R, P> {
     pub id: String,
+    pub priority: Option<u64>,
     pub event: JobState,
     pub delay: Option<u64>,
     pub prev: Option<JobState>,
     pub job_id: String,
+    #[debug(skip)]
     pub retuned_value: Option<R>,
     pub failed_reason: Option<String>,
+    #[debug(skip)]
     pub progress_data: Option<P>,
     pub name: Option<String>,
 }
@@ -20,6 +23,7 @@ impl<R, P> Default for QueueStreamEvent<R, P> {
     fn default() -> Self {
         Self {
             failed_reason: None,
+            priority: None,
             id: Default::default(),
             delay: None,
             event: Default::default(),
@@ -58,6 +62,7 @@ impl<R: DeserializeOwned, P: DeserializeOwned> TryFrom<&StreamId> for QueueStrea
                 "job_id" => event.job_id = val_str,
                 "name" => event.name = Some(val_str),
                 "delay" => event.delay = serde_json::from_str(&val_str)?,
+                "priority" => event.priority = serde_json::from_str(&val_str)?,
                 "data" => event.progress_data = serde_json::from_str(&val_str)?,
 
                 "returnedvalue" => event.retuned_value = serde_json::from_str(&val_str)?,
