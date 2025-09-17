@@ -17,7 +17,19 @@ use crate::{queue::Queue, CollectionSuffix, KioError, KioResult};
 /// alias for DateTime<Utc>
 pub(crate) type Dt = DateTime<Utc>;
 #[derive(
-    Debug, Serialize, Deserialize, FromStr, Default, Hash, Display, Clone, Copy, PartialEq, Eq,
+    Debug,
+    Serialize,
+    Deserialize,
+    FromStr,
+    Default,
+    Hash,
+    Ord,
+    PartialOrd,
+    Display,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
 )]
 #[serde(rename_all = "camelCase")]
 pub enum JobState {
