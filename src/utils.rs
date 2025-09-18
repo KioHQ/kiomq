@@ -3,6 +3,7 @@ use crate::worker::{JobMap, ProcessingQueue, WorkerCallback};
 use crate::{utils, EventParameters, JobState, WorkerOpts};
 use chrono::Utc;
 use crossbeam_queue::SegQueue;
+use futures::FutureExt;
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Write;
 use std::num::NonZero;
@@ -279,7 +280,8 @@ where
                     jobs_in_progress.clone(),
                     queue,
                     callback
-                )));
+                )
+                .boxed()));
                 let task_id: u64 = task.id().to_string().parse()?;
                 let handle = processing.insert(task_id, task);
                 if let Some(mut re) = jobs_in_progress.get(&id) {
