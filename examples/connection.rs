@@ -3,7 +3,7 @@ use std::time::Duration;
 use deadpool_redis::{Config, Connection};
 use kio_mq::{
     fetch_redis_pass, framed, get_job_metrics, EventParameters, Job, JobOptions, KioResult, Queue,
-    Worker, WorkerOpts,
+    QueueOpts, RemoveOnCompletionOrFailure, Worker, WorkerOpts,
 };
 use uuid::Uuid;
 #[tokio::main]
@@ -15,7 +15,16 @@ async fn main() -> KioResult<()> {
     if let Some(cfg) = config.connection.as_mut() {
         cfg.redis.password = password;
     }
-    let queue = Queue::<String, String, i32>::new(None, "trial", &config, None).await?;
+    let remove_opts = RemoveOnCompletionOrFailure::Opts(kio_mq::KeepJobs {
+        age: Some(60),
+        count: None,
+    });
+    let queue_opts = QueueOpts {
+        remove_on_fail: Some(remove_opts),
+        remove_on_complete: Some(remove_opts),
+    };
+
+    let queue = Queue::<String, String, i32>::new(None, "trial", &config, Some(queue_opts)).await?;
     let event_listener = move |state: _| async move {
         // do something with return state
         if let EventParameters::Completed {
@@ -38,14 +47,14 @@ async fn main() -> KioResult<()> {
     };
     queue.on_all_events(event_listener).await;
 
-    let count = 100;
+    let count = 10;
     for _i in 0..count {
         //use rand::Rng;
         //let priority = rand::rng().random_range(1..count); // ucomment to use  random priority
 
         //let priority = count - _i; // ucomment to use a priority of count - index (job_id -1)
         let job_opts = JobOptions {
-            delay: 500 * _i as u64, // uncomment to add delay
+            //delay: 500 * _i as u64, // uncomment to add delay
             //priority, // uncomment to set priority
             ..Default::default()
         };
