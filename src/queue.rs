@@ -83,7 +83,8 @@ impl ToRedisArgs for CollectionSuffix {
 
 #[derive(Debug, Clone, Default)]
 pub struct QueueOpts {
-    pub default_job_options: Option<JobOptions>,
+    pub remove_on_fail: Option<RemoveOnCompletionOrFailure>,
+    pub remove_on_complete: Option<RemoveOnCompletionOrFailure>,
 }
 type Counter = Arc<AtomicU64>;
 fn create_counter(count: u64) -> Counter {
@@ -210,12 +211,12 @@ impl<
                             &mut connection,
                         )
                         .await?;
+                        emitter_clone.emit(state, param).await;
                         if let Ok(updated) =
                             get_job_metrics(&prefix_clone, &name_clone, &mut conn).await
                         {
                             metrics.update(&updated);
                         }
-                        emitter_clone.emit(state, param).await;
                     }
                     // keep the queue's metrics up to date
                 }
@@ -253,8 +254,14 @@ impl<
         data: D,
         opts: Option<JobOptions>,
     ) -> Result<Job<D, R, P>, KioError> {
-        let opts =
-            opts.unwrap_or_else(|| self.opts.default_job_options.clone().unwrap_or_default());
+        let mut opts = opts.unwrap_or_default();
+        if opts.remove_on_complete.is_none() {
+            opts.remove_on_complete = self.opts.remove_on_complete;
+        }
+        if opts.remove_on_fail.is_none() {
+            opts.remove_on_fail = self.opts.remove_on_fail;
+        }
+
         let JobOptions {
             priority,
             delay,
@@ -919,7 +926,7 @@ impl<
     pub async fn clean_up_job(
         &self,
         job_id: &str,
-        remove_options: RemoveOnCompletionOrFailure,
+        remove_options: Option<RemoveOnCompletionOrFailure>,
     ) -> KioResult<()> {
         let id = job_id;
         let id_num: i64 = id.parse()?;
@@ -928,24 +935,26 @@ impl<
         let mut conn = self.conn_pool.get().await?;
         let mut pipeline = redis::pipe();
         pipeline.atomic();
-        match remove_options {
-            RemoveOnCompletionOrFailure::Bool(remove_immediately) => {
-                if remove_immediately {
-                    pipeline.del(&job_id_key);
+        if let Some(remove_options) = remove_options {
+            match remove_options {
+                RemoveOnCompletionOrFailure::Bool(remove_immediately) => {
+                    if remove_immediately {
+                        pipeline.del(&job_id_key);
+                    }
                 }
-            }
-            RemoveOnCompletionOrFailure::Int(max_to_keep) => {
-                if max_to_keep.is_positive() && id_num > max_to_keep {
-                    pipeline.del(&job_id_key);
-                }
-            }
-            RemoveOnCompletionOrFailure::Opts(KeepJobs { age, count }) => {
-                if let Some(expire_in_secs) = age {
-                    pipeline.expire(&job_id_key, expire_in_secs);
-                }
-                if let Some(max_to_keep) = count {
+                RemoveOnCompletionOrFailure::Int(max_to_keep) => {
                     if max_to_keep.is_positive() && id_num > max_to_keep {
                         pipeline.del(&job_id_key);
+                    }
+                }
+                RemoveOnCompletionOrFailure::Opts(KeepJobs { age, count }) => {
+                    if let Some(expire_in_secs) = age {
+                        pipeline.expire(&job_id_key, expire_in_secs);
+                    }
+                    if let Some(max_to_keep) = count {
+                        if max_to_keep.is_positive() && id_num > max_to_keep {
+                            pipeline.del(&job_id_key);
+                        }
                     }
                 }
             }

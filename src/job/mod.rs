@@ -60,8 +60,8 @@ pub struct JobOptions {
     pub delay: u64,
     pub id: Option<u64>,
     /// total number of attempts to try the job until it completes.
-    pub remove_on_complete: RemoveOnCompletionOrFailure,
-    pub remove_on_fail: RemoveOnCompletionOrFailure,
+    pub remove_on_complete: Option<RemoveOnCompletionOrFailure>,
+    pub remove_on_fail: Option<RemoveOnCompletionOrFailure>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, Hash, PartialEq)]
