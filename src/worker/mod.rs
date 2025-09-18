@@ -186,7 +186,7 @@ impl<
             self.active.clone(),
         );
         let main = main_loop(params);
-        tokio::spawn(main);
+        tokio::spawn(main.boxed());
         self.active
             .store(true, std::sync::atomic::Ordering::Release);
 
