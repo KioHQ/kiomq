@@ -18,7 +18,7 @@ pub enum EventParameters<D, R, P> {
     },
     Delayed {
         job_id: String,
-        delay: u64,
+        delay: Duration,
     },
     Active {
         job: Job<D, R, P>,
@@ -44,7 +44,7 @@ pub enum EventParameters<D, R, P> {
         prev_state: JobState,
     },
 }
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 pub type Events = JobState;
 use serde::de::DeserializeOwned;
 use typed_emitter::TypedEmitter;
@@ -105,7 +105,7 @@ impl<D: DeserializeOwned, R: DeserializeOwned, P: DeserializeOwned> EventParamet
             },
             JobState::Delayed => Self::Delayed {
                 job_id: event.job_id,
-                delay: event.delay.unwrap_or_default(),
+                delay: Duration::from_millis(event.delay.unwrap_or_default()),
             },
             JobState::Progress => Self::Progress {
                 job_id: event.job_id,
