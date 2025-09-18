@@ -41,6 +41,7 @@ struct Progress {
 #[tokio::main]
 #[framed]
 async fn main() -> KioResult<()> {
+    console_subscriber::init();
     let input_path = "sampleFHD.mp4";
     let mut config = Config::default();
     if let Some(cfg) = config.connection.as_mut() {
