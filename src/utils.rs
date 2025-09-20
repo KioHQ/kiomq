@@ -1,6 +1,6 @@
 use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo};
 use crate::worker::{JobMap, ProcessingQueue, WorkerCallback};
-use crate::{utils, EventParameters, JobState, WorkerOpts};
+use crate::{utils, EventParameters, FailedDetails, JobState, Trace, WorkerOpts};
 use chrono::Utc;
 use crossbeam_queue::SegQueue;
 use futures::FutureExt;
@@ -103,6 +103,7 @@ where
     use crate::JobState;
     let job_id = job.id.clone();
     let conn = queue.conn_pool.get().await?;
+    let attempts_made = job.attempts_made;
     let callback = async_backtrace::frame!(callback(conn, job));
     let returned = BacktraceCatcher::catch(callback).await;
     match returned {
@@ -125,9 +126,11 @@ where
                 if let Some(entry) = jobs_in_progress.remove(job_id) {
                     //handle.abort(); // remove task from the queue
                     let (job, _, handle) = entry.value();
-                    queue
-                        .clean_up_job(job_id, job.opts.remove_on_complete)
-                        .await?;
+                    if job.attempts_made == job.opts.attempts {
+                        queue
+                            .clean_up_job(job_id, job.opts.remove_on_complete)
+                            .await?;
+                    }
                     let handle_id = handle.load(std::sync::atomic::Ordering::Acquire);
                     task_sender.push(handle_id);
                 }
@@ -144,8 +147,17 @@ where
             };
             let backtrace: Option<Vec<String>> =
                 backtrace.map(|trace| trace.iter().map(|loc| loc.to_string()).collect());
-
-            let frames = backtrace.and_then(|frames| serde_json::to_string(&frames).ok());
+            let frames = backtrace.and_then(move |frames| {
+                serde_json::to_string(&Trace {
+                    run: attempts_made + 1,
+                    frames,
+                })
+                .ok()
+            });
+            let failed_reason = FailedDetails {
+                run: attempts_made + 1,
+                reason: failed_reason,
+            };
             // move job to failed_state
             if let Some(job_id) = job_id.as_ref() {
                 let ts = Utc::now().timestamp_micros();
@@ -156,13 +168,30 @@ where
                         ts,
                         &token,
                         move_to_state,
-                        &serde_json::to_string(&failed_reason)?,
+                        &"",
                         frames,
                     )
                     .await?;
+                dbg!("got here");
                 if let Some(entry) = jobs_in_progress.remove(job_id) {
                     let (job, _, handle) = entry.value();
-                    queue.clean_up_job(job_id, job.opts.remove_on_fail).await?;
+                    // retry failed jobs
+                    if dbg!(job.attempts_made) < dbg!(job.opts.attempts) {
+                        if let Some(backoff_job_opts) = job.opts.backoff.as_ref() {
+                            queue
+                                .retry_job(
+                                    job_id,
+                                    job.opts.delay,
+                                    backoff_job_opts,
+                                    failed_job.attempts_made,
+                                )
+                                .await?;
+                        }
+                    }
+                    // clean up if the number of attempts is exhausted
+                    if job.attempts_made == job.opts.attempts {
+                        queue.clean_up_job(job_id, job.opts.remove_on_fail).await?;
+                    }
                     let handle_id = handle.load(std::sync::atomic::Ordering::Acquire);
                     task_sender.push(handle_id)
                 }

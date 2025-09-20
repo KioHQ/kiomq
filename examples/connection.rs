@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use deadpool_redis::{Config, Connection};
 use kio_mq::{
-    fetch_redis_pass, framed, get_job_metrics, EventParameters, Job, JobOptions, KioResult, Queue,
-    QueueOpts, RemoveOnCompletionOrFailure, Worker, WorkerOpts,
+    fetch_redis_pass, framed, get_job_metrics, BackOffJobOptions, EventParameters, Job, JobOptions,
+    KioResult, Queue, QueueOpts, RemoveOnCompletionOrFailure, Worker, WorkerOpts,
 };
 use uuid::Uuid;
 #[tokio::main]
@@ -16,12 +16,14 @@ async fn main() -> KioResult<()> {
         cfg.redis.password = password;
     }
     let remove_opts = RemoveOnCompletionOrFailure::Opts(kio_mq::KeepJobs {
-        age: Some(60),
+        age: Some(60 * 60),
         count: None,
     });
     let queue_opts = QueueOpts {
         remove_on_fail: Some(remove_opts),
         remove_on_complete: Some(remove_opts),
+        attempts: 3,
+        default_backoff: Some(BackOffJobOptions::Number(200)),
     };
 
     let queue = Queue::<String, String, i32>::new(None, "trial", &config, Some(queue_opts)).await?;
@@ -80,7 +82,7 @@ async fn main() -> KioResult<()> {
     }
     worker.close(true);
     if worker.closed() {
-        queue.obliterate().await?;
+        //queue.obliterate().await?;
     }
     Ok(())
 }
@@ -91,9 +93,9 @@ async fn process_callback(
 ) -> Result<String, std::io::Error> {
     let progress = job.progress.unwrap_or_default();
     let _ = job.update_progress(progress + 1, &mut con).await;
-    if job.id.unwrap_or_default() == "3" {
-        // uncomment the line below to test to catching panics
-        //panic!("panicked here");
+    if job.id.unwrap_or_default() == "3" && job.attempts_made == 0 {
+        //uncomment the line below to test to catching panics
+        panic!("panicked here");
     }
     Ok("done".to_string())
 }

@@ -1,6 +1,6 @@
 use serde::de::{value, DeserializeOwned};
 
-use crate::{JobState, KioError, KioResult};
+use crate::{FailedDetails, JobState, KioError, KioResult};
 use derive_more::Debug;
 use std::str::FromStr;
 #[derive(Debug, Hash, Clone)]
@@ -13,7 +13,7 @@ pub struct QueueStreamEvent<R, P> {
     pub job_id: String,
     #[debug(skip)]
     pub retuned_value: Option<R>,
-    pub failed_reason: Option<String>,
+    pub failed_reason: Option<FailedDetails>,
     #[debug(skip)]
     pub progress_data: Option<P>,
     pub name: Option<String>,
@@ -66,7 +66,7 @@ impl<R: DeserializeOwned, P: DeserializeOwned> TryFrom<&StreamId> for QueueStrea
                 "data" => event.progress_data = serde_json::from_str(&val_str)?,
 
                 "returnedvalue" => event.retuned_value = serde_json::from_str(&val_str)?,
-                "failedreason" => event.failed_reason = Some(val_str),
+                "failedreason" => event.failed_reason = serde_json::from_str(&val_str)?,
 
                 "event" => {
                     let parsed = JobState::from_str(&val_str).map_err(std::io::Error::other)?;
