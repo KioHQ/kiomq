@@ -14,6 +14,7 @@ use serde::{
 
 mod backoff;
 use crate::{queue::Queue, CollectionSuffix, KioError, KioResult};
+pub use backoff::{BackOff, BackOffJobOptions, BackOffOptions, StoredFn};
 /// alias for DateTime<Utc>
 pub(crate) type Dt = DateTime<Utc>;
 #[derive(
@@ -59,9 +60,11 @@ pub struct JobOptions {
     pub priority: u64,
     pub delay: u64,
     pub id: Option<u64>,
+    pub attempts: u64,
     /// total number of attempts to try the job until it completes.
     pub remove_on_complete: Option<RemoveOnCompletionOrFailure>,
     pub remove_on_fail: Option<RemoveOnCompletionOrFailure>,
+    pub backoff: Option<BackOffJobOptions>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, Hash, PartialEq)]
@@ -81,6 +84,16 @@ pub struct KeepJobs {
     pub age: Option<i64>,   // Maximum age in seconds for jobs to kept;
     pub count: Option<i64>, // Maximum Number of jobs to keep
 }
+#[derive(Debug, Default, Deserialize, Serialize, Clone, Hash, PartialEq)]
+pub struct Trace {
+    pub run: u64,
+    pub frames: Vec<String>,
+}
+#[derive(Debug, Default, Deserialize, Serialize, Clone, Hash, PartialEq)]
+pub struct FailedDetails {
+    pub run: u64,
+    pub reason: String,
+}
 use chrono::serde::{ts_microseconds, ts_microseconds_option};
 #[derive(Debug, Serialize, Deserialize, Default, Hash, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -97,8 +110,8 @@ pub struct Job<D, R, P> {
     pub delay: u64,
     pub data: Option<D>,
     pub returned_value: Option<R>,
-    pub stack_trace: Vec<String>,
-    pub failed_reason: Option<String>,
+    pub stack_trace: Vec<Trace>,
+    pub failed_reason: Option<FailedDetails>,
     #[serde(with = "ts_microseconds_option")]
     pub processed_on: Option<Dt>,
     #[serde(with = "ts_microseconds_option")]
@@ -235,8 +248,7 @@ where
                 "stacktrace" => job.stack_trace = serde_json::from_str(value)?,
                 "logs" => job.logs = serde_json::from_str(value)?,
                 "failedreason" => {
-                    job.failed_reason =
-                        serde_json::from_str(value).unwrap_or_else(|_| Some(value.to_owned()));
+                    job.failed_reason = serde_json::from_str(value).unwrap_or_default();
                 }
                 "processedon" => {
                     job.processed_on = serde_json::from_str::<Option<i64>>(value)?

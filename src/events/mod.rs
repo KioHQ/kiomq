@@ -1,4 +1,4 @@
-use crate::{Job, JobState};
+use crate::{FailedDetails, Job, JobState};
 use derive_more::Debug;
 use redis::AsyncCommands;
 #[derive(Clone, Debug)]
@@ -39,7 +39,7 @@ pub enum EventParameters<D, R, P> {
         prev_state: JobState,
     },
     Failed {
-        reason: String,
+        reason: FailedDetails,
         job_id: String,
         prev_state: JobState,
     },

@@ -5,13 +5,13 @@ use std::sync::Arc;
 type BackoffFn = dyn Fn(i64) -> StoredFn + Send + Sync;
 pub type StoredFn = Arc<dyn Fn(i64) -> i64 + Send + Sync>;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Hash)]
 pub struct BackOffOptions {
     #[serde(rename = "type")]
     pub type_: Option<String>,
     pub delay: Option<i64>,
 }
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Hash)]
 #[serde(untagged)]
 pub enum BackOffJobOptions {
     Number(i64),
@@ -42,33 +42,32 @@ impl BackOff {
         self.builtin_strategies
             .insert(name.to_owned(), Arc::new(strategy));
     }
-    pub fn normalize(backoff: Option<BackOffJobOptions>) -> Option<BackOffOptions> {
-        backoff.as_ref()?;
-        let backoff = backoff.unwrap();
+    pub fn normalize(backoff: Option<&BackOffJobOptions>) -> Option<BackOffOptions> {
+        let backoff = backoff?;
         match backoff {
             BackOffJobOptions::Number(num) => {
-                if num == 0 {
+                if *num == 0 {
                     return None;
                 }
                 let opts = BackOffOptions {
-                    delay: Some(num),
-                    type_: Some("exponential".to_string()),
+                    delay: Some(*num),
+                    type_: Some("fixed".to_string()),
                 };
                 Some(opts)
             }
-            BackOffJobOptions::Opts(opts) => Some(opts),
+            BackOffJobOptions::Opts(opts) => Some(opts.clone()),
             _ => None,
         }
     }
     pub fn calculate(
         &self,
         backoff_opts: Option<BackOffOptions>,
-        atempts: i64,
+        attempts: i64,
         custom_strategy: Option<StoredFn>,
     ) -> Option<i64> {
         if let Some(opts) = backoff_opts {
             if let Some(strategy) = self.lookup_strategy(opts, custom_strategy) {
-                let calculated_delay = strategy(atempts);
+                let calculated_delay = strategy(attempts);
                 return Some(calculated_delay);
             }
         }
@@ -131,7 +130,11 @@ mod tests {
             None,
         );
         if let Some(strategy) = strategy_found {
-            assert_eq!(strategy(1), 200);
+            assert_eq!(strategy(1), 200); // 2*1 * 100
+            assert_eq!(strategy(2), 400);
+            assert_eq!(strategy(3), 800);
+            assert_eq!(strategy(4), 1600);
+            assert_eq!(strategy(5), 3200);
         }
     }
     #[test]
@@ -145,7 +148,9 @@ mod tests {
             None,
         );
         if let Some(strategy) = strategy_found {
-            assert_eq!(strategy(200), 100);
+            assert_eq!(strategy(2), 100);
+            assert_eq!(strategy(3), 100);
+            assert_eq!(strategy(3), 100);
         }
     }
 }

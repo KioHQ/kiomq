@@ -11,7 +11,10 @@ use crate::events::QueueStreamEvent;
 use crate::job::{Job, JobState};
 use crate::utils::{calculate_next_priority_score, promote_jobs, serialize_into_pairs};
 use crate::worker::{WorkerOpts, MIN_DELAY_MS_LIMIT};
-use crate::{get_job_metrics, Dt, JobOptions, KeepJobs, KioResult, RemoveOnCompletionOrFailure};
+use crate::{
+    get_job_metrics, BackOff, BackOffJobOptions, BackOffOptions, Dt, JobOptions, KeepJobs,
+    KioResult, RemoveOnCompletionOrFailure, StoredFn,
+};
 use async_backtrace::backtrace;
 use chrono::{TimeDelta, Utc};
 use deadpool_redis::{Config, Pool, Runtime};
@@ -81,11 +84,24 @@ impl ToRedisArgs for CollectionSuffix {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct QueueOpts {
     pub remove_on_fail: Option<RemoveOnCompletionOrFailure>,
     pub remove_on_complete: Option<RemoveOnCompletionOrFailure>,
+    pub attempts: u64,
+    pub default_backoff: Option<BackOffJobOptions>,
 }
+impl Default for QueueOpts {
+    fn default() -> Self {
+        Self {
+            remove_on_fail: Default::default(),
+            remove_on_complete: Default::default(),
+            attempts: 1,
+            default_backoff: None,
+        }
+    }
+}
+
 type Counter = Arc<AtomicU64>;
 fn create_counter(count: u64) -> Counter {
     Counter::new(count.into())
@@ -136,6 +152,7 @@ impl JobMetrics {
             .swap(other.delayed.load(Ordering::Acquire), Ordering::AcqRel);
     }
 }
+
 use crate::{EventEmitter, EventParameters};
 #[derive(Debug, Clone)]
 pub struct Queue<D, R, P> {
@@ -150,6 +167,7 @@ pub struct Queue<D, R, P> {
     pub stream_listener: Arc<JoinHandle<KioResult<()>>>,
     #[debug(skip)]
     pub conn_pool: Arc<Pool>,
+    pub backoff: BackOff,
 }
 
 impl<
@@ -227,6 +245,7 @@ impl<
         let stream_listener = Arc::new(task);
         //
         Ok(Self {
+            backoff: BackOff::new(),
             opts,
             current_metrics,
             stream_listener,
@@ -261,13 +280,21 @@ impl<
         if opts.remove_on_fail.is_none() {
             opts.remove_on_fail = self.opts.remove_on_fail;
         }
+        if opts.attempts < self.opts.attempts {
+            opts.attempts = self.opts.attempts;
+        }
+        if opts.backoff.is_none() {
+            opts.backoff = self.opts.default_backoff.clone();
+        }
 
         let JobOptions {
             priority,
             delay,
             id,
+            attempts,
             remove_on_fail,
             remove_on_complete,
+            ref backoff,
         } = opts;
         let queue_name = format!("{}:{}", self.prefix, self.name);
         let mut job = Job::<D, R, P>::new(name, Some(data), id, Some(&queue_name));
@@ -398,8 +425,8 @@ impl<
             pipeline.lrem(prev_state_key, 1, job_id);
             pipeline.zadd(
                 next_state_key,
-                ts.unwrap_or_else(|| Utc::now().timestamp_micros()),
                 job_id,
+                ts.unwrap_or_else(|| Utc::now().timestamp_micros()),
             );
         } else {
             // only move the value if it doesn't exist in the target list
@@ -980,3 +1007,54 @@ impl<D, R, P> MoveToActiveResult<D, R, P> {
     }
 }
 // ----- UTILITY FUNCTIONS -------------------
+
+impl<D, R, P> Queue<D, R, P> {
+    pub fn register_backoff_strategy(
+        &self,
+        name: &str,
+        strategy: impl Fn(i64) -> Arc<dyn Fn(i64) -> i64 + Send + Sync> + 'static + Send + Sync,
+    ) {
+        if !self.backoff.has_strategy(name) {
+            self.backoff.register(name, strategy);
+        }
+    }
+    pub fn calculate_next_delay_ms(
+        &self,
+        backoff_job_opts: &BackOffJobOptions,
+        attempts: i64,
+    ) -> Option<i64> {
+        let backoff_opts = BackOff::normalize(Some(backoff_job_opts))?;
+        self.backoff.calculate(Some(backoff_opts), attempts, None)
+    }
+    pub async fn retry_job(
+        &self,
+        job_id: &str,
+        job_delay: u64,
+        backoff_job_opts: &BackOffJobOptions,
+        attempts: u64,
+    ) -> KioResult<()> {
+        let [delayed_key, job_id_key, failed_key] = [
+            CollectionSuffix::Delayed,
+            CollectionSuffix::Job(job_id.to_owned()),
+            CollectionSuffix::Failed,
+        ]
+        .map(|collection| collection.to_collection_name(&self.prefix, &self.name));
+        let mut conn = self.conn_pool.get().await?;
+        let ts = Utc::now();
+        let mut pipeline = redis::pipe();
+        pipeline.atomic();
+
+        if let Some(next_delay) = self.calculate_next_delay_ms(backoff_job_opts, attempts as i64) {
+            dbg!(next_delay);
+            let expected_active_time =
+                ts + TimeDelta::milliseconds((job_delay as i64) + next_delay);
+            pipeline.zadd(delayed_key, job_id, expected_active_time.timestamp_millis());
+            pipeline.zrem(failed_key, &[job_id]);
+        }
+        if !pipeline.is_empty() {
+            let _: () = pipeline.query_async(&mut conn).await?;
+        }
+
+        Ok(())
+    }
+}
