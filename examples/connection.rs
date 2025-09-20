@@ -22,12 +22,14 @@ async fn main() -> KioResult<()> {
     let queue_opts = QueueOpts {
         remove_on_fail: Some(remove_opts),
         remove_on_complete: Some(remove_opts),
-        attempts: 3,
-        default_backoff: Some(BackOffJobOptions::Number(200)),
+        attempts: 5,
+        default_backoff: Some(BackOffJobOptions::Opts(kio_mq::BackOffOptions {
+            type_: Some("exponential".to_owned()),
+            delay: Some(200),
+        })),
     };
-
     let queue = Queue::<String, String, i32>::new(None, "trial", &config, Some(queue_opts)).await?;
-    let event_listener = move |state: _| async move {
+    let event_listener = move |state: EventParameters<String, String, i32>| async move {
         // do something with return state
         if let EventParameters::Completed {
             job,
@@ -49,7 +51,7 @@ async fn main() -> KioResult<()> {
     };
     queue.on_all_events(event_listener).await;
 
-    let count = 10;
+    let count = 1000;
     for _i in 0..count {
         //use rand::Rng;
         //let priority = rand::rng().random_range(1..count); // ucomment to use  random priority
@@ -82,7 +84,7 @@ async fn main() -> KioResult<()> {
     }
     worker.close(true);
     if worker.closed() {
-        //queue.obliterate().await?;
+        queue.obliterate().await?;
     }
     Ok(())
 }
@@ -93,7 +95,8 @@ async fn process_callback(
 ) -> Result<String, std::io::Error> {
     let progress = job.progress.unwrap_or_default();
     let _ = job.update_progress(progress + 1, &mut con).await;
-    if job.id.unwrap_or_default() == "3" && job.attempts_made == 0 {
+    let id: u64 = job.id.unwrap_or_default().parse().unwrap_or_default();
+    if id % 2 == 0 && job.attempts_made < job.opts.attempts - 1 {
         //uncomment the line below to test to catching panics
         panic!("panicked here");
     }

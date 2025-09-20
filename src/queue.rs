@@ -13,13 +13,13 @@ use crate::utils::{calculate_next_priority_score, promote_jobs, serialize_into_p
 use crate::worker::{WorkerOpts, MIN_DELAY_MS_LIMIT};
 use crate::{
     get_job_metrics, BackOff, BackOffJobOptions, BackOffOptions, Dt, JobOptions, KeepJobs,
-    KioResult, RemoveOnCompletionOrFailure, StoredFn,
+    KioResult, RemoveOnCompletionOrFailure, StoredFn, Trace,
 };
 use async_backtrace::backtrace;
 use chrono::{TimeDelta, Utc};
 use deadpool_redis::{Config, Pool, Runtime};
 use serde::de::{DeserializeOwned, Error};
-use serde::{Deserialize, Serialize};
+use serde::{ser, Deserialize, Serialize};
 
 use redis::{
     self, pipe, AsyncCommands, JsonAsyncCommands, LposOptions, Pipeline, RedisResult, ToRedisArgs,
@@ -396,7 +396,7 @@ impl<
         to: JobState,
         value: Option<&str>,
         ts: Option<i64>,
-        backtrace: Option<String>,
+        backtrace: Option<Trace>,
     ) -> KioResult<()> {
         let move_to_failed_or_completed = matches!(to, JobState::Failed | JobState::Completed);
         // do nothing if the  queue_is_paused.
@@ -441,7 +441,15 @@ impl<
         let dst = serde_json::to_string(&to)?;
         pipeline.hset(&job_key, "state", dst);
         if let Some(backtrace) = backtrace {
-            pipeline.hset(&job_key, "stackTrace", backtrace);
+            // there is an empty vect stored
+            let previous: String = conn.hget(&job_key, "stackTrace").await?;
+            let mut previous: Vec<Trace> = serde_json::from_str(&previous)?;
+            previous.push(backtrace);
+            pipeline.hset(
+                &job_key,
+                "stackTrace",
+                serde_json::to_string_pretty(&previous)?,
+            );
         }
 
         let mut items = vec![
@@ -791,7 +799,7 @@ impl<
         token: &str,
         move_to_state: JobState,
         returned_value_or_failed_reason: &str,
-        backtrace: Option<String>,
+        backtrace: Option<Trace>,
     ) -> KioResult<Job<D, R, P>> {
         let [job_key, job_lock_key, active_key, completed_key, events_stream_key, stalled_key] = [
             CollectionSuffix::Job(job_id.to_owned()),
@@ -832,8 +840,7 @@ impl<
         .await;
 
         //remove element from stalled set too;
-        let _: () = pipeline.query_async(&mut conn).await?;
-
+        let val: redis::Value = pipeline.query_async(&mut conn).await?;
         let job = conn.hgetall(job_key).await?;
         Ok(job)
     }
@@ -1029,7 +1036,6 @@ impl<D, R, P> Queue<D, R, P> {
     pub async fn retry_job(
         &self,
         job_id: &str,
-        job_delay: u64,
         backoff_job_opts: &BackOffJobOptions,
         attempts: u64,
     ) -> KioResult<()> {
@@ -1045,9 +1051,7 @@ impl<D, R, P> Queue<D, R, P> {
         pipeline.atomic();
 
         if let Some(next_delay) = self.calculate_next_delay_ms(backoff_job_opts, attempts as i64) {
-            dbg!(next_delay);
-            let expected_active_time =
-                ts + TimeDelta::milliseconds((job_delay as i64) + next_delay);
+            let expected_active_time = ts + TimeDelta::milliseconds(next_delay);
             pipeline.zadd(delayed_key, job_id, expected_active_time.timestamp_millis());
             pipeline.zrem(failed_key, &[job_id]);
         }

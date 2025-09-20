@@ -87,6 +87,7 @@ pub struct KeepJobs {
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Hash, PartialEq)]
 pub struct Trace {
     pub run: u64,
+    pub reason: String,
     pub frames: Vec<String>,
 }
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Hash, PartialEq)]
@@ -204,7 +205,6 @@ impl<D, R, P> Job<D, R, P> {
             existing_logs.push(log_with_dt.clone());
             self.logs.push(log_with_dt);
             let v: redis::Value = conn.hset(job_key, "logs", existing_logs).await?;
-            dbg!(v);
         }
 
         Ok(())
@@ -248,7 +248,7 @@ where
                 "stacktrace" => job.stack_trace = serde_json::from_str(value)?,
                 "logs" => job.logs = serde_json::from_str(value)?,
                 "failedreason" => {
-                    job.failed_reason = serde_json::from_str(value).unwrap_or_default();
+                    job.failed_reason = serde_json::from_str(value)?;
                 }
                 "processedon" => {
                     job.processed_on = serde_json::from_str::<Option<i64>>(value)?
@@ -262,7 +262,6 @@ where
                 _ => { /* Ignore unknown fields if your hash might contain others */ }
             }
         }
-
         Ok(job)
     }
 }
