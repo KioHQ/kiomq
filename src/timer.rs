@@ -14,6 +14,7 @@ pub struct Timer {
     interval: Duration,
     #[debug(skip)]
     callback: Arc<EmptyCb>,
+    is_active: Arc<AtomicBool>,
     pub skip_first_tick: Arc<AtomicBool>,
     cancel: CancellationToken,
 }
@@ -27,7 +28,9 @@ impl Timer {
         let interval = Duration::from_millis(delay_ms);
         #[allow(clippy::redundant_closure)]
         let parsed_cb = move || cb().boxed();
+        let is_active = Arc::default();
         Self {
+            is_active,
             interval,
             callback: Arc::new(parsed_cb),
             cancel: Default::default(),
@@ -45,13 +48,17 @@ impl Timer {
             .unwrap_or_default()
     }
 
-    pub fn run(&self) -> JoinHandle<()> {
+    pub fn run(&self) -> Option<JoinHandle<()>> {
+        if self.is_running() {
+            return None;
+        }
         let mut interval = tokio::time::interval(self.interval);
         let callback = Arc::clone(&self.callback);
         let token = self.cancel.clone();
         let skip_first_tick = self
             .skip_first_tick
             .load(std::sync::atomic::Ordering::Relaxed);
+        let is_active = self.is_active.clone();
         let mut task = task::spawn(async move {
             // wait for the first tick to ensure the initial delay;
             if !skip_first_tick {
@@ -62,14 +69,20 @@ impl Timer {
                 interval.tick().await;
             }
         });
-        task
+        self.is_active
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        Some(task)
     }
 
     pub fn stop(&self) {
         self.cancel.cancel();
+        if self.cancel.is_cancelled() {
+            self.is_active
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+        }
     }
     pub fn is_running(&self) -> bool {
-        !self.cancel.is_cancelled()
+        self.is_active.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
