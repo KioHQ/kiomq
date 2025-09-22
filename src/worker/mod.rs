@@ -49,7 +49,7 @@ pub struct Worker<D, R, P> {
     active: Arc<AtomicBool>,
     processing: ProcessingQueue,
     stalled_check_timer: Timer,
-    job_scheduling_timer: Timer,
+    job_scheduling_timer: Arc<Timer>,
     extend_lock_timer: Timer,
     block_until: Arc<AtomicU64>,
     mini_block_timout: u64,
@@ -124,7 +124,7 @@ impl<
             }
         });
         let queue_clone = queue.clone();
-        let job_scheduling_timer = Timer::new(MIN_DELAY_MS_LIMIT, move || {
+        let job_scheduling_timer = Arc::new(Timer::new(MIN_DELAY_MS_LIMIT, move || {
             let queue = queue_clone.clone();
             async move {
                 let date_time = Utc::now();
@@ -136,9 +136,11 @@ impl<
                     }
                 }
             }
-        });
+        }));
         job_scheduling_timer.should_skip_first_tick();
+        //if queue.current_metrics.has_delayed() {
         job_scheduling_timer.run();
+        //}
 
         let worker = Self {
             job_scheduling_timer,
@@ -184,6 +186,7 @@ impl<
             self.processor.clone(),
             self.queue.clone(),
             self.active.clone(),
+            self.job_scheduling_timer.clone(),
         );
         let main = main_loop(params);
         tokio::spawn(main.boxed());

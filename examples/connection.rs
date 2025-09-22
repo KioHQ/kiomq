@@ -22,7 +22,7 @@ async fn main() -> KioResult<()> {
     let queue_opts = QueueOpts {
         remove_on_fail: Some(remove_opts),
         remove_on_complete: Some(remove_opts),
-        attempts: 5,
+        attempts: 2,
         default_backoff: Some(BackOffJobOptions::Opts(kio_mq::BackOffOptions {
             type_: Some("exponential".to_owned()),
             delay: Some(200),
@@ -51,22 +51,22 @@ async fn main() -> KioResult<()> {
     };
     queue.on_all_events(event_listener).await;
 
-    let count = 1000;
-    for _i in 0..count {
+    let count = 10;
+    let iterator = (0..count).map(|_i| {
         //use rand::Rng;
         //let priority = rand::rng().random_range(1..count); // ucomment to use  random priority
 
         //let priority = count - _i; // ucomment to use a priority of count - index (job_id -1)
         let job_opts = JobOptions {
-            //delay: 500 * _i as u64, // uncomment to add delay
+            delay: 100 * _i as u64, // uncomment to add delay
             //priority, // uncomment to set priority
             ..Default::default()
         };
         let name = Uuid::new_v4().to_string();
-        let _ = queue
-            .add_job(&name, "data".to_lowercase(), Some(job_opts))
-            .await?;
-    }
+        (name, Some(job_opts), "data".to_owned())
+    });
+
+    queue.bulk_add(iterator).await?;
     let opts = WorkerOpts {
         //concurrency: 1, // uncomment to use set concurrency
         ..Default::default()
@@ -95,10 +95,10 @@ async fn process_callback(
 ) -> Result<String, std::io::Error> {
     let progress = job.progress.unwrap_or_default();
     let _ = job.update_progress(progress + 1, &mut con).await;
-    let id: u64 = job.id.unwrap_or_default().parse().unwrap_or_default();
-    if id % 2 == 0 && job.attempts_made < job.opts.attempts - 1 {
-        //uncomment the line below to test to catching panics
-        panic!("panicked here");
-    }
+    //let id: u64 = job.id.unwrap_or_default().parse().unwrap_or_default();
+    //if id % 2 == 0 && job.attempts_made < job.opts.attempts - 1 {
+    //    //uncomment the line below to test to catching panics
+    //    panic!("panicked here");
+    //}
     Ok("done".to_string())
 }
