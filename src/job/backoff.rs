@@ -1,10 +1,10 @@
-use crossbeam_skiplist::SkipMap;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::sync::Arc;
 type BackoffFn = dyn Fn(i64) -> StoredFn + Send + Sync;
 pub type StoredFn = Arc<dyn Fn(i64) -> i64 + Send + Sync>;
 
+use dashmap::DashMap;
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Hash)]
 pub struct BackOffOptions {
     #[serde(rename = "type")]
@@ -20,7 +20,7 @@ pub enum BackOffJobOptions {
 
 #[derive(Clone, Default)]
 pub struct BackOff {
-    pub builtin_strategies: Arc<SkipMap<String, Arc<BackoffFn>>>,
+    pub builtin_strategies: Arc<DashMap<String, Arc<BackoffFn>>>,
 }
 
 impl BackOff {

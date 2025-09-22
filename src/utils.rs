@@ -92,12 +92,12 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
 
 #[async_backtrace::framed]
 pub(crate) async fn process_job<D, R, P>(
-    task_sender: TaskToRemove,
     job: Job<D, R, P>,
     token: String,
     jobs_in_progress: JobMap<D, R, P>,
     queue: Arc<Queue<D, R, P>>,
     callback: Arc<WorkerCallback<D, R, P>>,
+    active_job_count: Arc<AtomicUsize>,
 ) -> KioResult<()>
 where
     R: Serialize + Send + Clone + DeserializeOwned + 'static + Sync,
@@ -124,17 +124,17 @@ where
                         &token,
                         move_to_state,
                         &result_str,
+                        attempts_made,
                         None,
                     )
                     .await?;
                 if let Some(entry) = jobs_in_progress.remove(job_id) {
                     //handle.abort(); // remove task from the queue
-                    let (job, _, handle) = entry.value();
+                    let (job, _, handle) = entry.1;
                     queue
                         .clean_up_job(job_id, job.opts.remove_on_complete)
                         .await?;
                     let handle_id = handle.load(std::sync::atomic::Ordering::Acquire);
-                    task_sender.push(handle_id);
                 }
             }
         }
@@ -162,6 +162,7 @@ where
             // move job to failed_state
             if let Some(job_id) = job_id.as_ref() {
                 let ts = Utc::now().timestamp_micros();
+
                 let move_to_state = JobState::Failed;
                 let failed_job = queue
                     .move_job_to_finished_or_failed(
@@ -170,11 +171,12 @@ where
                         &token,
                         move_to_state,
                         &failed_reason,
+                        attempts_made,
                         frames,
                     )
                     .await?;
                 if let Some(entry) = jobs_in_progress.remove(job_id) {
-                    let (job, _, handle) = entry.value();
+                    let (job, _, handle) = entry.1;
                     // retry failed jobs
                     if failed_job.attempts_made < job.opts.attempts {
                         if let Some(backoff_job_opts) = job.opts.backoff.as_ref() {
@@ -188,11 +190,11 @@ where
                         queue.clean_up_job(job_id, job.opts.remove_on_fail).await?;
                     }
                     let handle_id = handle.load(std::sync::atomic::Ordering::Acquire);
-                    task_sender.push(handle_id)
                 }
             }
         }
     }
+    active_job_count.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     Ok(())
 }
 pub(crate) async fn get_next_job<D, R, P>(
@@ -256,30 +258,6 @@ where
         job_scheduling_timer,
     ) = params;
 
-    let to_remove = TaskToRemove::default();
-    let task_queue = to_remove.clone();
-    let running = processing.clone();
-    let cancel_token = cancellation_token.clone();
-    let job_count = active_job_count.clone();
-    let queue_clone = queue.clone();
-    tokio::spawn(async move {
-        while !cancel_token.is_cancelled() {
-            while let Some(key) = task_queue.pop() {
-                if let Some(entry) = running.remove(&key) {
-                    let handle = entry.value();
-                    let id = entry.key();
-                    handle.abort();
-                }
-                //dbg!(key, job_count);
-            }
-            if queue_clone.current_metrics.has_delayed() {
-                job_scheduling_timer.run();
-            }
-
-            tokio::task::yield_now().await;
-        }
-    });
-
     let now = Instant::now();
     while !cancellation_token.is_cancelled() {
         while !cancellation_token.is_cancelled() && processing.len() < opts.concurrency {
@@ -306,12 +284,12 @@ where
                 active_job_count.fetch_add(1, Ordering::AcqRel);
 
                 let task = tokio::spawn(async_backtrace::frame!(process_job(
-                    to_remove.clone(),
                     job,
                     token,
                     jobs_in_progress.clone(),
                     queue,
-                    callback
+                    callback,
+                    active_job_count.clone()
                 )
                 .boxed()));
                 let task_id: u64 = task.id().to_string().parse()?;
@@ -323,6 +301,7 @@ where
                 }
             }
         }
+        processing.retain(|_, handle| !handle.is_finished());
         tokio::task::yield_now().await;
     }
     if cancellation_token.is_cancelled() {
