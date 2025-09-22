@@ -9,7 +9,9 @@ use uuid::Uuid;
 use crate::error::{JobError, KioError, QueueError};
 use crate::events::QueueStreamEvent;
 use crate::job::{Job, JobState};
-use crate::utils::{calculate_next_priority_score, promote_jobs, serialize_into_pairs};
+use crate::utils::{
+    calculate_next_priority_score, prepare_for_insert, promote_jobs, serialize_into_pairs,
+};
 use crate::worker::{WorkerOpts, MIN_DELAY_MS_LIMIT};
 use crate::{
     get_job_metrics, BackOff, BackOffJobOptions, BackOffOptions, Dt, JobOptions, KeepJobs,
@@ -102,7 +104,7 @@ impl Default for QueueOpts {
     }
 }
 
-type Counter = Arc<AtomicU64>;
+pub(crate) type Counter = Arc<AtomicU64>;
 fn create_counter(count: u64) -> Counter {
     Counter::new(count.into())
 }
@@ -150,6 +152,9 @@ impl JobMetrics {
             .swap(other.last_id.load(Ordering::Acquire), Ordering::AcqRel);
         self.delayed
             .swap(other.delayed.load(Ordering::Acquire), Ordering::AcqRel);
+    }
+    pub fn has_delayed(&self) -> bool {
+        self.delayed.load(Ordering::Acquire) > 0
     }
 }
 
@@ -257,15 +262,25 @@ impl<
             conn_pool: Arc::new(pool),
         })
     }
-    pub async fn is_paused(&self) -> KioResult<bool> {
-        let mut conn = self.conn_pool.get().await?;
+    pub async fn bulk_add<I: Iterator<Item = (String, Option<JobOptions>, D)>>(
+        &self,
+        iter: I,
+    ) -> KioResult<Vec<Job<D, R, P>>> {
+        let mut conn = self.get_connection().await?;
+        let mut pipeline = redis::pipe();
+        pipeline.atomic();
+        let mut result = vec![];
+        for (ref name, opts, data) in iter {
+            let mut opts = opts.unwrap_or_default();
+            self.update_job_opts(&mut opts);
+            let queue_name = format!("{}:{}", self.prefix, self.name);
+            let mut job = Job::<D, R, P>::new(name, Some(data), opts.id, Some(&queue_name));
+            prepare_for_insert(opts, self, &mut job, name, &mut pipeline, &mut conn).await?;
+            result.push(job);
+        }
+        pipeline.query_async::<()>(&mut conn).await?;
 
-        let meta_key = CollectionSuffix::Meta.to_collection_name(&self.prefix, &self.name);
-        let is_paused = conn.hexists(meta_key, JobState::Paused).await?;
-        let done = self
-            .paused
-            .fetch_and(is_paused, std::sync::atomic::Ordering::AcqRel);
-        Ok(done)
+        Ok(result)
     }
     pub async fn add_job(
         &self,
@@ -274,109 +289,16 @@ impl<
         opts: Option<JobOptions>,
     ) -> Result<Job<D, R, P>, KioError> {
         let mut opts = opts.unwrap_or_default();
-        if opts.remove_on_complete.is_none() {
-            opts.remove_on_complete = self.opts.remove_on_complete;
-        }
-        if opts.remove_on_fail.is_none() {
-            opts.remove_on_fail = self.opts.remove_on_fail;
-        }
-        if opts.attempts < self.opts.attempts {
-            opts.attempts = self.opts.attempts;
-        }
-        if opts.backoff.is_none() {
-            opts.backoff = self.opts.default_backoff.clone();
-        }
-
-        let JobOptions {
-            priority,
-            delay,
-            id,
-            attempts,
-            remove_on_fail,
-            remove_on_complete,
-            ref backoff,
-        } = opts;
+        self.update_job_opts(&mut opts);
         let queue_name = format!("{}:{}", self.prefix, self.name);
-        let mut job = Job::<D, R, P>::new(name, Some(data), id, Some(&queue_name));
-        job.add_opts(opts);
-        let mut conn = self.conn_pool.get().await?;
-
-        let id = self.fetch_id().await?;
-        if delay > 0 && delay < MIN_DELAY_MS_LIMIT {
-            return Err(QueueError::DelayBelowAllowedLimit {
-                limit_ms: MIN_DELAY_MS_LIMIT,
-                current_ms: delay,
-            }
-            .into());
-        };
-        //self.job_count.
-        let prefix = &self.prefix;
-        let job_key =
-            CollectionSuffix::Job(id.to_string()).to_collection_name(&self.prefix, &self.name);
-        let events_keys = CollectionSuffix::Events.to_collection_name(&self.prefix, &self.name);
-
-        let waiting_or_paused = if !self.is_paused().await.unwrap_or_default() {
-            CollectionSuffix::Wait
-        } else {
-            CollectionSuffix::Paused
-        };
         let mut pipeline = redis::pipe();
-        let to_delay = delay > 0;
-        let to_priorize = priority > 0 && !to_delay;
-        let waiting_key = waiting_or_paused.to_collection_name(&self.prefix, &self.name);
         pipeline.atomic();
-        if to_delay {
-            let delayed_key =
-                CollectionSuffix::Delayed.to_collection_name(&self.prefix, &self.name);
-            let expected_active_time = job.ts + TimeDelta::milliseconds(delay as i64);
-            pipeline.zadd(delayed_key, id, expected_active_time.timestamp_millis());
-            job.state = JobState::Delayed;
-        }
-        // handle prioritized_jobs
-        else if to_priorize {
-            let priority_counter_key =
-                CollectionSuffix::PriorityCounter.to_collection_name(&self.prefix, &self.name);
-            let prioritized_key =
-                CollectionSuffix::Prioritized.to_collection_name(&self.prefix, &self.name);
-            let prior_counter: u64 = conn.incr(&priority_counter_key, 1).await?;
-            let score = calculate_next_priority_score(priority, prior_counter);
-            pipeline.zadd(&prioritized_key, id, score);
-            job.state = JobState::Priorized;
-        } else {
-            pipeline.lpush(&waiting_key, id.to_string());
-        }
-        job.id = Some(id.to_string());
-        let fields = serialize_into_pairs(&job);
-        pipeline.hset_multiple(&job_key, &fields);
-        let event = if to_delay {
-            JobState::Delayed
-        } else if to_priorize {
-            JobState::Priorized
-        } else {
-            JobState::Wait
-        };
-        let mut items = vec![
-            ("event", event.to_string().to_lowercase()),
-            ("job_id", id.to_string()),
-            ("name", name.to_string()),
-        ];
-        if to_delay {
-            items.push(("delay", delay.to_string()));
-        }
-        if to_priorize {
-            items.push(("priority", priority.to_string()));
-        }
-        pipeline.xadd(events_keys, "*", &items);
+        let mut job = Job::<D, R, P>::new(name, Some(data), opts.id, Some(&queue_name));
+        let mut conn = self.get_connection().await?;
+        prepare_for_insert(opts, self, &mut job, name, &mut pipeline, &mut conn).await?;
         pipeline.query_async::<()>(&mut conn).await?;
 
         Ok(job)
-    }
-    async fn fetch_id(&self) -> KioResult<u64> {
-        let mut conn = self.conn_pool.get().await?;
-        let id_key = CollectionSuffix::Id.to_collection_name(&self.prefix, &self.name);
-        let id = conn.incr(&id_key, 1_u64).await?;
-        self.job_count.swap(id, std::sync::atomic::Ordering::AcqRel);
-        Ok(id)
     }
     pub fn current_jobs(&self) -> u64 {
         self.job_count.load(std::sync::atomic::Ordering::Acquire)
@@ -400,7 +322,7 @@ impl<
     ) -> KioResult<()> {
         let move_to_failed_or_completed = matches!(to, JobState::Failed | JobState::Completed);
         // do nothing if the  queue_is_paused.
-        if self.is_paused().await.unwrap_or_default() {
+        if self.is_paused() {
             return Ok(());
         }
         use redis::Value;
@@ -474,7 +396,7 @@ impl<
         Ok(())
     }
     pub async fn fetch_waiting_jobs(&self) -> KioResult<Vec<Job<D, R, P>>> {
-        if self.is_paused().await? {
+        if self.is_paused() {
             return Ok(vec![]);
         }
         let waiting_key = CollectionSuffix::Wait.to_collection_name(&self.prefix, &self.name);
@@ -493,7 +415,7 @@ impl<
     /// pauses the queue if not resumed and vice-versa
     pub async fn pause_or_resume(&self) -> Result<(), KioError> {
         // if its paused
-        let pause = !self.is_paused().await?;
+        let pause = !self.is_paused();
         let [wait_key, events_key, meta_key, paused_key] = [
             CollectionSuffix::Wait,
             CollectionSuffix::Events,
@@ -529,7 +451,7 @@ impl<
     }
     pub async fn wait_for_job(&self, block_duration: i64) -> KioResult<u64> {
         use chrono::TimeDelta;
-        if self.is_paused().await.unwrap_or_default() {
+        if self.is_paused() {
             return Err(KioError::QueueError(
                 crate::error::QueueError::CantOperateWhenPaused,
             ));
@@ -637,7 +559,7 @@ impl<
                                 let _: () = conn.xadd(&events_key, "*", &items).await?;
                                 failed.push(job_id);
                             } else {
-                                let (is_paused, target) = self.get_target_list().await;
+                                let (is_paused, target) = self.get_target_list();
                                 if !is_paused {
                                     let _: () = conn.zadd(&marker_key, 0, "0").await?;
                                 }
@@ -676,8 +598,8 @@ impl<
         Ok((failed, stalled))
     }
 
-    pub async fn get_target_list(&self) -> (bool, JobState) {
-        let paused = self.is_paused().await.unwrap_or_default();
+    pub fn get_target_list(&self) -> (bool, JobState) {
+        let paused = self.is_paused();
         if paused {
             return (paused, JobState::Paused);
         }
@@ -705,7 +627,7 @@ impl<
             .map(|s| s.to_collection_name(&self.prefix, &self.name));
         let ts = Utc::now().timestamp_micros();
         let mut conn = self.conn_pool.get().await?;
-        let (is_paused, target_state) = self.get_target_list().await;
+        let (is_paused, target_state) = self.get_target_list();
         let target_key =
             CollectionSuffix::from(target_state).to_collection_name(&self.prefix, &self.name);
         let mut job_id: Option<String> = conn.rpoplpush(&wait_key, &active_key).await?;
@@ -918,7 +840,7 @@ impl<
         date_time: Dt,
         mut interval_ms: i64,
     ) -> KioResult<Vec<String>> {
-        let (paused, target_state) = self.get_target_list().await;
+        let (paused, target_state) = self.get_target_list();
         let conn = self.conn_pool.get().await?;
         promote_jobs(
             &self.prefix,
@@ -1060,5 +982,29 @@ impl<D, R, P> Queue<D, R, P> {
         }
 
         Ok(())
+    }
+    fn update_job_opts(&self, opts: &mut JobOptions) {
+        if opts.remove_on_complete.is_none() {
+            opts.remove_on_complete = self.opts.remove_on_complete;
+        }
+        if opts.remove_on_fail.is_none() {
+            opts.remove_on_fail = self.opts.remove_on_fail;
+        }
+        if opts.attempts < self.opts.attempts {
+            opts.attempts = self.opts.attempts;
+        }
+        if opts.backoff.is_none() {
+            opts.backoff = self.opts.default_backoff.clone();
+        }
+    }
+    pub async fn fetch_id(&self) -> KioResult<u64> {
+        let mut conn = self.conn_pool.get().await?;
+        let id_key = CollectionSuffix::Id.to_collection_name(&self.prefix, &self.name);
+        let id = conn.incr(&id_key, 1_u64).await?;
+        self.job_count.swap(id, std::sync::atomic::Ordering::AcqRel);
+        Ok(id)
+    }
+    pub fn is_paused(&self) -> bool {
+        self.current_metrics.paused.load(Ordering::Acquire)
     }
 }

@@ -1,6 +1,7 @@
-use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo};
-use crate::worker::{JobMap, ProcessingQueue, WorkerCallback};
-use crate::{utils, EventParameters, FailedDetails, JobState, Trace, WorkerOpts};
+use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo, QueueError};
+use crate::timer::Timer;
+use crate::worker::{JobMap, ProcessingQueue, WorkerCallback, MIN_DELAY_MS_LIMIT};
+use crate::{utils, EventParameters, FailedDetails, JobOptions, JobState, Trace, WorkerOpts};
 use chrono::Utc;
 use crossbeam_queue::SegQueue;
 use futures::FutureExt;
@@ -48,15 +49,17 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
     name: &str,
     conn: &mut C,
 ) -> KioResult<JobMetrics> {
-    let [job_id_key, stalled_key, active_key, completed_key, meta_key, delayed_key] = [
-        CollectionSuffix::Id,
-        CollectionSuffix::Stalled,
-        CollectionSuffix::Active,
-        CollectionSuffix::Completed,
-        CollectionSuffix::Meta,
-        CollectionSuffix::Delayed,
-    ]
-    .map(|key| key.to_collection_name(prefix, name));
+    let [job_id_key, stalled_key, active_key, completed_key, meta_key, delayed_key, priority_counter_key] =
+        [
+            CollectionSuffix::Id,
+            CollectionSuffix::Stalled,
+            CollectionSuffix::Active,
+            CollectionSuffix::Completed,
+            CollectionSuffix::Meta,
+            CollectionSuffix::Delayed,
+            CollectionSuffix::PriorityCounter,
+        ]
+        .map(|key| key.to_collection_name(prefix, name));
     let mut pipeline = redis::pipe();
     pipeline.atomic();
     pipeline.zcard(completed_key);
@@ -65,6 +68,7 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
     pipeline.zcard(delayed_key);
     pipeline.get(job_id_key);
     pipeline.hexists(&meta_key, JobState::Paused);
+    #[allow(clippy::type_complexity)]
     let (completed, active, stalled, delayed, last_id, paused): (
         Option<u64>,
         Option<u64>,
@@ -226,6 +230,7 @@ type MainLoopParams<D, R, P> = (
     Arc<WorkerCallback<D, R, P>>,
     Arc<Queue<D, R, P>>,
     Arc<AtomicBool>,
+    Arc<Timer>,
 );
 use tokio::task::Id;
 type TaskToRemove = Arc<SegQueue<u64>>;
@@ -248,6 +253,7 @@ where
         processor,
         queue,
         is_active,
+        job_scheduling_timer,
     ) = params;
 
     let to_remove = TaskToRemove::default();
@@ -255,6 +261,7 @@ where
     let running = processing.clone();
     let cancel_token = cancellation_token.clone();
     let job_count = active_job_count.clone();
+    let queue_clone = queue.clone();
     tokio::spawn(async move {
         while !cancel_token.is_cancelled() {
             while let Some(key) = task_queue.pop() {
@@ -265,6 +272,10 @@ where
                 }
                 //dbg!(key, job_count);
             }
+            if queue_clone.current_metrics.has_delayed() {
+                job_scheduling_timer.run();
+            }
+
             tokio::task::yield_now().await;
         }
     });
@@ -272,7 +283,7 @@ where
     let now = Instant::now();
     while !cancellation_token.is_cancelled() {
         while !cancellation_token.is_cancelled() && processing.len() < opts.concurrency {
-            let token_prefix = active_job_count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            let token_prefix = active_job_count.load(std::sync::atomic::Ordering::Acquire);
             let token = format!("{id}:{token_prefix}");
             let block_delay = block_until.load(std::sync::atomic::Ordering::Acquire);
             if let Some(job) = get_next_job(
@@ -292,6 +303,7 @@ where
 
                 let queue = queue.clone();
                 let callback = processor.clone();
+                active_job_count.fetch_add(1, Ordering::AcqRel);
 
                 let task = tokio::spawn(async_backtrace::frame!(process_job(
                     to_remove.clone(),
@@ -370,8 +382,94 @@ pub async fn promote_jobs(
         }
     }
     if !pipeline.is_empty() {
-        //tokio::time::sleep(Duration::from_millis((interval_ms) as u64)).await;
+        tokio::time::sleep(Duration::from_millis((interval_ms) as u64)).await;
         pipeline.query_async::<()>(&mut conn).await?;
     }
     Ok(jobs)
+}
+/// Utilily function for pipelining
+pub async fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
+    opts: JobOptions,
+    queue: &Queue<D, R, P>,
+    job: &mut Job<D, R, P>,
+    name: &str,
+    pipeline: &mut redis::Pipeline,
+    conn: &mut deadpool_redis::Connection,
+) -> KioResult<()> {
+    let JobOptions {
+        priority,
+        delay,
+        id,
+        attempts,
+        remove_on_fail,
+        remove_on_complete,
+        ref backoff,
+    } = opts;
+    job.add_opts(opts);
+    let queue_name = format!("{}:{}", &queue.prefix, &queue.name);
+    let id = queue.fetch_id().await?;
+    if delay > 0 && delay < MIN_DELAY_MS_LIMIT {
+        return Err(QueueError::DelayBelowAllowedLimit {
+            limit_ms: MIN_DELAY_MS_LIMIT,
+            current_ms: delay,
+        }
+        .into());
+    };
+    //queue.job_count.
+    let prefix = &queue.prefix;
+    let job_key =
+        CollectionSuffix::Job(id.to_string()).to_collection_name(&queue.prefix, &queue.name);
+    let events_keys = CollectionSuffix::Events.to_collection_name(&queue.prefix, &queue.name);
+
+    let waiting_or_paused = if !queue.is_paused() {
+        CollectionSuffix::Wait
+    } else {
+        CollectionSuffix::Paused
+    };
+    let to_delay = delay > 0;
+    let to_priorize = priority > 0 && !to_delay;
+    let waiting_key = waiting_or_paused.to_collection_name(&queue.prefix, &queue.name);
+    pipeline.atomic();
+    if to_delay {
+        let delayed_key = CollectionSuffix::Delayed.to_collection_name(&queue.prefix, &queue.name);
+        let expected_active_time = job.ts + TimeDelta::milliseconds(delay as i64);
+        pipeline.zadd(delayed_key, id, expected_active_time.timestamp_millis());
+        job.state = JobState::Delayed;
+    }
+    // handle prioritized_jobs
+    else if to_priorize {
+        let priority_counter_key =
+            CollectionSuffix::PriorityCounter.to_collection_name(&queue.prefix, &queue.name);
+        let prioritized_key =
+            CollectionSuffix::Prioritized.to_collection_name(&queue.prefix, &queue.name);
+        let prior_counter: u64 = conn.incr(&priority_counter_key, 1).await?;
+        let score = calculate_next_priority_score(priority, prior_counter);
+        pipeline.zadd(&prioritized_key, id, score);
+        job.state = JobState::Priorized;
+    } else {
+        pipeline.lpush(&waiting_key, id.to_string());
+    }
+    job.id = Some(id.to_string());
+    let fields = serialize_into_pairs(&job);
+    pipeline.hset_multiple(&job_key, &fields);
+    let event = if to_delay {
+        JobState::Delayed
+    } else if to_priorize {
+        JobState::Priorized
+    } else {
+        JobState::Wait
+    };
+    let mut items = vec![
+        ("event", event.to_string().to_lowercase()),
+        ("job_id", id.to_string()),
+        ("name", name.to_string()),
+    ];
+    if to_delay {
+        items.push(("delay", delay.to_string()));
+    }
+    if to_priorize {
+        items.push(("priority", priority.to_string()));
+    }
+    pipeline.xadd(events_keys, "*", &items);
+    Ok(())
 }
