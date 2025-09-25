@@ -713,7 +713,7 @@ impl<
         let job = conn.hgetall(&job_key).await?;
         Ok(job)
     }
-    #[allow(clippy::too_many_arguments)]
+
     pub(crate) async fn move_job_to_finished_or_failed(
         &self,
         job_id: &str,
@@ -721,7 +721,6 @@ impl<
         token: &str,
         move_to_state: JobState,
         returned_value_or_failed_reason: &str,
-        attempts: u64,
         backtrace: Option<Trace>,
     ) -> KioResult<Job<D, R, P>> {
         let [job_key, job_lock_key, active_key, completed_key, events_stream_key, stalled_key] = [
@@ -741,17 +740,15 @@ impl<
         if !job_exists {
             return Err(JobError::JobNotFound.into());
         }
-        if attempts == 0 {
-            let lock_token: Option<String> = conn.get(&job_lock_key).await?;
-            if let Some(local) = lock_token {
-                if local != token {
-                    return Err(JobError::JobLockMismatch.into());
-                }
-                pipeline.del(&job_lock_key);
-                pipeline.srem(&stalled_key, job_id);
-            } else {
-                return Err(JobError::JobLockNotExist.into());
+        let lock_token: Option<String> = conn.get(&job_lock_key).await?;
+        if let Some(local) = lock_token {
+            if local != token {
+                return Err(JobError::JobLockMismatch.into());
             }
+            pipeline.del(&job_lock_key);
+            pipeline.srem(&stalled_key, job_id);
+        } else {
+            return Err(JobError::JobLockNotExist.into());
         }
         // Todo: remove any dependencies too here ;
         self.move_job_to_state(
