@@ -1,7 +1,9 @@
 use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo, QueueError};
 use crate::timer::Timer;
 use crate::worker::{JobMap, ProcessingQueue, WorkerCallback, MIN_DELAY_MS_LIMIT};
-use crate::{utils, EventParameters, FailedDetails, JobOptions, JobState, Trace, WorkerOpts};
+use crate::{
+    utils, EventParameters, FailedDetails, JobOptions, JobState, KioError, Trace, WorkerOpts,
+};
 use chrono::Utc;
 use crossbeam_queue::SegQueue;
 use futures::FutureExt;
@@ -201,6 +203,7 @@ pub(crate) async fn get_next_job<D, R, P>(
     block_delay: u64,
     closed: bool,
     opts: &WorkerOpts,
+    passed_id: Option<String>,
 ) -> KioResult<Option<Job<D, R, P>>>
 where
     D: DeserializeOwned + Clone + Serialize + Send + 'static + Sync,
@@ -210,6 +213,14 @@ where
     // handle pausing or closing;
     if closed {
         return Ok(None);
+    }
+    if let Some(ref job_id) = passed_id {
+        let ts = Utc::now().timestamp_micros() as u64;
+        let prev_state = JobState::Wait;
+        let job = queue
+            .prepare_job_for_processing(token, job_id, ts, opts, prev_state)
+            .await?;
+        return Ok(Some(job));
     }
 
     if let MoveToActiveResult::ProcessJob(job) = queue.move_to_active(token, opts).await? {
@@ -230,10 +241,10 @@ type MainLoopParams<D, R, P> = (
     Arc<WorkerCallback<D, R, P>>,
     Arc<Queue<D, R, P>>,
     Arc<AtomicBool>,
-    Arc<Timer>,
 );
 use tokio::task::Id;
 type TaskToRemove = Arc<SegQueue<u64>>;
+pub(crate) type JobQueue = Arc<SegQueue<String>>;
 #[async_backtrace::framed]
 pub(crate) async fn main_loop<D, R, P>(params: MainLoopParams<D, R, P>) -> KioResult<()>
 where
@@ -253,17 +264,26 @@ where
         processor,
         queue,
         is_active,
-        job_scheduling_timer,
     ) = params;
 
     let to_remove = TaskToRemove::default();
     let task_queue = to_remove.clone();
+    let delayed = JobQueue::default();
     let running = processing.clone();
     let cancel_token = cancellation_token.clone();
     let job_count = active_job_count.clone();
     let queue_clone = queue.clone();
+    let job_queue = delayed.clone();
     tokio::spawn(async move {
         while !cancel_token.is_cancelled() {
+            // promote jobs here;
+            let date_time = Utc::now();
+            let interval_ms = (MIN_DELAY_MS_LIMIT) as i64;
+            if queue_clone.current_metrics.has_delayed() {
+                queue_clone
+                    .promote_delayed_jobs(date_time, interval_ms, job_queue.clone())
+                    .await?;
+            }
             while let Some(key) = task_queue.pop() {
                 if let Some(entry) = running.remove(&key) {
                     let handle = entry.value();
@@ -272,12 +292,10 @@ where
                 }
                 //dbg!(key, job_count);
             }
-            if queue_clone.current_metrics.has_delayed() {
-                job_scheduling_timer.run();
-            }
 
-            tokio::task::yield_now().await;
+            //tokio::task::yield_now().await;
         }
+        Ok::<(), KioError>(())
     });
 
     let now = Instant::now();
@@ -286,12 +304,14 @@ where
             let token_prefix = active_job_count.load(std::sync::atomic::Ordering::Acquire);
             let token = format!("{id}:{token_prefix}");
             let block_delay = block_until.load(std::sync::atomic::Ordering::Acquire);
+            let passed_id = delayed.pop();
             if let Some(job) = get_next_job(
                 queue.as_ref(),
                 &token,
                 block_delay,
                 cancellation_token.is_cancelled(),
                 &opts,
+                passed_id,
             )
             .await?
             {
@@ -334,7 +354,7 @@ use crate::Dt;
 use chrono::TimeDelta;
 use redis::AsyncCommands;
 use std::time::{Duration, Instant};
-
+#[allow(clippy::too_many_arguments)]
 pub async fn promote_jobs(
     prefix: &str,
     name: &str,
@@ -343,7 +363,8 @@ pub async fn promote_jobs(
     target_state: JobState,
     mut interval_ms: i64,
     mut conn: deadpool_redis::Connection,
-) -> KioResult<Vec<String>> {
+    job_queue: JobQueue,
+) -> KioResult<()> {
     let [delayed_key, marker_key, events_stream_key, prioritized_key, priority_counter_key] = [
         CollectionSuffix::Delayed,
         CollectionSuffix::Marker,
@@ -356,36 +377,17 @@ pub async fn promote_jobs(
     let stop = (date_time + TimeDelta::milliseconds(interval_ms)).timestamp_millis();
     let start = date_time.timestamp_millis();
     let mut pipeline = redis::pipe();
-    let jobs: Vec<String> = conn
-        .zrangebyscore_limit(&delayed_key, start, stop, 0, 1000)
-        .await?;
-    if !jobs.is_empty() {
-        let removed: redis::Value = conn.zrem(&delayed_key, &jobs).await?;
-    }
     pipeline.atomic();
-    if !jobs.is_empty() {
-        for job_id in jobs.iter() {
-            let job_key = CollectionSuffix::Job(job_id.to_owned()).to_collection_name(prefix, name);
-            let priority: u64 = conn.hget(&job_key, "priority").await?;
-            if priority == 0 {
-                pipeline.lpush(&target_key, job_id);
-            } else {
-                let prior_counter: u64 = conn.incr(&priority_counter_key, 1).await?;
-                let score = calculate_next_priority_score(priority, prior_counter);
-                pipeline.zadd(&prioritized_key, score, job_id);
-            }
-
-            //self.add_base_marker(paused, &mut pipeline);
-            let items = [("event", "wait"), ("job_id", job_id), ("prev", "delayed")];
-            pipeline.xadd(&events_stream_key, "*", &items);
-            pipeline.hset(job_key, "delay", 0);
+    pipeline.zrangebyscore(&delayed_key, start, stop);
+    pipeline.zrembyscore(&delayed_key, start, stop);
+    let (jobs, done): (Vec<String>, i64) = pipeline.query_async(&mut conn).await?;
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(interval_ms as u64)).await;
+        for job in jobs {
+            job_queue.push(job);
         }
-    }
-    if !pipeline.is_empty() {
-        tokio::time::sleep(Duration::from_millis((interval_ms) as u64)).await;
-        pipeline.query_async::<()>(&mut conn).await?;
-    }
-    Ok(jobs)
+    });
+    Ok(())
 }
 /// Utilily function for pipelining
 pub async fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(

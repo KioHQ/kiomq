@@ -49,7 +49,6 @@ pub struct Worker<D, R, P> {
     active: Arc<AtomicBool>,
     processing: ProcessingQueue,
     stalled_check_timer: Timer,
-    job_scheduling_timer: Arc<Timer>,
     extend_lock_timer: Timer,
     block_until: Arc<AtomicU64>,
     mini_block_timout: u64,
@@ -123,27 +122,8 @@ impl<
                 }
             }
         });
-        let queue_clone = queue.clone();
-        let job_scheduling_timer = Arc::new(Timer::new(MIN_DELAY_MS_LIMIT, move || {
-            let queue = queue_clone.clone();
-            async move {
-                let date_time = Utc::now();
-                let interval_ms = (MIN_DELAY_MS_LIMIT) as i64;
-                if let Ok(promoted_jobs) = queue.promote_delayed_jobs(date_time, interval_ms).await
-                {
-                    if !promoted_jobs.is_empty() {
-                        //dbg!(promoted_jobs);
-                    }
-                }
-            }
-        }));
-        job_scheduling_timer.should_skip_first_tick();
-        //if queue.current_metrics.has_delayed() {
-        job_scheduling_timer.run();
-        //}
 
         let worker = Self {
-            job_scheduling_timer,
             block_until: Arc::default(),
             stalled_check_timer,
             extend_lock_timer,
@@ -186,7 +166,6 @@ impl<
             self.processor.clone(),
             self.queue.clone(),
             self.active.clone(),
-            self.job_scheduling_timer.clone(),
         );
         let main = main_loop(params);
         tokio::spawn(main.boxed());
@@ -204,7 +183,6 @@ impl<
         if !self.is_running() {
             return;
         }
-        self.job_scheduling_timer.stop();
         self.stalled_check_timer.stop();
         self.extend_lock_timer.stop();
         self.cancellation_token.cancel();
