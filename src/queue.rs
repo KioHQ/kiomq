@@ -1,3 +1,4 @@
+use crossbeam_queue::SegQueue;
 use futures::future::Future;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -10,7 +11,7 @@ use crate::error::{JobError, KioError, QueueError};
 use crate::events::QueueStreamEvent;
 use crate::job::{Job, JobState};
 use crate::utils::{
-    calculate_next_priority_score, prepare_for_insert, promote_jobs, serialize_into_pairs,
+    calculate_next_priority_score, prepare_for_insert, promote_jobs, serialize_into_pairs, JobQueue,
 };
 use crate::worker::{WorkerOpts, MIN_DELAY_MS_LIMIT};
 use crate::{
@@ -839,7 +840,8 @@ impl<
         &self,
         date_time: Dt,
         mut interval_ms: i64,
-    ) -> KioResult<Vec<String>> {
+        job_queue: JobQueue,
+    ) -> KioResult<()> {
         let (paused, target_state) = self.get_target_list();
         let conn = self.conn_pool.get().await?;
         promote_jobs(
@@ -850,6 +852,7 @@ impl<
             target_state,
             interval_ms,
             conn,
+            job_queue,
         )
         .await
     }
