@@ -25,16 +25,16 @@ use std::{
 use uuid::Uuid;
 mod worker_opts;
 use crate::error::WorkerError;
+use crossbeam_skiplist::SkipMap;
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio_util::sync::CancellationToken;
 mod worker_events;
 use crate::events::{EventEmitter, EventParameters};
-use dashmap::DashMap;
 type JobMeta<D, R, P> = (Job<D, R, P>, String, AtomicU64);
-pub(crate) type JobMap<D, R, P> = Arc<DashMap<String, JobMeta<D, R, P>>>;
+pub(crate) type JobMap<D, R, P> = Arc<SkipMap<String, JobMeta<D, R, P>>>;
 type Task = JoinHandle<KioResult<()>>;
 use tokio::task::Id;
-pub(crate) type ProcessingQueue = Arc<DashMap<u64, Task>>;
+pub(crate) type ProcessingQueue = Arc<SkipMap<u64, Task>>;
 pub use worker_opts::WorkerOpts;
 pub(crate) use worker_opts::MIN_DELAY_MS_LIMIT;
 #[derive(Clone, Debug)]
@@ -81,7 +81,7 @@ impl<
     {
         let queue = Arc::new(queue.clone());
         let pool = queue.conn_pool.clone();
-        let jobs_in_progress: JobMap<_, _, _> = Arc::default();
+        let jobs_in_progress: JobMap<_, _, _> = Arc::new(SkipMap::new());
         let callback = move |conn: Connection, job: Job<D, R, P>| {
             let fut = async_backtrace::frame!(processor(conn, job));
             fut.map_err(|e| e.into()).boxed()
