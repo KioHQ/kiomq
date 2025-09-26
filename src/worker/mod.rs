@@ -26,7 +26,10 @@ use uuid::Uuid;
 mod worker_opts;
 use crate::error::WorkerError;
 use crossbeam_skiplist::SkipMap;
-use tokio::task::{AbortHandle, JoinHandle};
+use tokio::{
+    sync::Notify,
+    task::{AbortHandle, JoinHandle},
+};
 use tokio_util::sync::CancellationToken;
 mod worker_events;
 use crate::events::{EventEmitter, EventParameters};
@@ -53,6 +56,7 @@ pub struct Worker<D, R, P> {
     block_until: Arc<AtomicU64>,
     mini_block_timout: u64,
     active_job_count: Arc<AtomicUsize>,
+    continue_notifier: Arc<Notify>,
 }
 use deadpool_redis::Connection;
 pub(crate) type WorkerCallback<D, R, P> =
@@ -122,8 +126,9 @@ impl<
                 }
             }
         });
-
+        let continue_notifier = queue.worker_notifier.clone();
         let worker = Self {
+            continue_notifier,
             block_until: Arc::default(),
             stalled_check_timer,
             extend_lock_timer,
@@ -166,6 +171,7 @@ impl<
             self.processor.clone(),
             self.queue.clone(),
             self.active.clone(),
+            self.continue_notifier.clone(),
         );
         let main = main_loop(params);
         tokio::spawn(main.boxed());
