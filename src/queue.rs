@@ -1,9 +1,11 @@
 use crossbeam_queue::SegQueue;
 use futures::future::Future;
+use futures::FutureExt;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -116,11 +118,14 @@ pub struct JobMetrics {
     pub stalled: Counter,
     pub delayed: Counter,
     pub completed: Counter,
+    pub waiting: Counter,
     pub paused: Arc<AtomicBool>,
 }
 impl JobMetrics {
     pub fn all_jobs_completed(&self) -> bool {
-        self.completed.load(Ordering::Relaxed) == self.last_id.load(Ordering::Relaxed)
+        let last_id = self.last_id.load(Ordering::Relaxed);
+        last_id > 0
+            && self.completed.load(Ordering::Relaxed) == last_id
             && self.active.load(Ordering::Relaxed) == 0
     }
     pub fn new(
@@ -129,6 +134,7 @@ impl JobMetrics {
         stalled: u64,
         completed: u64,
         delayed: u64,
+        waiting: u64,
         paused: bool,
     ) -> Self {
         Self {
@@ -136,6 +142,7 @@ impl JobMetrics {
             active: create_counter(active),
             stalled: create_counter(stalled),
             completed: create_counter(completed),
+            waiting: create_counter(waiting),
             delayed: create_counter(delayed),
             paused: Arc::new(paused.into()),
         }
@@ -153,9 +160,19 @@ impl JobMetrics {
             .swap(other.last_id.load(Ordering::Acquire), Ordering::AcqRel);
         self.delayed
             .swap(other.delayed.load(Ordering::Acquire), Ordering::AcqRel);
+        self.waiting
+            .swap(other.waiting.load(Ordering::Acquire), Ordering::AcqRel);
     }
     pub fn has_delayed(&self) -> bool {
         self.delayed.load(Ordering::Acquire) > 0
+    }
+    pub fn queue_has_work(&self) -> bool {
+        self.waiting.load(Ordering::Acquire) > 0
+            || self.delayed.load(Ordering::Acquire) > 0
+            || self.stalled.load(Ordering::Acquire) > 0
+    }
+    pub fn queue_is_paused(&self) -> bool {
+        self.paused.load(Ordering::Acquire)
     }
 }
 
@@ -172,8 +189,9 @@ pub struct Queue<D, R, P> {
     #[debug(skip)]
     pub stream_listener: Arc<JoinHandle<KioResult<()>>>,
     #[debug(skip)]
-    pub conn_pool: Arc<Pool>,
-    pub backoff: BackOff,
+    pub(crate) conn_pool: Arc<Pool>,
+    pub(crate) backoff: BackOff,
+    pub(crate) worker_notifier: Arc<Notify>,
 }
 
 impl<
@@ -206,6 +224,7 @@ impl<
             metrics = current_metrics;
         }
 
+        let worker_notifier: Arc<Notify> = Arc::default();
         let current_metrics = Arc::new(metrics);
         let is_paused = current_metrics.paused.load(Ordering::Relaxed);
         let mut connection = pool.get().await?;
@@ -215,42 +234,51 @@ impl<
         let metrics = current_metrics.clone();
         let prefix_clone = prefix.clone();
         let name_clone = name.clone();
-        let task: JoinHandle<KioResult<()>> = tokio::spawn(async move {
-            let block_interval = 1000000; // 100 seconds
-            loop {
-                let options = StreamReadOptions::default().block(block_interval);
-                let reply: StreamReadReply = connection
-                    .xread_options(&[&stream_key], &["$"], &options)
-                    .await?;
-                let events: Vec<QueueStreamEvent<R, P>> =
-                    QueueStreamEvent::from_stream_read_reply(&stream_key, reply);
-                if !events.is_empty() {
-                    for event in events.into_iter() {
-                        //print!("{event:#?}");
-
-                        let state = event.event;
-                        let param = EventParameters::<D, R, P>::from_queue_event(
-                            &queue_name,
-                            event,
-                            &mut connection,
-                        )
+        let notifier = worker_notifier.clone();
+        let task: JoinHandle<KioResult<()>> = tokio::spawn(
+            async move {
+                let block_interval = 1000000; // 100 seconds
+                let notifier = notifier.clone();
+                loop {
+                    let options = StreamReadOptions::default().block(block_interval);
+                    let reply: StreamReadReply = connection
+                        .xread_options(&[&stream_key], &["$"], &options)
                         .await?;
-                        emitter_clone.emit(state, param).await;
-                        if let Ok(updated) =
-                            get_job_metrics(&prefix_clone, &name_clone, &mut conn).await
-                        {
-                            metrics.update(&updated);
-                        }
-                    }
-                    // keep the queue's metrics up to date
-                }
-            }
+                    let events: Vec<QueueStreamEvent<R, P>> =
+                        QueueStreamEvent::from_stream_read_reply(&stream_key, reply);
+                    if !events.is_empty() {
+                        for event in events.into_iter() {
+                            //print!("{event:#?}");
 
-            Ok(())
-        });
+                            let state = event.event;
+                            let param = EventParameters::<D, R, P>::from_queue_event(
+                                &queue_name,
+                                event,
+                                &mut connection,
+                            )
+                            .await?;
+                            emitter_clone.emit(state, param).await;
+                            if metrics.queue_has_work() && !metrics.queue_is_paused() {
+                                notifier.notify_waiters();
+                            }
+                            if let Ok(updated) =
+                                get_job_metrics(&prefix_clone, &name_clone, &mut conn).await
+                            {
+                                metrics.update(&updated);
+                            }
+                        }
+                        // keep the queue's metrics up to date
+                    }
+                }
+
+                Ok(())
+            }
+            .boxed(),
+        );
         let stream_listener = Arc::new(task);
         //
         Ok(Self {
+            worker_notifier,
             backoff: BackOff::new(),
             opts,
             current_metrics,

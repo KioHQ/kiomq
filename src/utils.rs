@@ -10,6 +10,7 @@ use futures::FutureExt;
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Write;
 use std::num::NonZero;
+use tokio::sync::Notify;
 use tokio::task_local;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -51,7 +52,7 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
     name: &str,
     conn: &mut C,
 ) -> KioResult<JobMetrics> {
-    let [job_id_key, stalled_key, active_key, completed_key, meta_key, delayed_key, priority_counter_key] =
+    let [job_id_key, stalled_key, active_key, completed_key, meta_key, delayed_key, priority_counter_key, waiting_key] =
         [
             CollectionSuffix::Id,
             CollectionSuffix::Stalled,
@@ -60,6 +61,7 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
             CollectionSuffix::Meta,
             CollectionSuffix::Delayed,
             CollectionSuffix::PriorityCounter,
+            CollectionSuffix::Wait,
         ]
         .map(|key| key.to_collection_name(prefix, name));
     let mut pipeline = redis::pipe();
@@ -68,24 +70,27 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
     pipeline.llen(active_key);
     pipeline.scard(stalled_key);
     pipeline.zcard(delayed_key);
+    pipeline.llen(waiting_key);
     pipeline.get(job_id_key);
     pipeline.hexists(&meta_key, JobState::Paused);
     #[allow(clippy::type_complexity)]
-    let (completed, active, stalled, delayed, last_id, paused): (
+    let (completed, active, stalled, delayed, waiting, last_id, paused): (
         Option<u64>,
         Option<u64>,
         Option<u64>,
         Option<u64>,
-        u64,
+        Option<u64>,
+        Option<u64>,
         bool,
     ) = pipeline.query_async(conn).await?;
 
     Ok(JobMetrics::new(
-        last_id,
+        last_id.unwrap_or_default(),
         active.unwrap_or_default(),
         stalled.unwrap_or_default(),
         completed.unwrap_or_default(),
         delayed.unwrap_or_default(),
+        waiting.unwrap_or_default(),
         paused,
     ))
 }
@@ -241,6 +246,7 @@ type MainLoopParams<D, R, P> = (
     Arc<WorkerCallback<D, R, P>>,
     Arc<Queue<D, R, P>>,
     Arc<AtomicBool>,
+    Arc<Notify>,
 );
 use tokio::task::Id;
 type TaskToRemove = Arc<SegQueue<u64>>;
@@ -264,6 +270,7 @@ where
         processor,
         queue,
         is_active,
+        continue_process,
     ) = params;
 
     let to_remove = TaskToRemove::default();
@@ -274,32 +281,38 @@ where
     let job_count = active_job_count.clone();
     let queue_clone = queue.clone();
     let job_queue = delayed.clone();
-    tokio::spawn(async move {
-        while !cancel_token.is_cancelled() {
-            // promote jobs here;
-            let date_time = Utc::now();
-            let interval_ms = (MIN_DELAY_MS_LIMIT) as i64;
-            if queue_clone.current_metrics.has_delayed() {
-                queue_clone
-                    .promote_delayed_jobs(date_time, interval_ms, job_queue.clone())
-                    .await?;
-            }
-            while let Some(key) = task_queue.pop() {
-                if let Some(entry) = running.remove(&key) {
-                    let handle = entry.value();
-                    let id = entry.key();
-                    handle.abort();
+    let notifer = continue_process.clone();
+    tokio::spawn(
+        async move {
+            while !cancel_token.is_cancelled() {
+                //notifer.notified().await;
+                // promote jobs here;
+                let date_time = Utc::now();
+                let interval_ms = (MIN_DELAY_MS_LIMIT) as i64;
+                if queue_clone.current_metrics.has_delayed() {
+                    queue_clone
+                        .promote_delayed_jobs(date_time, interval_ms, job_queue.clone())
+                        .await?;
                 }
-                //dbg!(key, job_count);
-            }
+                while let Some(key) = task_queue.pop() {
+                    if let Some(entry) = running.remove(&key) {
+                        let handle = entry.value();
+                        let id = entry.key();
+                        handle.abort();
+                    }
+                    //dbg!(key, job_count);
+                }
 
-            //tokio::task::yield_now().await;
+                tokio::task::yield_now().await;
+            }
+            Ok::<(), KioError>(())
         }
-        Ok::<(), KioError>(())
-    });
+        .boxed(),
+    );
 
     let now = Instant::now();
     while !cancellation_token.is_cancelled() {
+        //continue_process.notified().await;
         while !cancellation_token.is_cancelled() && processing.len() < opts.concurrency {
             let token_prefix = active_job_count.load(std::sync::atomic::Ordering::Acquire);
             let token = format!("{id}:{token_prefix}");
@@ -381,12 +394,14 @@ pub async fn promote_jobs(
     pipeline.zrangebyscore(&delayed_key, start, stop);
     pipeline.zrembyscore(&delayed_key, start, stop);
     let (jobs, done): (Vec<String>, i64) = pipeline.query_async(&mut conn).await?;
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(interval_ms as u64)).await;
-        for job in jobs {
-            job_queue.push(job);
-        }
-    });
+    if !jobs.is_empty() {
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(interval_ms as u64)).await;
+            for job in jobs {
+                job_queue.push(job);
+            }
+        });
+    }
     Ok(())
 }
 /// Utilily function for pipelining
