@@ -96,6 +96,7 @@ pub struct FailedDetails {
     pub reason: String,
 }
 use chrono::serde::{ts_microseconds, ts_microseconds_option};
+use derive_more::Debug;
 #[derive(Debug, Serialize, Deserialize, Default, Hash, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Job<D, R, P> {
@@ -105,11 +106,14 @@ pub struct Job<D, R, P> {
     pub ts: Dt,
     pub name: String,
     pub state: JobState,
+    #[debug(skip)]
     pub progress: Option<P>,
     pub attempts_made: u64,
     pub opts: JobOptions,
     pub delay: u64,
+    #[debug(skip)]
     pub data: Option<D>,
+    #[debug(skip)]
     pub returned_value: Option<R>,
     pub stack_trace: Vec<Trace>,
     pub failed_reason: Option<FailedDetails>,

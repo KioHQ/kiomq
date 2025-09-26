@@ -79,4 +79,6 @@ pub enum JobError {
     ParentJobNotExist = -5,
     #[error("The job lock does not match")]
     JobLockMismatch = -6,
+    #[error("Job has missed delay deadline")]
+    MissedDelayDeadline = -7,
 }

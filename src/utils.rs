@@ -1,4 +1,4 @@
-use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo, QueueError};
+use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo, JobError, QueueError};
 use crate::timer::Timer;
 use crate::worker::{JobMap, ProcessingQueue, WorkerCallback, MIN_DELAY_MS_LIMIT};
 use crate::{
@@ -368,38 +368,72 @@ use chrono::TimeDelta;
 use redis::AsyncCommands;
 use std::time::{Duration, Instant};
 #[allow(clippy::too_many_arguments)]
-pub async fn promote_jobs(
-    prefix: &str,
-    name: &str,
+pub async fn promote_jobs<D, R, P>(
+    queue: &Queue<D, R, P>,
     date_time: Dt,
-    paused: bool,
-    target_state: JobState,
     mut interval_ms: i64,
-    mut conn: deadpool_redis::Connection,
     job_queue: JobQueue,
-) -> KioResult<()> {
-    let [delayed_key, marker_key, events_stream_key, prioritized_key, priority_counter_key] = [
-        CollectionSuffix::Delayed,
-        CollectionSuffix::Marker,
-        CollectionSuffix::Events,
-        CollectionSuffix::Prioritized,
-        CollectionSuffix::PriorityCounter,
-    ]
-    .map(|collection| collection.to_collection_name(prefix, name));
-    let target_key = CollectionSuffix::from(target_state).to_collection_name(prefix, name);
+) -> KioResult<()>
+where
+    D: Clone + Serialize + DeserializeOwned + Send + 'static,
+    R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
+    P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
+{
+    let [delayed_key] = [CollectionSuffix::Delayed]
+        .map(|collection| collection.to_collection_name(&queue.prefix, &queue.name));
     let stop = (date_time + TimeDelta::milliseconds(interval_ms)).timestamp_millis();
     let start = date_time.timestamp_millis();
     let mut pipeline = redis::pipe();
+    let mut conn = queue.get_connection().await?;
     pipeline.atomic();
     pipeline.zrangebyscore(&delayed_key, start, stop);
+    pipeline.zrangebyscore(&delayed_key, "-inf", format!("({start}"));
     pipeline.zrembyscore(&delayed_key, start, stop);
-    let (jobs, done): (Vec<String>, i64) = pipeline.query_async(&mut conn).await?;
+    let start = (date_time - TimeDelta::milliseconds(interval_ms)).timestamp_millis();
+    pipeline.zrembyscore(&delayed_key, "-inf", format!("({start}"));
+    let (jobs, missed_deadline, __done, _done): (Vec<String>, Vec<String>, i64, i64) =
+        pipeline.query_async(&mut conn).await?;
     if !jobs.is_empty() {
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(interval_ms as u64)).await;
             for job in jobs {
                 job_queue.push(job);
             }
+        });
+    }
+    if !missed_deadline.is_empty() {
+        let queue_clone = queue.clone();
+        let ts = date_time.timestamp_micros();
+        tokio::spawn(async move {
+            let move_to_state = JobState::Failed;
+            let mut reason = FailedDetails {
+                run: 0,
+                reason: JobError::MissedDelayDeadline.to_string(),
+            };
+            let mut conn = queue_clone.get_connection().await?;
+            for job_id in missed_deadline {
+                let job_key = CollectionSuffix::Job(job_id.clone())
+                    .to_collection_name(&queue_clone.prefix, &queue_clone.name);
+                let mut pipeline = redis::pipe();
+                pipeline.hget(&job_key, "attemptsMade");
+                pipeline.hget(&job_key, "token");
+                let (attempts, token): (u64, Option<String>) =
+                    pipeline.query_async(&mut conn).await?;
+                reason.run = attempts + 1;
+                let token = token.unwrap_or_default();
+                let failed_reason = serde_json::to_string(&reason)?;
+                let done = queue_clone
+                    .move_job_to_finished_or_failed(
+                        &job_id,
+                        ts,
+                        &token,
+                        move_to_state,
+                        &failed_reason,
+                        None,
+                    )
+                    .await?;
+            }
+            Ok::<(), KioError>(())
         });
     }
     Ok(())

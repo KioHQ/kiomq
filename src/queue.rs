@@ -200,10 +200,6 @@ impl<
         P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
     > Queue<D, R, P>
 {
-    pub async fn get_connection(&self) -> KioResult<deadpool_redis::Connection> {
-        let conn = self.conn_pool.get().await?;
-        Ok(conn)
-    }
     pub async fn new(
         prefix: Option<&str>,
         name: &str,
@@ -776,13 +772,14 @@ impl<
             }
             pipeline.del(&job_lock_key);
             pipeline.srem(&stalled_key, job_id);
-        } else {
+        } else if backtrace.is_some() {
             return Err(JobError::JobLockNotExist.into());
         }
+        let prev_state = conn.hget(&job_key, "state").await?;
         // Todo: remove any dependencies too here ;
         self.move_job_to_state(
             job_id,
-            JobState::Active,
+            prev_state,
             move_to_state,
             Some(returned_value_or_failed_reason),
             Some(ts),
@@ -870,19 +867,8 @@ impl<
         mut interval_ms: i64,
         job_queue: JobQueue,
     ) -> KioResult<()> {
-        let (paused, target_state) = self.get_target_list();
-        let conn = self.conn_pool.get().await?;
-        promote_jobs(
-            &self.prefix,
-            &self.name,
-            date_time,
-            paused,
-            target_state,
-            interval_ms,
-            conn,
-            job_queue,
-        )
-        .await
+        //let (paused, target_state) = self.get_target_list();
+        promote_jobs(self, date_time, interval_ms, job_queue).await
     }
     fn add_base_marker(&self, is_paused: bool, pipeline: &mut Pipeline) {
         let marker_key = CollectionSuffix::Marker.to_collection_name(&self.prefix, &self.name);
@@ -1037,5 +1023,9 @@ impl<D, R, P> Queue<D, R, P> {
     }
     pub fn is_paused(&self) -> bool {
         self.current_metrics.paused.load(Ordering::Acquire)
+    }
+    pub async fn get_connection(&self) -> KioResult<deadpool_redis::Connection> {
+        let conn = self.conn_pool.get().await?;
+        Ok(conn)
     }
 }
