@@ -270,7 +270,7 @@ where
         processor,
         queue,
         is_active,
-        continue_process,
+        paused_here,
     ) = params;
 
     let to_remove = TaskToRemove::default();
@@ -281,12 +281,14 @@ where
     let job_count = active_job_count.clone();
     let queue_clone = queue.clone();
     let job_queue = delayed.clone();
-    let notifer = continue_process.clone();
+    let notifer = paused_here.clone();
     tokio::spawn(
         async move {
             while !cancel_token.is_cancelled() {
-                //notifer.notified().await;
                 // promote jobs here;
+                if queue_clone.pause_workers.load(Ordering::Acquire) {
+                    notifer.notified().await;
+                }
                 let date_time = Utc::now();
                 let interval_ms = (MIN_DELAY_MS_LIMIT) as i64;
                 if queue_clone.current_metrics.has_delayed() {
@@ -302,6 +304,9 @@ where
                     }
                     //dbg!(key, job_count);
                 }
+                if !queue_clone.current_metrics.queue_has_work() && task_queue.is_empty() {
+                    queue_clone.pause_active_workers();
+                }
 
                 tokio::task::yield_now().await;
             }
@@ -312,7 +317,6 @@ where
 
     let now = Instant::now();
     while !cancellation_token.is_cancelled() {
-        //continue_process.notified().await;
         while !cancellation_token.is_cancelled() && processing.len() < opts.concurrency {
             let token_prefix = active_job_count.load(std::sync::atomic::Ordering::Acquire);
             let token = format!("{id}:{token_prefix}");
@@ -355,6 +359,9 @@ where
                     stored_handle.swap(task_id, Ordering::AcqRel);
                 }
             }
+        }
+        if queue.pause_workers.load(Ordering::Acquire) {
+            paused_here.notified().await;
         }
         tokio::task::yield_now().await;
     }
