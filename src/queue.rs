@@ -192,6 +192,7 @@ pub struct Queue<D, R, P> {
     pub(crate) conn_pool: Arc<Pool>,
     pub(crate) backoff: BackOff,
     pub(crate) worker_notifier: Arc<Notify>,
+    pub pause_workers: Arc<AtomicBool>,
 }
 
 impl<
@@ -231,11 +232,17 @@ impl<
         let prefix_clone = prefix.clone();
         let name_clone = name.clone();
         let notifier = worker_notifier.clone();
+        let pause_workers: Arc<AtomicBool> = Arc::default();
+        let pause_workers_clone = pause_workers.clone();
         let task: JoinHandle<KioResult<()>> = tokio::spawn(
             async move {
                 let block_interval = 1000000; // 100 seconds
                 let notifier = notifier.clone();
+                let pause_workers = pause_workers_clone.clone();
                 loop {
+                    if !metrics.queue_has_work() {
+                        pause_workers.store(true, Ordering::Release);
+                    }
                     let options = StreamReadOptions::default().block(block_interval);
                     let reply: StreamReadReply = connection
                         .xread_options(&[&stream_key], &["$"], &options)
@@ -254,14 +261,14 @@ impl<
                             )
                             .await?;
                             emitter_clone.emit(state, param).await;
-                            if metrics.queue_has_work() && !metrics.queue_is_paused() {
-                                notifier.notify_waiters();
-                            }
+
                             if let Ok(updated) =
                                 get_job_metrics(&prefix_clone, &name_clone, &mut conn).await
                             {
                                 metrics.update(&updated);
                             }
+
+                            resume_helper(&metrics, &pause_workers, &notifier);
                         }
                         // keep the queue's metrics up to date
                     }
@@ -274,6 +281,7 @@ impl<
         let stream_listener = Arc::new(task);
         //
         Ok(Self {
+            pause_workers,
             worker_notifier,
             backoff: BackOff::new(),
             opts,
@@ -287,6 +295,7 @@ impl<
             conn_pool: Arc::new(pool),
         })
     }
+
     pub async fn bulk_add<I: Iterator<Item = (String, Option<JobOptions>, D)>>(
         &self,
         iter: I,
@@ -1027,5 +1036,27 @@ impl<D, R, P> Queue<D, R, P> {
     pub async fn get_connection(&self) -> KioResult<deadpool_redis::Connection> {
         let conn = self.conn_pool.get().await?;
         Ok(conn)
+    }
+    pub fn pause_active_workers(&self) {
+        let _ = self.pause_workers.store(true, Ordering::Release);
+    }
+    pub fn resume_workers(&self) {
+        resume_helper(
+            &self.current_metrics,
+            &self.pause_workers,
+            &self.worker_notifier,
+        );
+    }
+}
+
+pub fn resume_helper(
+    current_metrics: &JobMetrics,
+    pause_workers: &AtomicBool,
+    worker_notifier: &Notify,
+) {
+    let workers_paused = pause_workers.load(Ordering::Acquire);
+    if current_metrics.queue_has_work() && workers_paused {
+        worker_notifier.notify_waiters();
+        pause_workers.store(false, Ordering::Release);
     }
 }
