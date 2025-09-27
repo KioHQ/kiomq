@@ -316,6 +316,25 @@ impl<
 
         Ok(result)
     }
+    pub async fn bulk_add_only<I: Iterator<Item = (String, Option<JobOptions>, D)>>(
+        &self,
+        iter: I,
+    ) -> KioResult<()> {
+        let mut conn = self.get_connection().await?;
+        let mut pipeline = redis::pipe();
+        pipeline.atomic();
+        for (ref name, opts, data) in iter {
+            let mut opts = opts.unwrap_or_default();
+            self.update_job_opts(&mut opts);
+            let queue_name = format!("{}:{}", self.prefix, self.name);
+            let mut job = Job::<D, R, P>::new(name, Some(data), opts.id, Some(&queue_name));
+            prepare_for_insert(opts, self, &mut job, name, &mut pipeline, &mut conn).await?;
+        }
+        pipeline.query_async::<()>(&mut conn).await?;
+
+        Ok(())
+    }
+
     pub async fn add_job(
         &self,
         name: &str,
