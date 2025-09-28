@@ -172,6 +172,8 @@ impl<
             self.queue.clone(),
             self.active.clone(),
             self.continue_notifier.clone(),
+            self.extend_lock_timer.clone(),
+            self.stalled_check_timer.clone(),
         );
         let main = main_loop(params);
         tokio::spawn(main.boxed());

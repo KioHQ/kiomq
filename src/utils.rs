@@ -247,6 +247,8 @@ type MainLoopParams<D, R, P> = (
     Arc<Queue<D, R, P>>,
     Arc<AtomicBool>,
     Arc<Notify>,
+    Timer,
+    Timer,
 );
 use tokio::task::Id;
 type TaskToRemove = Arc<SegQueue<u64>>;
@@ -271,6 +273,8 @@ where
         queue,
         is_active,
         paused_here,
+        extend_lock_timer,
+        stall_timer,
     ) = params;
 
     let to_remove = TaskToRemove::default();
@@ -286,9 +290,6 @@ where
         async move {
             while !cancel_token.is_cancelled() {
                 // promote jobs here;
-                if queue_clone.pause_workers.load(Ordering::Acquire) {
-                    notifer.notified().await;
-                }
                 let date_time = Utc::now();
                 let interval_ms = (MIN_DELAY_MS_LIMIT) as i64;
                 if queue_clone.current_metrics.has_delayed() {
@@ -304,7 +305,17 @@ where
                     }
                     //dbg!(key, job_count);
                 }
-                if !queue_clone.current_metrics.queue_has_work() && task_queue.is_empty() {
+                if queue_clone.pause_workers.load(Ordering::Acquire)
+                    && task_queue.is_empty()
+                    && running.is_empty()
+                {
+                    extend_lock_timer.pause();
+                    stall_timer.pause();
+                    notifer.notified().await;
+                    extend_lock_timer.resume();
+                    stall_timer.resume();
+                }
+                if !queue_clone.current_metrics.queue_has_work() {
                     queue_clone.pause_active_workers();
                 }
 
@@ -338,16 +349,16 @@ where
                     (job.clone(), token.clone(), AtomicU64::default()),
                 );
 
-                let queue = queue.clone();
                 let callback = processor.clone();
                 active_job_count.fetch_add(1, Ordering::AcqRel);
 
+                dbg!("here");
                 let task = tokio::spawn(async_backtrace::frame!(process_job(
                     to_remove.clone(),
                     job,
                     token,
                     jobs_in_progress.clone(),
-                    queue,
+                    queue.clone(),
                     callback
                 )
                 .boxed()));
@@ -358,10 +369,11 @@ where
 
                     stored_handle.swap(task_id, Ordering::AcqRel);
                 }
+                if queue.pause_workers.load(Ordering::Acquire) {
+                    dbg!("pause now", delayed.len(), processing.len());
+                    paused_here.notified().await;
+                }
             }
-        }
-        if queue.pause_workers.load(Ordering::Acquire) {
-            paused_here.notified().await;
         }
         tokio::task::yield_now().await;
     }
@@ -401,6 +413,7 @@ where
     let (jobs, missed_deadline, __done, _done): (Vec<String>, Vec<String>, i64, i64) =
         pipeline.query_async(&mut conn).await?;
     if !jobs.is_empty() {
+        dbg!(&jobs);
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(interval_ms as u64)).await;
             for job in jobs {
