@@ -2,7 +2,8 @@ use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo, JobError, Que
 use crate::timer::Timer;
 use crate::worker::{JobMap, ProcessingQueue, WorkerCallback, MIN_DELAY_MS_LIMIT};
 use crate::{
-    utils, EventParameters, FailedDetails, JobOptions, JobState, KioError, Trace, WorkerOpts,
+    utils, EventParameters, FailedDetails, JobOptions, JobState, JobToken, KioError, Trace,
+    WorkerOpts,
 };
 use chrono::Utc;
 use crossbeam_queue::SegQueue;
@@ -101,7 +102,7 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
 pub(crate) async fn process_job<D, R, P>(
     task_sender: TaskToRemove,
     job: Job<D, R, P>,
-    token: String,
+    token: JobToken,
     jobs_in_progress: JobMap<D, R, P>,
     queue: Arc<Queue<D, R, P>>,
     callback: Arc<WorkerCallback<D, R, P>>,
@@ -112,29 +113,27 @@ where
     P: Clone + Serialize + DeserializeOwned + Send + 'static + Sync,
 {
     use crate::JobState;
-    let job_id = job.id.clone();
+    let job_id = job.id;
     let conn = queue.conn_pool.get().await?;
     let attempts_made = job.attempts_made;
     let callback = async_backtrace::frame!(callback(conn, job));
     let returned = BacktraceCatcher::catch(callback).await;
     match returned {
         Ok(result) => {
-            if let (Ok(result_str), Some(job_id)) =
-                (serde_json::to_string(&result), job_id.as_ref())
-            {
+            if let (Ok(result_str), Some(job_id)) = (serde_json::to_string(&result), job_id) {
                 let ts = Utc::now().timestamp_micros();
                 let move_to_state = JobState::Completed;
                 let completed = queue
                     .move_job_to_finished_or_failed(
                         job_id,
                         ts,
-                        &token,
+                        token,
                         move_to_state,
                         &result_str,
                         None,
                     )
                     .await?;
-                if let Some(entry) = jobs_in_progress.remove(job_id) {
+                if let Some(entry) = jobs_in_progress.remove(&job_id) {
                     //handle.abort(); // remove task from the queue
                     let (job, _, handle) = entry.value();
                     queue
@@ -167,20 +166,20 @@ where
                 reason: failed_reason,
             })?;
             // move job to failed_state
-            if let Some(job_id) = job_id.as_ref() {
+            if let Some(job_id) = job_id {
                 let ts = Utc::now().timestamp_micros();
                 let move_to_state = JobState::Failed;
                 let failed_job = queue
                     .move_job_to_finished_or_failed(
                         job_id,
                         ts,
-                        &token,
+                        token,
                         move_to_state,
                         &failed_reason,
                         frames,
                     )
                     .await?;
-                if let Some(entry) = jobs_in_progress.remove(job_id) {
+                if let Some(entry) = jobs_in_progress.remove(&job_id) {
                     let (job, _, handle) = entry.value();
                     // retry failed jobs
                     if failed_job.attempts_made < job.opts.attempts {
@@ -204,11 +203,11 @@ where
 }
 pub(crate) async fn get_next_job<D, R, P>(
     queue: &Queue<D, R, P>,
-    token: &str,
+    token: JobToken,
     block_delay: u64,
     closed: bool,
     opts: &WorkerOpts,
-    passed_id: Option<String>,
+    passed_id: Option<u64>,
 ) -> KioResult<Option<Job<D, R, P>>>
 where
     D: DeserializeOwned + Clone + Serialize + Send + 'static + Sync,
@@ -219,7 +218,7 @@ where
     if closed {
         return Ok(None);
     }
-    if let Some(ref job_id) = passed_id {
+    if let Some(job_id) = passed_id {
         let ts = Utc::now().timestamp_micros() as u64;
         let prev_state = JobState::Wait;
         let job = queue
@@ -252,7 +251,7 @@ type MainLoopParams<D, R, P> = (
 );
 use tokio::task::Id;
 type TaskToRemove = Arc<SegQueue<u64>>;
-pub(crate) type JobQueue = Arc<SegQueue<String>>;
+pub(crate) type JobQueue = Arc<SegQueue<u64>>;
 #[async_backtrace::framed]
 pub(crate) async fn main_loop<D, R, P>(params: MainLoopParams<D, R, P>) -> KioResult<()>
 where
@@ -330,12 +329,13 @@ where
     while !cancellation_token.is_cancelled() {
         while !cancellation_token.is_cancelled() && processing.len() < opts.concurrency {
             let token_prefix = active_job_count.load(std::sync::atomic::Ordering::Acquire);
-            let token = format!("{id}:{token_prefix}");
+            let next_id = Uuid::new_v4();
+            let token = JobToken(id, next_id, token_prefix as u64);
             let block_delay = block_until.load(std::sync::atomic::Ordering::Acquire);
             let passed_id = delayed.pop();
             if let Some(job) = get_next_job(
                 queue.as_ref(),
-                &token,
+                token,
                 block_delay,
                 cancellation_token.is_cancelled(),
                 &opts,
@@ -343,16 +343,11 @@ where
             )
             .await?
             {
-                let id = job.id.clone().unwrap();
-                jobs_in_progress.insert(
-                    job.id.clone().unwrap_or_default(),
-                    (job.clone(), token.clone(), AtomicU64::default()),
-                );
+                let id = job.id.unwrap();
+                jobs_in_progress.insert(id, (job.clone(), token, AtomicU64::default()));
 
                 let callback = processor.clone();
                 active_job_count.fetch_add(1, Ordering::AcqRel);
-
-                dbg!("here");
                 let task = tokio::spawn(async_backtrace::frame!(process_job(
                     to_remove.clone(),
                     job,
@@ -410,10 +405,9 @@ where
     pipeline.zrembyscore(&delayed_key, start, stop);
     let start = (date_time - TimeDelta::milliseconds(interval_ms)).timestamp_millis();
     pipeline.zrembyscore(&delayed_key, "-inf", format!("({start}"));
-    let (jobs, missed_deadline, __done, _done): (Vec<String>, Vec<String>, i64, i64) =
+    let (jobs, missed_deadline, __done, _done): (Vec<u64>, Vec<u64>, i64, i64) =
         pipeline.query_async(&mut conn).await?;
     if !jobs.is_empty() {
-        dbg!(&jobs);
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(interval_ms as u64)).await;
             for job in jobs {
@@ -424,34 +418,35 @@ where
     if !missed_deadline.is_empty() {
         let queue_clone = queue.clone();
         let ts = date_time.timestamp_micros();
+        let mut conn = queue_clone.get_connection().await?;
         tokio::spawn(async move {
             let move_to_state = JobState::Failed;
             let mut reason = FailedDetails {
                 run: 0,
                 reason: JobError::MissedDelayDeadline.to_string(),
             };
-            let mut conn = queue_clone.get_connection().await?;
             for job_id in missed_deadline {
-                let job_key = CollectionSuffix::Job(job_id.clone())
+                let job_key = CollectionSuffix::Job(job_id)
                     .to_collection_name(&queue_clone.prefix, &queue_clone.name);
                 let mut pipeline = redis::pipe();
                 pipeline.hget(&job_key, "attemptsMade");
                 pipeline.hget(&job_key, "token");
-                let (attempts, token): (u64, Option<String>) =
-                    pipeline.query_async(&mut conn).await?;
+                let (attempts, token): (u64, JobToken) = pipeline.query_async(&mut conn).await?;
                 reason.run = attempts + 1;
-                let token = token.unwrap_or_default();
+
                 let failed_reason = serde_json::to_string(&reason)?;
-                let done = queue_clone
-                    .move_job_to_finished_or_failed(
-                        &job_id,
-                        ts,
-                        &token,
-                        move_to_state,
-                        &failed_reason,
-                        None,
-                    )
-                    .await?;
+                let done = dbg!(
+                    queue_clone
+                        .move_job_to_finished_or_failed(
+                            job_id,
+                            ts,
+                            token,
+                            move_to_state,
+                            &failed_reason,
+                            None,
+                        )
+                        .await
+                )?;
             }
             Ok::<(), KioError>(())
         });
@@ -488,8 +483,7 @@ pub async fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
     };
     //queue.job_count.
     let prefix = &queue.prefix;
-    let job_key =
-        CollectionSuffix::Job(id.to_string()).to_collection_name(&queue.prefix, &queue.name);
+    let job_key = CollectionSuffix::Job(id).to_collection_name(&queue.prefix, &queue.name);
     let events_keys = CollectionSuffix::Events.to_collection_name(&queue.prefix, &queue.name);
 
     let waiting_or_paused = if !queue.is_paused() {
@@ -520,7 +514,7 @@ pub async fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
     } else {
         pipeline.lpush(&waiting_key, id.to_string());
     }
-    job.id = Some(id.to_string());
+    job.id = Some(id);
     let fields = serialize_into_pairs(&job);
     pipeline.hset_multiple(&job_key, &fields);
     let event = if to_delay {

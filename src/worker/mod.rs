@@ -2,7 +2,7 @@ use crate::{
     error::{BacktraceCatcher, CaughtError, CaughtPanicInfo},
     job, queue,
     timer::Timer,
-    Job, JobState, KioError, KioResult, Queue,
+    Job, JobState, JobToken, KioError, KioResult, Queue,
 };
 
 use crate::utils::{get_next_job, main_loop};
@@ -33,8 +33,8 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 mod worker_events;
 use crate::events::{EventEmitter, EventParameters};
-type JobMeta<D, R, P> = (Job<D, R, P>, String, AtomicU64);
-pub(crate) type JobMap<D, R, P> = Arc<SkipMap<String, JobMeta<D, R, P>>>;
+type JobMeta<D, R, P> = (Job<D, R, P>, JobToken, AtomicU64);
+pub(crate) type JobMap<D, R, P> = Arc<SkipMap<u64, JobMeta<D, R, P>>>;
 type Task = JoinHandle<KioResult<()>>;
 use tokio::task::Id;
 pub(crate) type ProcessingQueue = Arc<SkipMap<u64, Task>>;
@@ -106,8 +106,8 @@ impl<
                 for pair in jobs.iter() {
                     let (job, token, handle) = pair.value();
 
-                    if let Some(id) = job.id.as_ref() {
-                        let done = queue.extend_lock(id, opts.lock_duration, token).await;
+                    if let Some(id) = job.id {
+                        let done = queue.extend_lock(id, opts.lock_duration, *token).await;
                     }
                 }
             }
