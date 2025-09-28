@@ -80,7 +80,7 @@ async fn main() -> KioResult<()> {
         .await?
         .all_jobs_completed()
     {
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        tokio::time::sleep(Duration::from_millis(10000)).await;
     }
     worker.close(true);
     if worker.closed() {
