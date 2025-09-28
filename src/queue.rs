@@ -17,8 +17,8 @@ use crate::utils::{
 };
 use crate::worker::{WorkerOpts, MIN_DELAY_MS_LIMIT};
 use crate::{
-    get_job_metrics, BackOff, BackOffJobOptions, BackOffOptions, Dt, JobOptions, KeepJobs,
-    KioResult, RemoveOnCompletionOrFailure, StoredFn, Trace,
+    get_job_metrics, BackOff, BackOffJobOptions, BackOffOptions, Dt, JobOptions, JobToken,
+    KeepJobs, KioResult, RemoveOnCompletionOrFailure, StoredFn, Trace,
 };
 use async_backtrace::backtrace;
 use chrono::{TimeDelta, Utc};
@@ -48,12 +48,12 @@ pub enum CollectionSuffix {
     Failed,          // ZSET
     Marker,
     #[display("{_0}")]
-    Job(String),
+    Job(u64),
     #[display("")]
     Prefix,
     #[display("{_0}:lock")]
     /// Lock(job_id)
-    Lock(String),
+    Lock(u64),
     #[display("stalled_check")]
     StalledCheck, // key
 }
@@ -356,17 +356,16 @@ impl<
     pub fn current_jobs(&self) -> u64 {
         self.job_count.load(std::sync::atomic::Ordering::Acquire)
     }
-    pub async fn get_job(&self, id: &str) -> KioResult<Job<D, R, P>> {
+    pub async fn get_job(&self, id: u64) -> KioResult<Job<D, R, P>> {
         use redis::Value;
-        let job_key =
-            CollectionSuffix::Job(id.to_lowercase()).to_collection_name(&self.prefix, &self.name);
+        let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
         let mut conn = self.conn_pool.get().await?;
         let value: Job<_, _, _> = conn.hgetall(job_key).await?;
         Ok(value)
     }
     pub async fn move_job_to_state(
         &self,
-        job_id: &str,
+        job_id: u64,
         from: JobState,
         to: JobState,
         value: Option<&str>,
@@ -382,7 +381,7 @@ impl<
         let previous_suffix = from.into();
         let next_state_suffix = to.into();
         let [job_key, events_key, prev_state_key, next_state_key] = [
-            CollectionSuffix::Job(job_id.to_lowercase()),
+            CollectionSuffix::Job(job_id),
             CollectionSuffix::Events,
             previous_suffix,
             next_state_suffix,
@@ -454,7 +453,7 @@ impl<
         }
         let waiting_key = CollectionSuffix::Wait.to_collection_name(&self.prefix, &self.name);
         let mut conn = self.conn_pool.get().await?;
-        let waiting: Vec<String> = conn.lrange(waiting_key, 0, -1).await?;
+        let waiting: Vec<u64> = conn.lrange(waiting_key, 0, -1).await?;
         let mut pipeline = redis::pipe();
 
         for id in waiting {
@@ -518,19 +517,16 @@ impl<
 
     pub async fn extend_lock(
         &self,
-        job_id: &str,
+        job_id: u64,
         lock_duration: u64,
-        token: &str,
+        token: JobToken,
     ) -> KioResult<(bool)> {
-        let [lock_key, stalled_key] = [
-            CollectionSuffix::Lock(job_id.to_lowercase()),
-            CollectionSuffix::Stalled,
-        ]
-        .map(|key| key.to_collection_name(&self.prefix, &self.name));
+        let [lock_key, stalled_key] = [CollectionSuffix::Lock(job_id), CollectionSuffix::Stalled]
+            .map(|key| key.to_collection_name(&self.prefix, &self.name));
         let mut conn = self.conn_pool.get().await?;
         let mut pipeline = redis::pipe();
         pipeline.atomic();
-        let previous: Option<String> = conn.get(&lock_key).await?;
+        let previous: Option<JobToken> = conn.get(&lock_key).await?;
         if let Some(prev_token) = previous {
             if prev_token == token {
                 pipeline.pset_ex(lock_key, token, lock_duration);
@@ -545,7 +541,7 @@ impl<
     pub async fn make_stalled_jobs_wait(
         &self,
         opts: &WorkerOpts,
-    ) -> KioResult<(Vec<String>, Vec<String>)> {
+    ) -> KioResult<(Vec<u64>, Vec<u64>)> {
         let ts = Utc::now().timestamp_micros();
         let [wait_key, active_key, events_key, meta_key, paused_key, stalled_key, stalled_check, failed_key, marker_key] =
             [
@@ -571,65 +567,60 @@ impl<
             .pset_ex(&stalled_check, ts, opts.stalled_interval)
             .await?;
         // trim
-        let stalling: Vec<String> = conn.smembers(&stalled_key).await?;
+        let stalling: Vec<u64> = conn.smembers(&stalled_key).await?;
         if !stalling.is_empty() {
             for job_id in stalling {
-                if job_id.starts_with("0:") {
-                    let _: () = conn.lrem(&active_key, 1, &job_id).await?;
-                } else {
-                    let job_key = CollectionSuffix::Job(job_id.clone())
-                        .to_collection_name(&self.prefix, &self.name);
-                    let job_lock_key = CollectionSuffix::Lock(job_id.to_lowercase())
-                        .to_collection_name(&self.prefix, &self.name);
-                    if !conn
-                        .exists::<_, bool>(&job_lock_key)
-                        .await
-                        .unwrap_or_default()
-                    {
-                        let removed: isize = conn.lrem(&active_key, 1, &job_id).await?;
-                        if removed > 0 {
-                            // If this job has been stalled too many times, such as if it crashes the worker, then fail it.
-                            let stalled_count: u64 =
-                                conn.hincr(&job_key, "stalledCounter", 1).await?;
-                            if stalled_count > opts.max_stalled_count {
-                                // Add job removal option logic here
-                                let _: () = conn.zadd(&failed_key, ts, &job_id).await?;
-                                let failed_reason = "job stalled more than allowable limit";
-                                let state = JobState::Failed.to_string();
+                let job_key =
+                    CollectionSuffix::Job(job_id).to_collection_name(&self.prefix, &self.name);
+                let job_lock_key =
+                    CollectionSuffix::Lock(job_id).to_collection_name(&self.prefix, &self.name);
+                if !conn
+                    .exists::<_, bool>(&job_lock_key)
+                    .await
+                    .unwrap_or_default()
+                {
+                    let removed: isize = conn.lrem(&active_key, 1, &job_id).await?;
+                    if removed > 0 {
+                        // If this job has been stalled too many times, such as if it crashes the worker, then fail it.
+                        let stalled_count: u64 = conn.hincr(&job_key, "stalledCounter", 1).await?;
+                        if stalled_count > opts.max_stalled_count {
+                            // Add job removal option logic here
+                            let _: () = conn.zadd(&failed_key, ts, &job_id).await?;
+                            let failed_reason = "job stalled more than allowable limit";
+                            let state = JobState::Failed.to_string();
 
-                                let items = [
-                                    ("failedReason", failed_reason.to_lowercase()),
-                                    ("finishedOn", ts.to_string()),
-                                    ("state", state),
-                                ];
-                                let _: () = conn.hset_multiple(&job_key, &items).await?;
-                                let items = [
-                                    ("event", "failed"),
-                                    ("job_id", &job_id),
-                                    ("failedReason", failed_reason),
-                                    ("prev", "active"),
-                                ];
-                                let _: () = conn.xadd(&events_key, "*", &items).await?;
-                                failed.push(job_id);
-                            } else {
-                                let (is_paused, target) = self.get_target_list();
-                                if !is_paused {
-                                    let _: () = conn.zadd(&marker_key, 0, "0").await?;
-                                }
-                                self.move_job_to_state(
-                                    &job_id,
-                                    JobState::Active,
-                                    target,
-                                    None,
-                                    None,
-                                    None,
-                                )
-                                .await?;
-                                // emit  stalled;
-                                let items = [("event", "stalled"), ("job_id", &job_id)];
-                                let _: () = conn.xadd(&events_key, "*", &items).await?;
-                                stalled.push(job_id);
+                            let items = [
+                                ("failedReason", failed_reason.to_lowercase()),
+                                ("finishedOn", ts.to_string()),
+                                ("state", state),
+                            ];
+                            let _: () = conn.hset_multiple(&job_key, &items).await?;
+                            let items = [
+                                ("event", "failed"),
+                                ("job_id", &job_id.to_string()),
+                                ("failedReason", failed_reason),
+                                ("prev", "active"),
+                            ];
+                            let _: () = conn.xadd(&events_key, "*", &items).await?;
+                            failed.push(job_id);
+                        } else {
+                            let (is_paused, target) = self.get_target_list();
+                            if !is_paused {
+                                let _: () = conn.zadd(&marker_key, 0, "0").await?;
                             }
+                            self.move_job_to_state(
+                                job_id,
+                                JobState::Active,
+                                target,
+                                None,
+                                None,
+                                None,
+                            )
+                            .await?;
+                            // emit  stalled;
+                            let items = [("event", "stalled"), ("job_id", &job_id.to_string())];
+                            let _: () = conn.xadd(&events_key, "*", &items).await?;
+                            stalled.push(job_id);
                         }
                     }
                 }
@@ -661,7 +652,7 @@ impl<
 
     pub async fn move_to_active(
         &self,
-        token: &str,
+        token: JobToken,
         opts: &WorkerOpts,
     ) -> KioResult<MoveToActiveResult<D, R, P>> {
         let [wait_key, active_key, events_key, meta_key, paused_key, stalled_key, stalled_check, failed_key, marker_key, delayed_key] =
@@ -683,21 +674,14 @@ impl<
         let (is_paused, target_state) = self.get_target_list();
         let target_key =
             CollectionSuffix::from(target_state).to_collection_name(&self.prefix, &self.name);
-        let mut job_id: Option<String> = conn.rpoplpush(&wait_key, &active_key).await?;
-        if let Some(id) = job_id.as_ref() {
-            if id.starts_with("0:") {
-                let _: () = conn.lrem(&active_key, 1, id).await?;
-                job_id = conn.rpoplpush(&wait_key, &active_key).await?;
-            }
-        }
-        let mut prepare_job = |id: String, mut conn: deadpool_redis::Connection| async move {
-            let job_id_key =
-                CollectionSuffix::Job(id.clone()).to_collection_name(&self.prefix, &self.name);
+        let mut job_id: Option<u64> = conn.rpoplpush(&wait_key, &active_key).await?;
+        let mut prepare_job = |id: u64, mut conn: deadpool_redis::Connection| async move {
+            let job_id_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
             let prev_state: Option<JobState> = conn.hget(&job_id_key, "state").await.ok();
             let job = self
                 .prepare_job_for_processing(
                     token,
-                    &id,
+                    id,
                     ts as u64,
                     opts,
                     prev_state.unwrap_or_default(),
@@ -709,7 +693,7 @@ impl<
         let connection = self.conn_pool.get().await?;
         match job_id {
             Some(job_id) => Ok(MoveToActiveResult::from_job_state_pair(
-                prepare_job(job_id.to_owned(), connection).await?,
+                prepare_job(job_id, connection).await?,
             )),
             None => {
                 let connection = self.conn_pool.get().await?;
@@ -730,8 +714,8 @@ impl<
     }
     pub async fn prepare_job_for_processing(
         &self,
-        token: &str,
-        job_id: &str,
+        token: JobToken,
+        job_id: u64,
         ts: u64,
         opts: &WorkerOpts,
         prev_state: JobState,
@@ -747,8 +731,8 @@ impl<
                 CollectionSuffix::StalledCheck,
                 CollectionSuffix::Failed,
                 CollectionSuffix::Marker,
-                CollectionSuffix::Job(job_id.to_lowercase()),
-                CollectionSuffix::Lock(job_id.to_lowercase()),
+                CollectionSuffix::Job(job_id),
+                CollectionSuffix::Lock(job_id),
             ]
             .map(|s| s.to_collection_name(&self.prefix, &self.name));
         let mut conn = self.conn_pool.get().await?;
@@ -760,7 +744,7 @@ impl<
             .await?;
         let items = [
             ("processedOn", serde_json::to_string(&ts)?),
-            ("token", serde_json::to_string(token)?),
+            ("token", serde_json::to_string(&token)?),
         ];
         let _: () = conn.hset_multiple(&job_key, &items).await?;
         let job = conn.hgetall(&job_key).await?;
@@ -769,16 +753,16 @@ impl<
 
     pub(crate) async fn move_job_to_finished_or_failed(
         &self,
-        job_id: &str,
+        job_id: u64,
         ts: i64,
-        token: &str,
+        token: JobToken,
         move_to_state: JobState,
         returned_value_or_failed_reason: &str,
         backtrace: Option<Trace>,
     ) -> KioResult<Job<D, R, P>> {
         let [job_key, job_lock_key, active_key, completed_key, events_stream_key, stalled_key] = [
-            CollectionSuffix::Job(job_id.to_owned()),
-            CollectionSuffix::Lock(job_id.to_owned()),
+            CollectionSuffix::Job(job_id),
+            CollectionSuffix::Lock(job_id),
             CollectionSuffix::Active,
             CollectionSuffix::Completed,
             CollectionSuffix::Events,
@@ -793,7 +777,7 @@ impl<
         if !job_exists {
             return Err(JobError::JobNotFound.into());
         }
-        let lock_token: Option<String> = conn.get(&job_lock_key).await?;
+        let lock_token: Option<JobToken> = conn.get(&job_lock_key).await?;
         if let Some(local) = lock_token {
             if local != token {
                 return Err(JobError::JobLockMismatch.into());
@@ -876,8 +860,7 @@ impl<
 
         let last_id = self.current_jobs();
         (1..=last_id).for_each(|id| {
-            let job_key =
-                CollectionSuffix::Job(id.to_string()).to_collection_name(&self.prefix, &self.name);
+            let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
             pipeline.del(job_key);
         });
 
@@ -905,7 +888,7 @@ impl<
         }
     }
 
-    async fn move_job_from_priorty_to_active(&self) -> KioResult<Option<String>> {
+    async fn move_job_from_priorty_to_active(&self) -> KioResult<Option<u64>> {
         let [active_key, prioritized_key, priority_counter_key] = [
             CollectionSuffix::Active,
             CollectionSuffix::Prioritized,
@@ -913,7 +896,7 @@ impl<
         ]
         .map(|collection| collection.to_collection_name(&self.prefix, &self.name));
         let mut conn = self.conn_pool.get().await?;
-        let mut min_priority_job: Vec<(String, u64)> = conn.zpopmin(&prioritized_key, 1).await?;
+        let mut min_priority_job: Vec<(u64, u64)> = conn.zpopmin(&prioritized_key, 1).await?;
         if let Some((job_id, score)) = min_priority_job.pop() {
             let _: () = conn.lpush(&active_key, &job_id).await?;
             return Ok(Some(job_id));
@@ -926,13 +909,11 @@ impl<
 
     pub async fn clean_up_job(
         &self,
-        job_id: &str,
+        job_id: u64,
         remove_options: Option<RemoveOnCompletionOrFailure>,
     ) -> KioResult<()> {
         let id = job_id;
-        let id_num: i64 = id.parse()?;
-        let job_id_key =
-            CollectionSuffix::Job(id.to_owned()).to_collection_name(&self.prefix, &self.name);
+        let job_id_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
         let mut conn = self.conn_pool.get().await?;
         let mut pipeline = redis::pipe();
         pipeline.atomic();
@@ -944,7 +925,7 @@ impl<
                     }
                 }
                 RemoveOnCompletionOrFailure::Int(max_to_keep) => {
-                    if max_to_keep.is_positive() && id_num > max_to_keep {
+                    if max_to_keep.is_positive() && (id as i64) > max_to_keep {
                         pipeline.del(&job_id_key);
                     }
                 }
@@ -953,7 +934,7 @@ impl<
                         pipeline.expire(&job_id_key, expire_in_secs);
                     }
                     if let Some(max_to_keep) = count {
-                        if max_to_keep.is_positive() && id_num > max_to_keep {
+                        if max_to_keep.is_positive() && (id as i64) > max_to_keep {
                             pipeline.del(&job_id_key);
                         }
                     }
@@ -972,7 +953,7 @@ pub enum MoveToActiveResult<D, R, P> {
     Paused,
     RateLimit(u64),
     DelayUntil(u64),
-    #[debug("ProcessJob({0}) from state{1}", _0.id.clone().unwrap_or_default(), _0.state)]
+    #[debug("ProcessJob({0}) from state{1}", _0.id.unwrap_or_default(), _0.state)]
     ProcessJob(Box<Job<D, R, P>>),
 }
 impl<D, R, P> MoveToActiveResult<D, R, P> {
@@ -1002,13 +983,13 @@ impl<D, R, P> Queue<D, R, P> {
     }
     pub async fn retry_job(
         &self,
-        job_id: &str,
+        job_id: u64,
         backoff_job_opts: &BackOffJobOptions,
         attempts: u64,
     ) -> KioResult<()> {
         let [delayed_key, job_id_key, failed_key] = [
             CollectionSuffix::Delayed,
-            CollectionSuffix::Job(job_id.to_owned()),
+            CollectionSuffix::Job(job_id),
             CollectionSuffix::Failed,
         ]
         .map(|collection| collection.to_collection_name(&self.prefix, &self.name));
@@ -1057,7 +1038,7 @@ impl<D, R, P> Queue<D, R, P> {
         Ok(conn)
     }
     pub fn pause_active_workers(&self) {
-        let _ = self.pause_workers.store(true, Ordering::Release);
+        self.pause_workers.store(true, Ordering::Release);
     }
     pub fn resume_workers(&self) {
         resume_helper(

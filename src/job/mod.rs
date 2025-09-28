@@ -5,7 +5,8 @@ use deadpool_redis::redis::ToRedisArgs;
 use deadpool_redis::Connection;
 use derive_more::{Display, FromStr};
 use redis::{
-    from_redis_value, AsyncCommands, ConnectionLike, FromRedisValue, Pipeline, RedisResult, Value,
+    from_redis_value, AsyncCommands, ConnectionLike, FromRedisValue, Pipeline, RedisError,
+    RedisResult, Value,
 };
 use serde::{
     de::{self, DeserializeOwned},
@@ -100,7 +101,7 @@ use derive_more::Debug;
 #[derive(Debug, Serialize, Deserialize, Default, Hash, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Job<D, R, P> {
-    pub id: Option<String>,
+    pub id: Option<u64>,
     #[serde(rename = "timestamp", alias = "timestamp")]
     #[serde(with = "ts_microseconds")]
     pub ts: Dt,
@@ -122,7 +123,7 @@ pub struct Job<D, R, P> {
     #[serde(with = "ts_microseconds_option")]
     pub finished_on: Option<Dt>,
     pub queue_name: Option<String>,
-    pub token: Option<String>, // job_lock token
+    pub token: Option<JobToken>, // job_lock token
     pub stalled_counter: u64,
     pub logs: Vec<String>,
     pub priority: u64,
@@ -138,6 +139,41 @@ impl FromRedisValue for JobState {
     }
 }
 
+use uuid::Uuid;
+
+#[derive(
+    Debug,
+    derive_more::Display,
+    Clone,
+    Copy,
+    Hash,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    Default,
+)]
+#[display("{_0}-{_1}-{_2}")]
+pub struct JobToken(pub Uuid, pub Uuid, pub u64);
+impl FromRedisValue for JobToken {
+    fn from_redis_value(v: &Value) -> RedisResult<Self> {
+        let value_str = String::from_redis_value(v)?;
+        let token = serde_json::from_str(&value_str)
+            .map_err(|_| std::io::Error::other("failed to parse"))?;
+        Ok(token)
+    }
+}
+
+impl ToRedisArgs for JobToken {
+    fn write_redis_args<W>(&self, out: &mut W)
+    where
+        W: ?Sized + redis::RedisWrite,
+    {
+        out.write_arg_fmt(serde_json::to_string(self).unwrap_or_default());
+    }
+}
 // skip comparing the data,progress and return_value field;
 impl<D, R, P> Job<D, R, P> {
     pub fn boxed(self) -> Box<Self> {
@@ -145,7 +181,6 @@ impl<D, R, P> Job<D, R, P> {
     }
     pub fn new(name: &str, data: Option<D>, id: Option<u64>, queue_name: Option<&str>) -> Self {
         let ts = Utc::now();
-        let id = id.map(|v| v.to_string());
 
         Self {
             opts: JobOptions::default(),
@@ -240,8 +275,7 @@ where
                         .map_err(std::io::Error::other)?
                 }
                 "token" => {
-                    job.token =
-                        serde_json::from_str(value).unwrap_or_else(|_| Some(value.to_owned()));
+                    job.token = serde_json::from_str(value).unwrap_or_default();
                 }
                 "progress" => job.progress = serde_json::from_str(value)?,
                 "attemptsmade" => job.attempts_made = serde_json::from_str(value)?,
