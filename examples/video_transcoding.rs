@@ -1,10 +1,13 @@
 use deadpool_redis::{Config, Connection};
 use kio_mq::{
-    fetch_redis_pass, frame, framed, EventParameters, Job, KioError, KioResult, Queue, Worker,
-    WorkerOpts,
+    fetch_redis_pass, frame, framed, get_job_metrics, EventParameters, Job, KioError, KioResult,
+    Queue, Worker, WorkerOpts,
 };
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use tokio::fs;
 use tokio::sync::mpsc::Sender;
 type BoxedError = Box<dyn std::error::Error + Send>;
@@ -105,8 +108,18 @@ async fn main() -> KioResult<()> {
         })
         .await;
     worker.run()?;
-    while worker.is_running() {}
-    queue.obliterate().await?;
+
+    let mut conn = queue.get_connection().await?;
+    while !get_job_metrics(&queue.prefix, &queue.name, &mut conn)
+        .await?
+        .all_jobs_completed()
+    {
+        tokio::time::sleep(Duration::from_millis(10000)).await;
+    }
+    worker.close(true);
+    if worker.is_running() {
+        queue.obliterate().await?;
+    }
 
     Ok(())
 }
