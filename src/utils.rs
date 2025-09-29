@@ -8,6 +8,7 @@ use crate::{
 use chrono::Utc;
 use crossbeam_queue::SegQueue;
 use futures::FutureExt;
+use serde::ser;
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Write;
 use std::num::NonZero;
@@ -113,7 +114,7 @@ where
     P: Clone + Serialize + DeserializeOwned + Send + 'static + Sync,
 {
     use crate::JobState;
-    let job_id = job.id;
+    let job_id = job.id.clone();
     let conn = queue.conn_pool.get().await?;
     let attempts_made = job.attempts_made;
     let callback = async_backtrace::frame!(callback(conn, job));
@@ -404,52 +405,47 @@ where
     pipeline.zrangebyscore(&delayed_key, "-inf", format!("({start}"));
     pipeline.zrembyscore(&delayed_key, start, stop);
     let start = (date_time - TimeDelta::milliseconds(interval_ms)).timestamp_millis();
-    pipeline.zrembyscore(&delayed_key, "-inf", format!("({start}"));
-    let (jobs, missed_deadline, __done, _done): (Vec<u64>, Vec<u64>, i64, i64) =
+    let (jobs, missed_deadline, done): (Vec<u64>, Vec<u64>, i64) =
         pipeline.query_async(&mut conn).await?;
     if !jobs.is_empty() {
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(interval_ms as u64)).await;
-            for job in jobs {
-                job_queue.push(job);
-            }
-        });
+        tokio::time::sleep(Duration::from_millis(interval_ms as u64)).await;
+        for job in jobs {
+            job_queue.push(job);
+        }
     }
     if !missed_deadline.is_empty() {
         let queue_clone = queue.clone();
         let ts = date_time.timestamp_micros();
         let mut conn = queue_clone.get_connection().await?;
-        tokio::spawn(async move {
-            let move_to_state = JobState::Failed;
-            let mut reason = FailedDetails {
-                run: 0,
-                reason: JobError::MissedDelayDeadline.to_string(),
-            };
-            for job_id in missed_deadline {
-                let job_key = CollectionSuffix::Job(job_id)
-                    .to_collection_name(&queue_clone.prefix, &queue_clone.name);
-                let mut pipeline = redis::pipe();
-                pipeline.hget(&job_key, "attemptsMade");
-                pipeline.hget(&job_key, "token");
-                let (attempts, token): (u64, JobToken) = pipeline.query_async(&mut conn).await?;
-                reason.run = attempts + 1;
-
-                let failed_reason = serde_json::to_string(&reason)?;
-                let done = dbg!(
-                    queue_clone
-                        .move_job_to_finished_or_failed(
-                            job_id,
-                            ts,
-                            token,
-                            move_to_state,
-                            &failed_reason,
-                            None,
-                        )
-                        .await
-                )?;
-            }
-            Ok::<(), KioError>(())
-        });
+        let move_to_state = JobState::Failed;
+        let mut reason = FailedDetails {
+            run: 0,
+            reason: JobError::MissedDelayDeadline.to_string(),
+        };
+        for job_id in missed_deadline.iter() {
+            let job_key = CollectionSuffix::Job(*job_id)
+                .to_collection_name(&queue_clone.prefix, &queue_clone.name);
+            let mut pipeline = redis::pipe();
+            pipeline.hget(&job_key, "attemptsMade");
+            pipeline.hget(&job_key, "token");
+            let (attempts, token): (u64, Option<String>) = pipeline.query_async(&mut conn).await?;
+            let token: Option<JobToken> =
+                token.and_then(|e| serde_json::from_str(&e).ok().flatten());
+            let token = token.unwrap_or_default();
+            reason.run = attempts;
+            let failed_reason = serde_json::to_string(&reason)?;
+            queue_clone
+                .move_job_to_finished_or_failed(
+                    *job_id,
+                    ts,
+                    token,
+                    move_to_state,
+                    &failed_reason,
+                    None,
+                )
+                .await?;
+        }
+        let _: () = conn.zrem(&delayed_key, missed_deadline).await?;
     }
     Ok(())
 }
