@@ -153,19 +153,26 @@ use uuid::Uuid;
     Ord,
     Serialize,
     Deserialize,
-    Default,
 )]
 #[display("{_0}-{_1}-{_2}")]
 pub struct JobToken(pub Uuid, pub Uuid, pub u64);
 impl FromRedisValue for JobToken {
     fn from_redis_value(v: &Value) -> RedisResult<Self> {
         let value_str = String::from_redis_value(v)?;
+        if value_str == "null" {
+            return Err(std::io::Error::other("null passed").into());
+        }
         let token = serde_json::from_str(&value_str)
             .map_err(|_| std::io::Error::other("failed to parse"))?;
         Ok(token)
     }
 }
 
+impl Default for JobToken {
+    fn default() -> Self {
+        Self(Uuid::new_v4(), Uuid::new_v4(), Default::default())
+    }
+}
 impl ToRedisArgs for JobToken {
     fn write_redis_args<W>(&self, out: &mut W)
     where

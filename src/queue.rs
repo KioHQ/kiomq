@@ -174,6 +174,9 @@ impl JobMetrics {
     pub fn queue_is_paused(&self) -> bool {
         self.paused.load(Ordering::Acquire)
     }
+    pub fn has_active_jobs(&self) -> bool {
+        self.active.load(Ordering::Acquire) > 0
+    }
 }
 
 use crate::{EventEmitter, EventParameters};
@@ -585,7 +588,7 @@ impl<
                         let stalled_count: u64 = conn.hincr(&job_key, "stalledCounter", 1).await?;
                         if stalled_count > opts.max_stalled_count {
                             // Add job removal option logic here
-                            let _: () = conn.zadd(&failed_key, ts, &job_id).await?;
+                            let _: () = conn.zadd(&failed_key, ts, job_id).await?;
                             let failed_reason = "job stalled more than allowable limit";
                             let state = JobState::Failed.to_string();
 
@@ -898,7 +901,7 @@ impl<
         let mut conn = self.conn_pool.get().await?;
         let mut min_priority_job: Vec<(u64, u64)> = conn.zpopmin(&prioritized_key, 1).await?;
         if let Some((job_id, score)) = min_priority_job.pop() {
-            let _: () = conn.lpush(&active_key, &job_id).await?;
+            let _: () = conn.lpush(&active_key, job_id).await?;
             return Ok(Some(job_id));
         }
 

@@ -51,7 +51,7 @@ async fn main() -> KioResult<()> {
     };
     queue.on_all_events(event_listener).await;
 
-    let count = 10;
+    let count = 100;
     let iterator = (0..count).map(|_i| {
         //use rand::Rng;
         //let priority = rand::rng().random_range(1..count); // ucomment to use  random priority
@@ -66,7 +66,6 @@ async fn main() -> KioResult<()> {
         (name, Some(job_opts), "data".to_owned())
     });
 
-    queue.bulk_add(iterator).await?;
     let opts = WorkerOpts {
         //concurrency: 1, // uncomment to use set concurrency
         ..Default::default()
@@ -74,7 +73,7 @@ async fn main() -> KioResult<()> {
     let processor = |con: _, job: Job<_, _, _>| process_callback(con, job);
     let worker = Worker::new(&queue, processor, Some(opts))?;
     worker.run()?;
-
+    queue.bulk_add_only(iterator).await?;
     let mut conn = queue.get_connection().await?;
     while !get_job_metrics(&queue.prefix, &queue.name, &mut conn)
         .await?
