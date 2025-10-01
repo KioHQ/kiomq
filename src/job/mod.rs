@@ -46,6 +46,7 @@ pub enum JobState {
     Failed,
     Delayed,
     Progress,
+    Processing,
 }
 impl ToRedisArgs for JobState {
     fn write_redis_args<W>(&self, out: &mut W)

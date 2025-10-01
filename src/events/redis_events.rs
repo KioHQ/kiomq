@@ -1,8 +1,8 @@
-use serde::de::{value, DeserializeOwned};
-
 use crate::{FailedDetails, JobState, KioError, KioResult};
 use derive_more::Debug;
+use serde::de::{value, DeserializeOwned};
 use std::str::FromStr;
+use uuid::Uuid;
 #[derive(Debug, Hash, Clone)]
 pub struct QueueStreamEvent<R, P> {
     pub id: String,
@@ -10,13 +10,14 @@ pub struct QueueStreamEvent<R, P> {
     pub event: JobState,
     pub delay: Option<u64>,
     pub prev: Option<JobState>,
-    pub job_id: String,
+    pub job_id: u64,
     #[debug(skip)]
     pub retuned_value: Option<R>,
     pub failed_reason: Option<FailedDetails>,
     #[debug(skip)]
     pub progress_data: Option<P>,
     pub name: Option<String>,
+    pub worker_id: Option<Uuid>,
 }
 
 impl<R, P> Default for QueueStreamEvent<R, P> {
@@ -32,6 +33,7 @@ impl<R, P> Default for QueueStreamEvent<R, P> {
             retuned_value: None,
             name: Default::default(),
             progress_data: None,
+            worker_id: None,
         }
     }
 }
@@ -59,9 +61,10 @@ impl<R: DeserializeOwned, P: DeserializeOwned> TryFrom<&StreamId> for QueueStrea
         for (key, val) in &value.map {
             let val_str = String::from_redis_value(val)?;
             match key.to_lowercase().as_str() {
-                "job_id" => event.job_id = val_str,
+                "job_id" => event.job_id = val_str.parse()?,
                 "name" => event.name = Some(val_str),
                 "delay" => event.delay = serde_json::from_str(&val_str)?,
+                "worker_id" => event.worker_id = serde_json::from_str(&val_str)?,
                 "priority" => event.priority = serde_json::from_str(&val_str)?,
                 "data" => event.progress_data = serde_json::from_str(&val_str)?,
 
