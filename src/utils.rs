@@ -74,9 +74,11 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
     pipeline.zcard(delayed_key);
     pipeline.llen(waiting_key);
     pipeline.get(job_id_key);
+    pipeline.hget(&meta_key, "processing");
     pipeline.hexists(&meta_key, JobState::Paused);
     #[allow(clippy::type_complexity)]
-    let (completed, active, stalled, delayed, waiting, last_id, paused): (
+    let (completed, active, stalled, delayed, waiting, last_id, processing, paused): (
+        Option<u64>,
         Option<u64>,
         Option<u64>,
         Option<u64>,
@@ -88,6 +90,7 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
 
     Ok(JobMetrics::new(
         last_id.unwrap_or_default(),
+        processing.unwrap_or_default(),
         active.unwrap_or_default(),
         stalled.unwrap_or_default(),
         completed.unwrap_or_default(),
@@ -114,7 +117,7 @@ where
     P: Clone + Serialize + DeserializeOwned + Send + 'static + Sync,
 {
     use crate::JobState;
-    let job_id = job.id.clone();
+    let job_id = job.id;
     let conn = queue.conn_pool.get().await?;
     let attempts_made = job.attempts_made;
     let callback = async_backtrace::frame!(callback(conn, job));
@@ -141,7 +144,7 @@ where
                         .clean_up_job(job_id, job.opts.remove_on_complete)
                         .await?;
                     let handle_id = handle.load(std::sync::atomic::Ordering::Acquire);
-                    task_sender.push(handle_id);
+                    task_sender.push((handle_id, job_id, move_to_state));
                 }
             }
         }
@@ -195,7 +198,8 @@ where
                         queue.clean_up_job(job_id, job.opts.remove_on_fail).await?;
                     }
                     let handle_id = handle.load(std::sync::atomic::Ordering::Acquire);
-                    task_sender.push(handle_id)
+
+                    task_sender.push((handle_id, job_id, move_to_state));
                 }
             }
         }
@@ -250,8 +254,8 @@ type MainLoopParams<D, R, P> = (
     Timer,
     Timer,
 );
-use tokio::task::Id;
-type TaskToRemove = Arc<SegQueue<u64>>;
+use tokio::task::{Id, JoinHandle};
+type TaskToRemove = Arc<SegQueue<(u64, u64, JobState)>>;
 pub(crate) type JobQueue = Arc<SegQueue<u64>>;
 #[async_backtrace::framed]
 pub(crate) async fn main_loop<D, R, P>(params: MainLoopParams<D, R, P>) -> KioResult<()>
@@ -286,41 +290,43 @@ where
     let queue_clone = queue.clone();
     let job_queue = delayed.clone();
     let notifer = paused_here.clone();
+    let worker_id = id;
+    let to_pause = Arc::new(AtomicBool::default());
+    let pause_schedular = to_pause.clone();
     tokio::spawn(
         async move {
             while !cancel_token.is_cancelled() {
                 // promote jobs here;
                 let date_time = Utc::now();
                 let interval_ms = (MIN_DELAY_MS_LIMIT) as i64;
+                let metrics = queue_clone.get_metrics().await?;
                 if queue_clone.current_metrics.has_delayed() {
                     queue_clone
                         .promote_delayed_jobs(date_time, interval_ms, job_queue.clone())
                         .await?;
                 }
-                while let Some(key) = task_queue.pop() {
+                while let Some((key, job_id, state)) = task_queue.pop() {
                     if let Some(entry) = running.remove(&key) {
                         let handle = entry.value();
                         let id = entry.key();
                         handle.abort();
+                        //dbg!(job_id, handle);
+                        queue_clone
+                            .update_processing_count(false, worker_id, job_id, state)
+                            .await?;
                     }
-                    //dbg!(key, job_count);
                 }
-                if queue_clone.pause_workers.load(Ordering::Acquire)
-                    && task_queue.is_empty()
-                    && running.is_empty()
-                {
+                if pause_schedular.load(Ordering::Acquire) && running.is_empty() {
+                    println!("pausing scheduler loop");
                     extend_lock_timer.pause();
                     stall_timer.pause();
                     notifer.notified().await;
                     extend_lock_timer.resume();
                     stall_timer.resume();
                 }
-                if !queue_clone.current_metrics.queue_has_work() {
-                    queue_clone.pause_active_workers();
-                }
-
                 tokio::task::yield_now().await;
             }
+
             Ok::<(), KioError>(())
         }
         .boxed(),
@@ -332,6 +338,7 @@ where
             let token_prefix = active_job_count.load(std::sync::atomic::Ordering::Acquire);
             let next_id = Uuid::new_v4();
             let token = JobToken(id, next_id, token_prefix as u64);
+            let worker_id = id;
             let block_delay = block_until.load(std::sync::atomic::Ordering::Acquire);
             let passed_id = delayed.pop();
             if let Some(job) = get_next_job(
@@ -347,8 +354,12 @@ where
                 let id = job.id.unwrap();
                 jobs_in_progress.insert(id, (job.clone(), token, AtomicU64::default()));
 
+                let state = job.state;
                 let callback = processor.clone();
                 active_job_count.fetch_add(1, Ordering::AcqRel);
+                queue
+                    .update_processing_count(true, worker_id, id, state)
+                    .await?;
                 let task = tokio::spawn(async_backtrace::frame!(process_job(
                     to_remove.clone(),
                     job,
@@ -365,10 +376,21 @@ where
 
                     stored_handle.swap(task_id, Ordering::AcqRel);
                 }
-                if queue.pause_workers.load(Ordering::Acquire) {
-                    dbg!("pause now", delayed.len(), processing.len());
-                    paused_here.notified().await;
-                }
+            }
+            if queue.pause_workers.load(Ordering::Acquire)
+                && delayed.is_empty()
+                && processing.is_empty()
+                && to_remove.is_empty()
+            {
+                println!(
+                    "pause main loop after processing all jobs, worker_delayed: {} processing:{} task_pending_removal:{}",
+                    delayed.len(),
+                    processing.len(),
+                    to_remove.len()
+                );
+                to_pause.store(true, Ordering::Relaxed);
+                paused_here.notified().await;
+                to_pause.store(false, Ordering::Relaxed);
             }
         }
         tokio::task::yield_now().await;

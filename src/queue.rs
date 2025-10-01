@@ -76,6 +76,7 @@ impl From<JobState> for CollectionSuffix {
             JobState::Delayed => CollectionSuffix::Delayed,
             JobState::Progress => CollectionSuffix::Prefix,
             JobState::Priorized => CollectionSuffix::Prioritized,
+            JobState::Processing => CollectionSuffix::Meta,
         }
     }
 }
@@ -114,6 +115,7 @@ fn create_counter(count: u64) -> Counter {
 #[derive(Debug, Clone, Default)]
 pub struct JobMetrics {
     pub last_id: Counter,
+    pub processing: Counter,
     pub active: Counter,
     pub stalled: Counter,
     pub delayed: Counter,
@@ -127,9 +129,12 @@ impl JobMetrics {
         last_id > 0
             && self.completed.load(Ordering::Relaxed) == last_id
             && self.active.load(Ordering::Relaxed) == 0
+            && self.processing.load(Ordering::Relaxed) == 0
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         last_id: u64,
+        processing: u64,
         active: u64,
         stalled: u64,
         completed: u64,
@@ -139,6 +144,7 @@ impl JobMetrics {
     ) -> Self {
         Self {
             last_id: create_counter(last_id),
+            processing: create_counter(processing),
             active: create_counter(active),
             stalled: create_counter(stalled),
             completed: create_counter(completed),
@@ -162,20 +168,31 @@ impl JobMetrics {
             .swap(other.delayed.load(Ordering::Acquire), Ordering::AcqRel);
         self.waiting
             .swap(other.waiting.load(Ordering::Acquire), Ordering::AcqRel);
+        self.processing
+            .swap(other.processing.load(Ordering::Acquire), Ordering::AcqRel);
     }
     pub fn has_delayed(&self) -> bool {
         self.delayed.load(Ordering::Acquire) > 0
     }
     pub fn queue_has_work(&self) -> bool {
-        self.waiting.load(Ordering::Acquire) > 0
+        (self.waiting.load(Ordering::Acquire) > 0
             || self.delayed.load(Ordering::Acquire) > 0
-            || self.stalled.load(Ordering::Acquire) > 0
+            || self.stalled.load(Ordering::Acquire) > 0)
     }
     pub fn queue_is_paused(&self) -> bool {
         self.paused.load(Ordering::Acquire)
     }
+    pub fn workers_idle(&self) -> bool {
+        self.processing.load(Ordering::Acquire) == 0
+    }
     pub fn has_active_jobs(&self) -> bool {
         self.active.load(Ordering::Acquire) > 0
+    }
+    pub fn is_idle(&self) -> bool {
+        !self.queue_has_work()
+            && !self.has_active_jobs()
+            && self.workers_idle()
+            && self.last_id.load(Ordering::Acquire) > 0
     }
 }
 
@@ -242,9 +259,17 @@ impl<
                 let block_interval = 1000000; // 100 seconds
                 let notifier = notifier.clone();
                 let pause_workers = pause_workers_clone.clone();
+                let is_inital = AtomicBool::new(true);
                 loop {
-                    if !metrics.queue_has_work() {
-                        pause_workers.store(true, Ordering::Release);
+                    if metrics.is_idle()
+                        && !is_inital.load(Ordering::Acquire)
+                        && !pause_workers
+                            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                            .unwrap_or(true)
+                    {
+                        println!("send pause signal ");
+                    } else {
+                        resume_helper(&metrics, &pause_workers, &notifier);
                     }
                     let options = StreamReadOptions::default().block(block_interval);
                     let reply: StreamReadReply = connection
@@ -263,18 +288,17 @@ impl<
                                 &mut connection,
                             )
                             .await?;
-                            emitter_clone.emit(state, param).await;
 
+                            emitter_clone.emit(state, param).await;
                             if let Ok(updated) =
                                 get_job_metrics(&prefix_clone, &name_clone, &mut conn).await
                             {
                                 metrics.update(&updated);
                             }
-
-                            resume_helper(&metrics, &pause_workers, &notifier);
                         }
                         // keep the queue's metrics up to date
                     }
+                    is_inital.compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed);
                 }
 
                 Ok(())
@@ -582,7 +606,7 @@ impl<
                     .await
                     .unwrap_or_default()
                 {
-                    let removed: isize = conn.lrem(&active_key, 1, &job_id).await?;
+                    let removed: isize = conn.lrem(&active_key, 1, job_id).await?;
                     if removed > 0 {
                         // If this job has been stalled too many times, such as if it crashes the worker, then fail it.
                         let stalled_count: u64 = conn.hincr(&job_key, "stalledCounter", 1).await?;
@@ -845,6 +869,7 @@ impl<
             CollectionSuffix::Events,
             CollectionSuffix::Stalled,
             CollectionSuffix::Marker,
+            CollectionSuffix::Meta,
         ]
         .iter()
         .for_each(|name| {
@@ -871,17 +896,12 @@ impl<
         Ok(())
     }
 
-    async fn get_metrics(&self) -> KioResult<JobMetrics> {
-        let mut conn = self.conn_pool.get().await?;
-        get_job_metrics(&self.prefix, &self.name, &mut conn).await
-    }
     pub async fn promote_delayed_jobs(
         &self,
         date_time: Dt,
         mut interval_ms: i64,
         job_queue: JobQueue,
     ) -> KioResult<()> {
-        //let (paused, target_state) = self.get_target_list();
         promote_jobs(self, date_time, interval_ms, job_queue).await
     }
     fn add_base_marker(&self, is_paused: bool, pipeline: &mut Pipeline) {
@@ -1049,6 +1069,38 @@ impl<D, R, P> Queue<D, R, P> {
             &self.pause_workers,
             &self.worker_notifier,
         );
+    }
+    pub async fn get_metrics(&self) -> KioResult<JobMetrics> {
+        let mut conn = self.conn_pool.get().await?;
+        let updated = get_job_metrics(&self.prefix, &self.name, &mut conn).await?;
+        self.current_metrics.update(&updated);
+        Ok(updated)
+    }
+    pub async fn update_processing_count(
+        &self,
+        increment: bool,
+        worker_id: Uuid,
+        job_id: u64,
+        state: JobState,
+    ) -> KioResult<u64> {
+        let mut conn = self.get_connection().await?;
+        let [meta_key, events_stream_key] = [CollectionSuffix::Meta, CollectionSuffix::Events]
+            .map(|col| col.to_collection_name(&self.prefix, &self.name));
+
+        let delta = if increment { 1_i64 } else { -1_i64 };
+        let mut pipe = redis::pipe();
+        pipe.atomic();
+        pipe.hincr(&meta_key, "processing", delta);
+        let items = [
+            ("event", JobState::Processing.to_string().to_lowercase()),
+            ("prev", state.to_string().to_lowercase()),
+            ("job_id", job_id.to_string()),
+            ("worker_id", serde_json::to_string(&worker_id)?),
+        ];
+
+        pipe.xadd(events_stream_key, "*", &items);
+        let (current, done): (u64, ()) = pipe.query_async(&mut conn).await?;
+        Ok(current)
     }
 }
 

@@ -1,13 +1,11 @@
 use deadpool_redis::{Config, Connection};
+use futures::FutureExt;
 use kio_mq::{
-    fetch_redis_pass, frame, framed, get_job_metrics, EventParameters, Job, KioError, KioResult,
-    Queue, Worker, WorkerOpts,
+    fetch_redis_pass, frame, framed, EventParameters, Job, KioError, KioResult, Queue, Worker,
+    WorkerOpts,
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::sync::mpsc::Sender;
 type BoxedError = Box<dyn std::error::Error + Send>;
@@ -78,46 +76,33 @@ async fn main() -> KioResult<()> {
     }
     let opts = WorkerOpts {
         concurrency: sizes.len(),
+        lock_duration: 120000,
         ..Default::default()
     };
     let worker = Worker::new(&queue, processor, Some(opts))?;
-    let cancel_worker = worker.cancellation_token.clone();
     let updating_metrics = queue.current_metrics.clone();
 
     worker
-        .on_all_events(move |event| {
-            let cancel_worker = cancel_worker.clone();
-            let updating_metrics = updating_metrics.clone();
-            async move {
-                if let EventParameters::Completed {
-                    job,
-                    prev_state: _,
-                    result,
-                } = event
-                {
-                    let id = job.id.unwrap();
-                    let completed_in =
-                        (job.finished_on.unwrap() - job.processed_on.unwrap()).num_milliseconds();
-                    let size = result.processed_size;
-                    println!(" completed job {id}  for {size:?} in {completed_in} mills");
-                    if updating_metrics.all_jobs_completed() {
-                        cancel_worker.cancel();
-                    }
-                }
+        .on_all_events(move |event| async move {
+            if let EventParameters::Completed {
+                job,
+                prev_state: _,
+                result,
+            } = event
+            {
+                let id = job.id.unwrap();
+                let completed_in =
+                    (job.finished_on.unwrap() - job.processed_on.unwrap()).num_milliseconds();
+                let size = result.processed_size;
+                println!(" completed job {id}  for {size:?} in {completed_in} mills");
             }
         })
         .await;
     worker.run()?;
 
-    let mut conn = queue.get_connection().await?;
-    while !get_job_metrics(&queue.prefix, &queue.name, &mut conn)
-        .await?
-        .all_jobs_completed()
-    {
-        tokio::time::sleep(Duration::from_millis(10000)).await;
-    }
+    while !updating_metrics.all_jobs_completed() {}
     worker.close(true);
-    if worker.is_running() {
+    if !worker.is_running() {
         queue.obliterate().await?;
     }
 
@@ -136,22 +121,23 @@ async fn process_callback(
     let data = job.data.clone();
     let (sender, mut reciever) = tokio::sync::mpsc::channel(1000000000000);
     // task that recieves progress
-    tokio::spawn(async move {
-        while let Some(payload) = reciever.recv().await {
-            match payload {
-                Payload::Progress(ffmpeg_progress) => {
-                    job.update_progress(ffmpeg_progress, &mut conn).await?;
-                }
-                Payload::Log(ref _log) => {
-                    // TODO: do something with the logs here
+    tokio::spawn(
+        async move {
+            while let Some(payload) = reciever.recv().await {
+                match payload {
+                    Payload::Progress(ffmpeg_progress) => {
+                        job.update_progress(ffmpeg_progress, &mut conn).await?;
+                    }
+                    Payload::Log(ref _log) => {
+                        // TODO: do something with the logs here
+                    }
                 }
             }
+            Ok::<(), KioError>(())
         }
-        Ok::<(), KioError>(())
-    });
-    let task = frame!(tokio::task::spawn_blocking(move || transcode_video(
-        data, sender
-    )));
+        .boxed(),
+    );
+    let task = frame!(tokio::task::spawn_blocking(move || transcode_video(data, sender)).boxed());
     task.await?
 }
 
