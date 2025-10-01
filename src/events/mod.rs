@@ -1,23 +1,24 @@
 use crate::{FailedDetails, Job, JobState};
 use derive_more::Debug;
 use redis::AsyncCommands;
+use uuid::Uuid;
 #[derive(Clone, Debug)]
 pub enum EventParameters<D, R, P> {
     Prioritized {
-        job_id: String,
+        job_id: u64,
         name: Option<String>,
         priority: u64,
     },
     Added {
-        job_id: String,
+        job_id: u64,
         name: Option<String>,
     },
     WaitingToRun {
-        job_id: String,
+        job_id: u64,
         prev_state: Option<JobState>,
     },
     Delayed {
-        job_id: String,
+        job_id: u64,
         delay: Duration,
     },
     Active {
@@ -27,21 +28,28 @@ pub enum EventParameters<D, R, P> {
     Completed {
         job: Job<D, R, P>,
         prev_state: Option<JobState>,
+        #[debug(skip)]
         result: R,
     },
     Void, // drained, closed,
     Progress {
-        job_id: String,
+        job_id: u64,
+        #[debug(skip)]
         data: P,
     },
     Stalled {
-        job_id: String,
+        job_id: u64,
         prev_state: JobState,
     },
     Failed {
         reason: FailedDetails,
-        job_id: String,
+        job_id: u64,
         prev_state: JobState,
+    },
+    Processing {
+        worker_id: Uuid,
+        job_id: u64,
+        status: JobState,
     },
 }
 use std::{sync::Arc, time::Duration};
@@ -110,6 +118,11 @@ impl<D: DeserializeOwned, R: DeserializeOwned, P: DeserializeOwned> EventParamet
             JobState::Progress => Self::Progress {
                 job_id: event.job_id,
                 data: event.progress_data.expect("expecting a value"),
+            },
+            JobState::Processing => Self::Processing {
+                worker_id: event.worker_id.unwrap_or_default(),
+                job_id: event.job_id,
+                status: event.prev.unwrap_or_default(),
             },
         };
 
