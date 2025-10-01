@@ -1,9 +1,7 @@
-use std::time::Duration;
-
 use deadpool_redis::{Config, Connection};
 use kio_mq::{
-    fetch_redis_pass, framed, get_job_metrics, BackOffJobOptions, EventParameters, Job, JobOptions,
-    KioResult, Queue, QueueOpts, RemoveOnCompletionOrFailure, Worker, WorkerOpts,
+    fetch_redis_pass, framed, BackOffJobOptions, EventParameters, Job, JobOptions, KioResult,
+    Queue, QueueOpts, RemoveOnCompletionOrFailure, Worker, WorkerOpts,
 };
 use uuid::Uuid;
 #[tokio::main]
@@ -58,7 +56,7 @@ async fn main() -> KioResult<()> {
 
         //let priority = count - _i; // ucomment to use a priority of count - index (job_id -1)
         let job_opts = JobOptions {
-            delay: 100 * _i as u64, // uncomment to add delay
+            //delay: 500 * _i as u64, // uncomment to add delay
             //priority, // uncomment to set priority
             ..Default::default()
         };
@@ -74,13 +72,7 @@ async fn main() -> KioResult<()> {
     let worker = Worker::new(&queue, processor, Some(opts))?;
     worker.run()?;
     queue.bulk_add_only(iterator).await?;
-    let mut conn = queue.get_connection().await?;
-    while !get_job_metrics(&queue.prefix, &queue.name, &mut conn)
-        .await?
-        .all_jobs_completed()
-    {
-        tokio::time::sleep(Duration::from_millis(10000)).await;
-    }
+    while !queue.current_metrics.all_jobs_completed() {}
     worker.close(true);
     if worker.closed() {
         queue.obliterate().await?;
