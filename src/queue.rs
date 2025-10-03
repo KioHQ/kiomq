@@ -354,7 +354,6 @@ impl<
                         &mut source,
                     );
                     process_queue_events(args).await?;
-                    dbg!(&metrics);
 
                     if metrics.is_idle()
                         && !is_inital.load(Ordering::Acquire)
