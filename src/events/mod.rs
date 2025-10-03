@@ -58,7 +58,7 @@ use serde::de::DeserializeOwned;
 use typed_emitter::TypedEmitter;
 pub(crate) type EventEmitter<D, R, P> = Arc<TypedEmitter<JobState, EventParameters<D, R, P>>>;
 mod redis_events;
-pub use redis_events::QueueStreamEvent;
+pub use redis_events::{QueueStreamEvent, StreamEventId};
 
 use crate::KioResult;
 impl<D: DeserializeOwned, R: DeserializeOwned, P: DeserializeOwned> EventParameters<D, R, P> {

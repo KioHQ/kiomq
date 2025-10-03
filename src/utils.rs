@@ -8,6 +8,7 @@ use crate::{
 };
 use chrono::Utc;
 use crossbeam_queue::SegQueue;
+use futures::future::OkInto;
 use futures::{FutureExt, StreamExt};
 use redis::aio::PubSubStream;
 use redis::streams::{StreamReadOptions, StreamReadReply};
@@ -545,18 +546,37 @@ pub async fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
     } else {
         JobState::Wait
     };
-    let mut items = vec![
-        ("event", event.to_string().to_lowercase()),
-        ("job_id", id.to_string()),
-        ("name", name.to_string()),
-    ];
-    if to_delay {
-        items.push(("delay", delay.to_string()));
+    match queue.event_mode.load(std::sync::atomic::Ordering::Acquire) {
+        QueueEventMode::PubSub => {
+            let mut event = QueueStreamEvent::<R, P> {
+                job_id: id,
+                event,
+                name: Some(name.to_owned()),
+                ..Default::default()
+            };
+            if to_delay {
+                event.delay = Some(delay)
+            }
+            if to_priorize {
+                event.priority = Some(priority);
+            }
+            pipeline.publish(events_keys, event);
+        }
+        QueueEventMode::Stream => {
+            let mut items = vec![
+                ("event", event.to_string().to_lowercase()),
+                ("job_id", id.to_string()),
+                ("name", name.to_string()),
+            ];
+            if to_delay {
+                items.push(("delay", delay.to_string()));
+            }
+            if to_priorize {
+                items.push(("priority", priority.to_string()));
+            }
+            pipeline.xadd(events_keys, "*", &items);
+        }
     }
-    if to_priorize {
-        items.push(("priority", priority.to_string()));
-    }
-    pipeline.xadd(events_keys, "*", &items);
     Ok(())
 }
 
@@ -568,7 +588,7 @@ pub(crate) type ReadStreamArgs<'a, D, R, P> = (
     &'a str,
     &'a str,
     &'a EventEmitter<D, R, P>,
-    &'a JobMetrics,
+    Arc<JobMetrics>,
     &'a str,
     &'a str,
     &'a mut deadpool_redis::Connection,
@@ -596,38 +616,55 @@ where
     R: DeserializeOwned + Clone + Send + Sync + 'static,
     P: DeserializeOwned + Clone + Send + Sync + 'static,
 {
-    let events: Vec<QueueStreamEvent<R, P>> = match event_mode {
+    match event_mode {
         QueueEventMode::PubSub => {
-            let mut events = vec![];
             if let Some(msg) = pubsub_source.next().await {
                 let event: QueueStreamEvent<R, P> = msg.get_payload()?;
-                events.push(event);
+                process_each_event(
+                    event, emitter, queue_name, prefix, name, connection, &metrics,
+                )
+                .await?;
             }
-            events
         }
         QueueEventMode::Stream => {
             let options = StreamReadOptions::default()
                 .block(block_interval)
-                .count(5000)
                 .group(consumer_group, consumer_name)
                 .noack();
             let reply: StreamReadReply = connection
                 .xread_options(&[&stream_key], &[">"], &options)
                 .await?;
-            QueueStreamEvent::from_stream_read_reply(stream_key, reply)
+            let events = QueueStreamEvent::<R, P>::from_stream_read_reply(stream_key, reply);
+            for event in events {
+                process_each_event(
+                    event, emitter, queue_name, prefix, name, connection, &metrics,
+                )
+                .await?;
+            }
         }
     };
-    for event in events {
-        let state = event.event;
-        let param =
-            EventParameters::<D, R, P>::from_queue_event(queue_name, event, connection).await?;
 
-        emitter.emit(state, param).await;
-
-        if let Ok(updated) = get_job_metrics(prefix, name, connection).await {
-            metrics.update(&updated);
-        }
+    Ok(())
+}
+async fn process_each_event<D, R, P>(
+    event: QueueStreamEvent<R, P>,
+    emitter: &EventEmitter<D, R, P>,
+    queue_name: &str,
+    prefix: &str,
+    name: &str,
+    connection: &mut deadpool_redis::Connection,
+    metrics: &JobMetrics,
+) -> KioResult<()>
+where
+    D: DeserializeOwned + Clone + Send + 'static,
+    R: DeserializeOwned + Clone + Send + Sync + 'static,
+    P: DeserializeOwned + Clone + Send + Sync + 'static,
+{
+    let state = event.event;
+    let param = EventParameters::<D, R, P>::from_queue_event(queue_name, event, connection).await?;
+    emitter.emit(state, param).await;
+    if let Ok(updated) = get_job_metrics(prefix, name, connection).await {
+        metrics.update(&updated);
     }
-
     Ok(())
 }
