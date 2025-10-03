@@ -9,7 +9,13 @@ use serde::{
 use std::str::FromStr;
 use uuid::Uuid;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash, Debug)]
-pub struct StreamEventId(Dt, u64);
+pub struct StreamEventId(pub Dt, pub u64);
+impl StreamEventId {
+    pub fn from_timestamp_millis(ts: i64) -> Self {
+        let dt = Dt::from_timestamp_millis(ts).unwrap_or_default();
+        Self(dt, 0)
+    }
+}
 impl FromStr for StreamEventId {
     type Err = KioError;
     fn from_str(id: &str) -> KioResult<Self> {

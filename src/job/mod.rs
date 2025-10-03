@@ -14,7 +14,7 @@ use serde::{
 };
 
 mod backoff;
-use crate::{queue::Queue, CollectionSuffix, KioError, KioResult};
+use crate::{events::QueueStreamEvent, queue::Queue, CollectionSuffix, KioError, KioResult};
 pub use backoff::{BackOff, BackOffJobOptions, BackOffOptions, StoredFn};
 /// alias for DateTime<Utc>
 pub(crate) type Dt = DateTime<Utc>;
@@ -220,8 +220,9 @@ impl<D, R, P> Job<D, R, P> {
     }
     pub async fn update_progress(&mut self, value: P, conn: &mut Connection) -> Result<(), KioError>
     where
-        P: Serialize,
+        P: Serialize + Clone,
     {
+        use crate::QueueEventMode;
         if let (Some(queue_name), Some(id)) = (&self.queue_name, &self.id) {
             let job_key = format!("{queue_name}:{id}");
             let mut pipeline = redis::pipe();
@@ -229,13 +230,32 @@ impl<D, R, P> Job<D, R, P> {
             let progress_str = serde_json::to_string_pretty(&value)?;
             let events_stream_key = format!("{queue_name}:events");
             pipeline.hset(job_key, "progress", &progress_str);
-            let items = [
-                ("event", JobState::Progress.to_string().to_lowercase()),
-                ("job_id", id.to_string()),
-                ("data", progress_str),
-                ("name", self.name.to_string()),
-            ];
-            pipeline.xadd(&events_stream_key, "*", &items);
+            // check for the queue_event_mode
+            let queue_meta_key = format!("{queue_name}:meta");
+            let event_mode: Option<QueueEventMode> =
+                conn.hget(&queue_meta_key, "event_mode").await?;
+            let mode = event_mode.unwrap_or_default();
+            match mode {
+                QueueEventMode::PubSub => {
+                    let event = QueueStreamEvent::<(), P> {
+                        job_id: *id,
+                        event: JobState::Progress,
+                        name: Some(self.name.to_owned()),
+                        progress_data: Some(value.clone()),
+                        ..Default::default()
+                    };
+                    pipeline.publish(&events_stream_key, event);
+                }
+                QueueEventMode::Stream => {
+                    let items = [
+                        ("event", JobState::Progress.to_string().to_lowercase()),
+                        ("job_id", id.to_string()),
+                        ("data", progress_str),
+                        ("name", self.name.to_string()),
+                    ];
+                    pipeline.xadd(&events_stream_key, "*", &items);
+                }
+            }
             let _: redis::Value = pipeline.query_async(conn).await?;
             self.progress = Some(value);
         }

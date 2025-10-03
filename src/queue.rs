@@ -1,6 +1,7 @@
 use crossbeam_queue::SegQueue;
 use futures::future::Future;
 use futures::FutureExt;
+use std::default;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
@@ -10,7 +11,7 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::error::{JobError, KioError, QueueError};
-use crate::events::QueueStreamEvent;
+use crate::events::{QueueStreamEvent, StreamEventId};
 use crate::job::{Job, JobState};
 use crate::utils::{
     calculate_next_priority_score, prepare_for_insert, process_queue_events, promote_jobs,
@@ -259,7 +260,7 @@ pub struct Queue<D, R, P> {
     pub job_count: Arc<AtomicU64>,
     pub current_metrics: Arc<JobMetrics>,
     pub opts: QueueOpts,
-    event_mode: Arc<Atomic<QueueEventMode>>,
+    pub(crate) event_mode: Arc<Atomic<QueueEventMode>>,
     emitter: EventEmitter<D, R, P>,
     #[debug(skip)]
     pub stream_listener: Arc<JoinHandle<KioResult<()>>>,
@@ -346,13 +347,14 @@ impl<
                         &consumer_group,
                         &consumer_name,
                         &emitter_clone,
-                        &metrics,
+                        metrics.clone(),
                         &prefix_clone,
                         &name_clone,
                         &mut connection,
                         &mut source,
                     );
                     process_queue_events(args).await?;
+                    dbg!(&metrics);
 
                     if metrics.is_idle()
                         && !is_inital.load(Ordering::Acquire)
@@ -521,27 +523,45 @@ impl<
             );
         }
 
-        let mut items = vec![
-            ("event", to.to_string().to_lowercase()),
-            ("prev", from.to_string().to_lowercase()),
-            ("job_id", job_id.to_string()),
-        ];
-        if let Some(data) = value {
-            let key = if matches!(to, JobState::Failed) {
-                "failedReason"
-            } else {
-                "returnedValue"
-            };
+        let payload_key = if matches!(to, JobState::Failed) {
+            "failedReason"
+        } else {
+            "returnedValue"
+        };
+        if let Some(data) = value.as_ref() {
             let data = serde_json::to_string_pretty(&data)?;
-            pipeline.hset(&job_key, key, &data);
-            items.push((key, data.to_owned()));
+            pipeline.hset(&job_key, payload_key, &data);
             pipeline.hset(&job_key, "finishedOn", ts);
         }
         // check of retries_exhausion here;
 
         match self.event_mode.load(Ordering::Acquire) {
-            QueueEventMode::PubSub => {}
+            QueueEventMode::PubSub => {
+                let mut event: QueueStreamEvent<R, P> = QueueStreamEvent {
+                    event: to,
+                    prev: Some(from),
+                    job_id,
+                    ..Default::default()
+                };
+                if let Some(data) = value {
+                    match data {
+                        ProcessedResult::Failed(failed_details) => {
+                            event.failed_reason = Some(failed_details)
+                        }
+                        ProcessedResult::Success(value) => event.retuned_value = Some(value),
+                    }
+                }
+
+                pipeline.publish(events_key, event);
+            }
             QueueEventMode::Stream => {
+                let data = serde_json::to_string_pretty(&value)?;
+                let mut items = vec![
+                    ("event", to.to_string().to_lowercase()),
+                    ("prev", from.to_string().to_lowercase()),
+                    ("job_id", job_id.to_string()),
+                    (payload_key, data),
+                ];
                 pipeline.xadd(events_key, "*", &items);
             }
         }
@@ -598,7 +618,14 @@ impl<
         let items = [("event", state)];
 
         match self.event_mode.load(Ordering::Acquire) {
-            QueueEventMode::PubSub => {}
+            QueueEventMode::PubSub => {
+                let event = QueueStreamEvent::<R, P> {
+                    event: state,
+                    ..Default::default()
+                };
+
+                pipeline.publish(events_key, event);
+            }
             QueueEventMode::Stream => {
                 pipeline.xadd(events_key, "*", &items);
             }
@@ -686,55 +713,50 @@ impl<
                     .await
                     .unwrap_or_default()
                 {
-                    let removed: isize = conn.lrem(&active_key, 1, job_id).await?;
-                    if removed > 0 {
-                        // If this job has been stalled too many times, such as if it crashes the worker, then fail it.
-                        let stalled_count: u64 = conn.hincr(&job_key, "stalledCounter", 1).await?;
-                        if stalled_count > opts.max_stalled_count {
-                            // Add job removal option logic here
-                            let _: () = conn.zadd(&failed_key, ts, job_id).await?;
-                            let failed_reason = "job stalled more than allowable limit";
-                            let state = JobState::Failed.to_string();
+                    let mut inner = redis::pipe();
 
-                            let items = [
-                                ("failedReason", failed_reason.to_lowercase()),
-                                ("finishedOn", ts.to_string()),
-                                ("state", state),
-                            ];
-                            let _: () = conn.hset_multiple(&job_key, &items).await?;
-                            let items = [
-                                ("event", "failed"),
-                                ("job_id", &job_id.to_string()),
-                                ("failedReason", failed_reason),
-                                ("prev", "active"),
-                            ];
-                            let _: () = conn.xadd(&events_key, "*", &items).await?;
-                            failed.push(job_id);
-                        } else {
-                            let (is_paused, target) = self.get_target_list();
-                            if !is_paused {
-                                let _: () = conn.zadd(&marker_key, 0, "0").await?;
-                            }
-                            self.move_job_to_state(
-                                job_id,
-                                JobState::Active,
-                                target,
-                                None,
-                                None,
-                                None,
-                            )
-                            .await?;
-                            // emit  stalled;
-                            let items = [("event", "stalled"), ("job_id", &job_id.to_string())];
-                            let _: () = conn.xadd(&events_key, "*", &items).await?;
-                            stalled.push(job_id);
+                    // If this job has been stalled too many times, such as if it crashes the worker, then fail it.
+                    inner.hincr(&job_key, "stalledCounter", 1_u64);
+                    inner.hget(&job_key, "state");
+                    inner.hget(&job_key, "attemptsMade");
+                    let (stalled_count, from, attempts_made): (u64, JobState, u64) =
+                        inner.query_async(&mut conn).await?;
+
+                    if stalled_count > opts.max_stalled_count {
+                        // Add job removal option logic here
+                        let mut pipeline = redis::pipe();
+                        let reason = "job stalled more than allowable limit".to_lowercase();
+                        let to = JobState::Failed;
+                        let failed_reason = FailedDetails {
+                            run: attempts_made + 1,
+                            reason,
+                        };
+
+                        self.move_job_to_state(
+                            job_id,
+                            from,
+                            to,
+                            Some(ProcessedResult::Failed(failed_reason)),
+                            None,
+                            None,
+                        )
+                        .await?;
+                        failed.push(job_id);
+                    } else {
+                        let (is_paused, target) = self.get_target_list();
+                        if !is_paused {
+                            let _: () = conn.zadd(&marker_key, 0, "0").await?;
                         }
+                        self.move_job_to_state(job_id, JobState::Active, target, None, None, None)
+                            .await?;
+                        // emit  stalled;
+                        stalled.push(job_id);
                     }
                 }
             }
         } else {
             // mark stalled Jobs
-            let active: Vec<String> = conn.lrange(&active_key, 0, -1).await?;
+            let active: Vec<u64> = conn.lrange(&active_key, 0, -1).await?;
             let mut pipeline = redis::pipe();
             pipeline.atomic();
             if !active.is_empty() {
@@ -1171,14 +1193,29 @@ impl<D, R, P> Queue<D, R, P> {
         let mut pipe = redis::pipe();
         pipe.atomic();
         pipe.hincr(&meta_key, "processing", delta);
-        let items = [
-            ("event", JobState::Processing.to_string().to_lowercase()),
-            ("prev", state.to_string().to_lowercase()),
-            ("job_id", job_id.to_string()),
-            ("worker_id", serde_json::to_string(&worker_id)?),
-        ];
+        match self.event_mode.load(Ordering::Acquire) {
+            QueueEventMode::PubSub => {
+                // this event, doesn't have the return and progress fields
+                let event = QueueStreamEvent::<(), ()> {
+                    job_id,
+                    event: JobState::Processing,
+                    prev: Some(state),
+                    worker_id: Some(worker_id),
+                    ..Default::default()
+                };
+                pipe.publish(events_stream_key, event);
+            }
+            QueueEventMode::Stream => {
+                let items = [
+                    ("event", JobState::Processing.to_string().to_lowercase()),
+                    ("prev", state.to_string().to_lowercase()),
+                    ("job_id", job_id.to_string()),
+                    ("worker_id", serde_json::to_string(&worker_id)?),
+                ];
 
-        pipe.xadd(events_stream_key, "*", &items);
+                pipe.xadd(events_stream_key, "*", &items);
+            }
+        }
         let (current, done): (u64, ()) = pipe.query_async(&mut conn).await?;
         Ok(current)
     }
