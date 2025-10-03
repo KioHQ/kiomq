@@ -1,3 +1,8 @@
+use std::{
+    sync::{atomic::AtomicUsize, Arc},
+    time::Instant,
+};
+
 use deadpool_redis::{Config, Connection};
 use kio_mq::{
     fetch_redis_pass, framed, BackOffJobOptions, EventParameters, Job, JobOptions, KioResult,
@@ -25,31 +30,38 @@ async fn main() -> KioResult<()> {
             type_: Some("exponential".to_owned()),
             delay: Some(200),
         })),
+        ..Default::default()
     };
+    let counter = Arc::new(AtomicUsize::default());
+    let events = counter.clone();
     let queue = Queue::<String, String, i32>::new(None, "trial", &config, Some(queue_opts)).await?;
-    let event_listener = move |state: EventParameters<String, String, i32>| async move {
-        // do something with return state
-        if let EventParameters::Completed {
-            job,
-            result: _,
-            prev_state: _,
-        } = state
-        {
-            let diff = (job.processed_on.unwrap_or_default() - job.ts).num_milliseconds();
-            let ran_time = (job.finished_on.unwrap_or_default()
-                - job.processed_on.unwrap_or_default())
-            .num_milliseconds();
-            println!(
+    let event_listener = move |state: EventParameters<String, String, i32>| {
+        let completed = events.clone();
+        async move {
+            // do something with return state
+            if let EventParameters::Completed {
+                job,
+                result: _,
+                prev_state: _,
+            } = state
+            {
+                completed.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                let diff = (job.processed_on.unwrap_or_default() - job.ts).num_milliseconds();
+                let ran_time = (job.finished_on.unwrap_or_default()
+                    - job.processed_on.unwrap_or_default())
+                .num_milliseconds();
+                println!(
                 "finished job  {}  ran for {ran_time} ms with an actual delay of  {} ms and  expected_delay: {}",
                 job.id.unwrap_or_default(),
                 diff,
                 job.opts.delay,
             );
+            }
         }
     };
     queue.on_all_events(event_listener).await;
 
-    let count = 100;
+    let count = 10000;
     let iterator = (0..count).map(|_i| {
         //use rand::Rng;
         //let priority = rand::rng().random_range(1..count); // ucomment to use  random priority
@@ -65,14 +77,18 @@ async fn main() -> KioResult<()> {
     });
 
     let opts = WorkerOpts {
+        autorun: true,
         //concurrency: 1, // uncomment to use set concurrency
         ..Default::default()
     };
     let processor = |con: _, job: Job<_, _, _>| process_callback(con, job);
+    let _worker = Worker::new(&queue, processor, Some(opts.clone()))?;
     let worker = Worker::new(&queue, processor, Some(opts))?;
-    worker.run()?;
+    //worker.run()?;
+    let now = Instant::now();
     queue.bulk_add_only(iterator).await?;
-    while !queue.current_metrics.all_jobs_completed() {}
+    while counter.load(std::sync::atomic::Ordering::Acquire) < count {}
+    dbg!(now.elapsed());
     worker.close(true);
     if worker.closed() {
         queue.obliterate().await?;
