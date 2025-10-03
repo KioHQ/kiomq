@@ -1,13 +1,16 @@
 use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo, JobError, QueueError};
+use crate::events::QueueStreamEvent;
 use crate::timer::Timer;
 use crate::worker::{JobMap, ProcessingQueue, WorkerCallback, MIN_DELAY_MS_LIMIT};
 use crate::{
-    utils, EventParameters, FailedDetails, JobOptions, JobState, JobToken, KioError, Trace,
-    WorkerOpts,
+    utils, EventEmitter, EventParameters, FailedDetails, JobOptions, JobState, JobToken, KioError,
+    QueueEventMode, Trace, WorkerOpts,
 };
 use chrono::Utc;
 use crossbeam_queue::SegQueue;
-use futures::FutureExt;
+use futures::{FutureExt, StreamExt};
+use redis::aio::PubSubStream;
+use redis::streams::{StreamReadOptions, StreamReadReply};
 use serde::ser;
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Write;
@@ -75,9 +78,10 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
     pipeline.llen(waiting_key);
     pipeline.get(job_id_key);
     pipeline.hget(&meta_key, "processing");
+    pipeline.hget(&meta_key, "event_mode");
     pipeline.hexists(&meta_key, JobState::Paused);
     #[allow(clippy::type_complexity)]
-    let (completed, active, stalled, delayed, waiting, last_id, processing, paused): (
+    let (completed, active, stalled, delayed, waiting, last_id, processing, event_mode, paused): (
         Option<u64>,
         Option<u64>,
         Option<u64>,
@@ -85,6 +89,7 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
         Option<u64>,
         Option<u64>,
         Option<u64>,
+        Option<QueueEventMode>,
         bool,
     ) = pipeline.query_async(conn).await?;
 
@@ -97,6 +102,7 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
         delayed.unwrap_or_default(),
         waiting.unwrap_or_default(),
         paused,
+        event_mode.unwrap_or_default(),
     ))
 }
 
@@ -554,5 +560,77 @@ pub async fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
         items.push(("priority", priority.to_string()));
     }
     pipeline.xadd(events_keys, "*", &items);
+    Ok(())
+}
+
+pub(crate) type ReadStreamArgs<'a, D, R, P> = (
+    QueueEventMode,
+    &'a str,
+    &'a str,
+    usize,
+    &'a str,
+    &'a str,
+    &'a EventEmitter<D, R, P>,
+    &'a JobMetrics,
+    &'a str,
+    &'a str,
+    &'a mut deadpool_redis::Connection,
+    &'a mut PubSubStream,
+);
+// Helper function to process events from our queue-redis-stream
+pub async fn process_queue_events<'a, D, R, P>(
+    (
+        event_mode,
+        stream_key,
+        queue_name,
+        block_interval,
+        consumer_group,
+        consumer_name,
+        emitter,
+        metrics,
+        prefix,
+        name,
+        connection,
+        pubsub_source,
+    ): ReadStreamArgs<'a, D, R, P>,
+) -> KioResult<()>
+where
+    D: DeserializeOwned + Clone + Send + 'static,
+    R: DeserializeOwned + Clone + Send + Sync + 'static,
+    P: DeserializeOwned + Clone + Send + Sync + 'static,
+{
+    let events: Vec<QueueStreamEvent<R, P>> = match event_mode {
+        QueueEventMode::PubSub => {
+            let mut events = vec![];
+            if let Some(msg) = pubsub_source.next().await {
+                let event: QueueStreamEvent<R, P> = msg.get_payload()?;
+                events.push(event);
+            }
+            events
+        }
+        QueueEventMode::Stream => {
+            let options = StreamReadOptions::default()
+                .block(block_interval)
+                .count(5000)
+                .group(consumer_group, consumer_name)
+                .noack();
+            let reply: StreamReadReply = connection
+                .xread_options(&[&stream_key], &[">"], &options)
+                .await?;
+            QueueStreamEvent::from_stream_read_reply(stream_key, reply)
+        }
+    };
+    for event in events {
+        let state = event.event;
+        let param =
+            EventParameters::<D, R, P>::from_queue_event(queue_name, event, connection).await?;
+
+        emitter.emit(state, param).await;
+
+        if let Ok(updated) = get_job_metrics(prefix, name, connection).await {
+            metrics.update(&updated);
+        }
+    }
+
     Ok(())
 }

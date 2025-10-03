@@ -55,6 +55,7 @@ pub enum WorkerError {
 }
 #[derive(Debug, Display, Error)]
 pub enum QueueError {
+    UnKnownEventMode,
     FailedToObliterate,
     CantObliterateWhileJobsActive,
     CantOperateWhenPaused,

@@ -1,9 +1,12 @@
 use crate::{FailedDetails, JobState, KioError, KioResult};
 use derive_more::Debug;
-use serde::de::{value, DeserializeOwned};
+use serde::{
+    de::{value, DeserializeOwned},
+    Deserialize, Serialize,
+};
 use std::str::FromStr;
 use uuid::Uuid;
-#[derive(Debug, Hash, Clone)]
+#[derive(Debug, Hash, Clone, Serialize, Deserialize)]
 pub struct QueueStreamEvent<R, P> {
     pub id: String,
     pub priority: Option<u64>,
@@ -19,7 +22,22 @@ pub struct QueueStreamEvent<R, P> {
     pub name: Option<String>,
     pub worker_id: Option<Uuid>,
 }
+impl<R: Serialize, P: Serialize> ToRedisArgs for QueueStreamEvent<R, P> {
+    fn write_redis_args<W>(&self, out: &mut W)
+    where
+        W: ?Sized + redis::RedisWrite,
+    {
+        out.write_arg_fmt(serde_json::to_string_pretty(self).unwrap_or_default());
+    }
+}
 
+impl<R: DeserializeOwned, P: DeserializeOwned> FromRedisValue for QueueStreamEvent<R, P> {
+    fn from_redis_value(v: &redis::Value) -> redis::RedisResult<Self> {
+        let msg = String::from_redis_value(v)?;
+        let value = serde_json::from_str(&msg).map_err(std::io::Error::other)?;
+        Ok(value)
+    }
+}
 impl<R, P> Default for QueueStreamEvent<R, P> {
     fn default() -> Self {
         Self {
@@ -39,7 +57,7 @@ impl<R, P> Default for QueueStreamEvent<R, P> {
 }
 use redis::{
     streams::{StreamId, StreamReadReply},
-    FromRedisValue,
+    FromRedisValue, ToRedisArgs,
 };
 impl<R: DeserializeOwned, P: DeserializeOwned> QueueStreamEvent<R, P> {
     pub fn from_stream_read_reply(events_key: &str, reply: StreamReadReply) -> Vec<Self> {
