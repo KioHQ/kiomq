@@ -18,8 +18,8 @@ use crate::utils::{
 };
 use crate::worker::{WorkerOpts, MIN_DELAY_MS_LIMIT};
 use crate::{
-    get_job_metrics, queue, BackOff, BackOffJobOptions, BackOffOptions, Dt, JobOptions, JobToken,
-    KeepJobs, KioResult, RemoveOnCompletionOrFailure, StoredFn, Trace,
+    get_job_metrics, queue, BackOff, BackOffJobOptions, BackOffOptions, Dt, FailedDetails,
+    JobOptions, JobToken, KeepJobs, KioResult, RemoveOnCompletionOrFailure, StoredFn, Trace,
 };
 use async_backtrace::backtrace;
 use chrono::{TimeDelta, Utc};
@@ -31,6 +31,14 @@ use redis::{
     self, pipe, AsyncCommands, FromRedisValue, JsonAsyncCommands, LposOptions, Pipeline,
     RedisResult, ToRedisArgs, Value,
 };
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+/// An envelope representing the result of running the worker's callback
+pub enum ProcessedResult<R> {
+    Failed(FailedDetails),
+    Success(R),
+}
 
 use derive_more::{Debug, Display};
 #[derive(Display, Serialize)]
@@ -449,12 +457,13 @@ impl<
         let value: Job<_, _, _> = conn.hgetall(job_key).await?;
         Ok(value)
     }
+
     pub async fn move_job_to_state(
         &self,
         job_id: u64,
         from: JobState,
         to: JobState,
-        value: Option<&str>,
+        value: Option<ProcessedResult<R>>,
         ts: Option<i64>,
         backtrace: Option<Trace>,
     ) -> KioResult<()> {
@@ -523,7 +532,8 @@ impl<
             } else {
                 "returnedValue"
             };
-            pipeline.hset(&job_key, key, data);
+            let data = serde_json::to_string_pretty(&data)?;
+            pipeline.hset(&job_key, key, &data);
             items.push((key, data.to_owned()));
             pipeline.hset(&job_key, "finishedOn", ts);
         }
@@ -854,7 +864,7 @@ impl<
         ts: i64,
         token: JobToken,
         move_to_state: JobState,
-        returned_value_or_failed_reason: &str,
+        processed: ProcessedResult<R>,
         backtrace: Option<Trace>,
     ) -> KioResult<Job<D, R, P>> {
         let [job_key, job_lock_key, active_key, completed_key, events_stream_key, stalled_key] = [
@@ -890,7 +900,7 @@ impl<
             job_id,
             prev_state,
             move_to_state,
-            Some(returned_value_or_failed_reason),
+            Some(processed),
             Some(ts),
             backtrace,
         )

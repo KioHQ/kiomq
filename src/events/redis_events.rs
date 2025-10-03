@@ -1,4 +1,6 @@
+use crate::Dt;
 use crate::{FailedDetails, JobState, KioError, KioResult};
+use chrono::Utc;
 use derive_more::Debug;
 use serde::{
     de::{value, DeserializeOwned},
@@ -6,9 +8,33 @@ use serde::{
 };
 use std::str::FromStr;
 use uuid::Uuid;
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash, Debug)]
+pub struct StreamEventId(Dt, u64);
+impl FromStr for StreamEventId {
+    type Err = KioError;
+    fn from_str(id: &str) -> KioResult<Self> {
+        let (ts, num) = id
+            .split_once('-')
+            .ok_or(KioError::IoError(std::io::Error::other(
+                "invalid string format, expect timestamp-number",
+            )))?;
+        let dt = Dt::from_timestamp_millis(ts.parse()?).ok_or(KioError::IoError(
+            std::io::Error::other("invalid timestamp format"),
+        ))?;
+        let id = num.parse()?;
+
+        Ok(Self(dt, id))
+    }
+}
+impl Default for StreamEventId {
+    fn default() -> Self {
+        Self(Utc::now(), Default::default())
+    }
+}
+
 #[derive(Debug, Hash, Clone, Serialize, Deserialize)]
 pub struct QueueStreamEvent<R, P> {
-    pub id: String,
+    pub id: StreamEventId,
     pub priority: Option<u64>,
     pub event: JobState,
     pub delay: Option<u64>,
@@ -73,7 +99,7 @@ impl<R: DeserializeOwned, P: DeserializeOwned> TryFrom<&StreamId> for QueueStrea
 
     fn try_from(value: &StreamId) -> Result<Self, Self::Error> {
         let mut event = Self {
-            id: value.id.to_string(),
+            id: value.id.parse()?,
             ..Default::default()
         };
         for (key, val) in &value.map {
