@@ -6,7 +6,7 @@ use std::{
 use deadpool_redis::{Config, Connection};
 use kio_mq::{
     fetch_redis_pass, framed, BackOffJobOptions, EventParameters, Job, JobOptions, KioResult,
-    Queue, QueueOpts, RemoveOnCompletionOrFailure, Worker, WorkerOpts,
+    Queue, QueueEventMode, QueueOpts, RemoveOnCompletionOrFailure, Worker, WorkerOpts,
 };
 use uuid::Uuid;
 #[tokio::main]
@@ -30,12 +30,13 @@ async fn main() -> KioResult<()> {
             type_: Some("exponential".to_owned()),
             delay: Some(200),
         })),
+        //event_mode: Some(QueueEventMode::PubSub),
         ..Default::default()
     };
     let counter = Arc::new(AtomicUsize::default());
     let events = counter.clone();
-    let queue = Queue::<String, String, i32>::new(None, "trial", &config, Some(queue_opts)).await?;
-    let event_listener = move |state: EventParameters<String, String, i32>| {
+    let queue = Queue::<i32, i32, i32>::new(None, "trial", &config, Some(queue_opts)).await?;
+    let event_listener = move |state: EventParameters<_, _, _>| {
         let completed = events.clone();
         async move {
             // do something with return state
@@ -61,7 +62,7 @@ async fn main() -> KioResult<()> {
     };
     queue.on_all_events(event_listener).await;
 
-    let count = 10000;
+    let count = 100;
     let iterator = (0..count).map(|_i| {
         //use rand::Rng;
         //let priority = rand::rng().random_range(1..count); // ucomment to use  random priority
@@ -73,7 +74,7 @@ async fn main() -> KioResult<()> {
             ..Default::default()
         };
         let name = Uuid::new_v4().to_string();
-        (name, Some(job_opts), "data".to_owned())
+        (name, Some(job_opts), _i as i32)
     });
 
     let opts = WorkerOpts {
@@ -85,8 +86,8 @@ async fn main() -> KioResult<()> {
     let _worker = Worker::new(&queue, processor, Some(opts.clone()))?;
     let worker = Worker::new(&queue, processor, Some(opts))?;
     //worker.run()?;
-    let now = Instant::now();
     queue.bulk_add_only(iterator).await?;
+    let now = Instant::now();
     while counter.load(std::sync::atomic::Ordering::Acquire) < count {}
     dbg!(now.elapsed());
     worker.close(true);
@@ -98,8 +99,8 @@ async fn main() -> KioResult<()> {
 #[framed]
 async fn process_callback(
     mut con: Connection,
-    mut job: Job<String, String, i32>,
-) -> Result<String, std::io::Error> {
+    mut job: Job<i32, i32, i32>,
+) -> Result<i32, std::io::Error> {
     let progress = job.progress.unwrap_or_default();
     let _ = job.update_progress(progress + 1, &mut con).await;
     //let id: u64 = job.id.unwrap_or_default().parse().unwrap_or_default();
@@ -107,5 +108,5 @@ async fn process_callback(
     //    //uncomment the line below to test to catching panics
     //    panic!("panicked here");
     //}
-    Ok("done".to_string())
+    Ok(job.id.unwrap_or_default() as i32)
 }
