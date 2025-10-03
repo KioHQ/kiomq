@@ -13,11 +13,12 @@ use crate::error::{JobError, KioError, QueueError};
 use crate::events::QueueStreamEvent;
 use crate::job::{Job, JobState};
 use crate::utils::{
-    calculate_next_priority_score, prepare_for_insert, promote_jobs, serialize_into_pairs, JobQueue,
+    calculate_next_priority_score, prepare_for_insert, process_queue_events, promote_jobs,
+    serialize_into_pairs, JobQueue, ReadStreamArgs,
 };
 use crate::worker::{WorkerOpts, MIN_DELAY_MS_LIMIT};
 use crate::{
-    get_job_metrics, BackOff, BackOffJobOptions, BackOffOptions, Dt, JobOptions, JobToken,
+    get_job_metrics, queue, BackOff, BackOffJobOptions, BackOffOptions, Dt, JobOptions, JobToken,
     KeepJobs, KioResult, RemoveOnCompletionOrFailure, StoredFn, Trace,
 };
 use async_backtrace::backtrace;
@@ -27,8 +28,8 @@ use serde::de::{DeserializeOwned, Error};
 use serde::{ser, Deserialize, Serialize};
 
 use redis::{
-    self, pipe, AsyncCommands, JsonAsyncCommands, LposOptions, Pipeline, RedisResult, ToRedisArgs,
-    Value,
+    self, pipe, AsyncCommands, FromRedisValue, JsonAsyncCommands, LposOptions, Pipeline,
+    RedisResult, ToRedisArgs, Value,
 };
 
 use derive_more::{Debug, Display};
@@ -42,7 +43,7 @@ pub enum CollectionSuffix {
     PriorityCounter, // (hash(number))
     Id,              // hash(number)
     Meta,            // key
-    Events,          // stream
+    Events,          // stream or pub_sub depending on event_mode
     Wait,            // LIST
     Paused,          // LIST
     Failed,          // ZSET
@@ -89,17 +90,56 @@ impl ToRedisArgs for CollectionSuffix {
         out.write_arg_fmt(self.to_string().to_lowercase());
     }
 }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, Atom, Eq, PartialEq)]
+#[repr(u8)]
+pub enum QueueEventMode {
+    PubSub = 1,
+    #[default]
+    Stream = 0,
+}
+impl TryFrom<u8> for QueueEventMode {
+    type Error = QueueError;
 
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(QueueEventMode::PubSub),
+            0 => Ok(QueueEventMode::Stream),
+            _ => Err(QueueError::UnKnownEventMode),
+        }
+    }
+}
+impl FromRedisValue for QueueEventMode {
+    fn from_redis_value(v: &Value) -> RedisResult<Self> {
+        let value = if let Value::Nil = v {
+            0
+        } else {
+            u8::from_redis_value(v)?
+        };
+        let mode = value.try_into().unwrap_or_default();
+        Ok(mode)
+    }
+}
+impl ToRedisArgs for QueueEventMode {
+    fn write_redis_args<W>(&self, out: &mut W)
+    where
+        W: ?Sized + redis::RedisWrite,
+    {
+        let value = *self as u8;
+        out.write_arg_fmt(value);
+    }
+}
 #[derive(Debug, Clone)]
 pub struct QueueOpts {
     pub remove_on_fail: Option<RemoveOnCompletionOrFailure>,
     pub remove_on_complete: Option<RemoveOnCompletionOrFailure>,
     pub attempts: u64,
     pub default_backoff: Option<BackOffJobOptions>,
+    pub event_mode: Option<QueueEventMode>,
 }
 impl Default for QueueOpts {
     fn default() -> Self {
         Self {
+            event_mode: Some(QueueEventMode::default()),
             remove_on_fail: Default::default(),
             remove_on_complete: Default::default(),
             attempts: 1,
@@ -122,6 +162,7 @@ pub struct JobMetrics {
     pub completed: Counter,
     pub waiting: Counter,
     pub paused: Arc<AtomicBool>,
+    pub event_mode: Arc<Atomic<QueueEventMode>>,
 }
 impl JobMetrics {
     pub fn all_jobs_completed(&self) -> bool {
@@ -129,7 +170,7 @@ impl JobMetrics {
         last_id > 0
             && self.completed.load(Ordering::Relaxed) == last_id
             && self.active.load(Ordering::Relaxed) == 0
-            && self.processing.load(Ordering::Relaxed) == 0
+            && self.is_idle()
     }
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -141,6 +182,7 @@ impl JobMetrics {
         delayed: u64,
         waiting: u64,
         paused: bool,
+        event_mode: QueueEventMode,
     ) -> Self {
         Self {
             last_id: create_counter(last_id),
@@ -151,6 +193,7 @@ impl JobMetrics {
             waiting: create_counter(waiting),
             delayed: create_counter(delayed),
             paused: Arc::new(paused.into()),
+            event_mode: Arc::new(Atomic::new(event_mode)),
         }
     }
     pub fn update(&self, other: &Self) {
@@ -170,6 +213,8 @@ impl JobMetrics {
             .swap(other.waiting.load(Ordering::Acquire), Ordering::AcqRel);
         self.processing
             .swap(other.processing.load(Ordering::Acquire), Ordering::AcqRel);
+        self.event_mode
+            .swap(other.event_mode.load(Ordering::Acquire), Ordering::AcqRel);
     }
     pub fn has_delayed(&self) -> bool {
         self.delayed.load(Ordering::Acquire) > 0
@@ -197,6 +242,7 @@ impl JobMetrics {
 }
 
 use crate::{EventEmitter, EventParameters};
+use atomig::{Atom, Atomic};
 #[derive(Debug, Clone)]
 pub struct Queue<D, R, P> {
     pub prefix: String,
@@ -205,6 +251,7 @@ pub struct Queue<D, R, P> {
     pub job_count: Arc<AtomicU64>,
     pub current_metrics: Arc<JobMetrics>,
     pub opts: QueueOpts,
+    event_mode: Arc<Atomic<QueueEventMode>>,
     emitter: EventEmitter<D, R, P>,
     #[debug(skip)]
     pub stream_listener: Arc<JoinHandle<KioResult<()>>>,
@@ -240,7 +287,16 @@ impl<
         if let Ok(current_metrics) = get_job_metrics(&prefix, &name, &mut conn).await {
             metrics = current_metrics;
         }
-
+        let meta_key = CollectionSuffix::Meta.to_collection_name(&prefix, &name);
+        let events_mode_exits: bool = conn.hexists(&meta_key, "event_mode").await?;
+        let event_mode = metrics.event_mode.clone();
+        if let Some(passed_mode) = opts.event_mode {
+            if !events_mode_exits && passed_mode != event_mode.load(Ordering::Acquire) {
+                conn.hset::<_, _, _, ()>(&meta_key, "event_mode", passed_mode)
+                    .await;
+                event_mode.swap(passed_mode, Ordering::AcqRel);
+            }
+        }
         let worker_notifier: Arc<Notify> = Arc::default();
         let current_metrics = Arc::new(metrics);
         let is_paused = current_metrics.paused.load(Ordering::Relaxed);
@@ -254,13 +310,42 @@ impl<
         let notifier = worker_notifier.clone();
         let pause_workers: Arc<AtomicBool> = Arc::default();
         let pause_workers_clone = pause_workers.clone();
+        let event_mode_clone = event_mode.clone();
+        let connection_info = cfg.connection.clone().unwrap();
+
         let task: JoinHandle<KioResult<()>> = tokio::spawn(
             async move {
-                let block_interval = 1000000; // 100 seconds
+                let block_interval = 5000; // 100 seconds
                 let notifier = notifier.clone();
                 let pause_workers = pause_workers_clone.clone();
                 let is_inital = AtomicBool::new(true);
+                let id = Uuid::new_v4();
+                let consumer_group = format!("{prefix_clone}-{name_clone}-group-{id}",);
+                let consumer_name = format!("consumer-{id}");
+                let c_group: () = connection
+                    .xgroup_create_mkstream(&stream_key, &consumer_group, "$")
+                    .await?;
+                let client = redis::Client::open(connection_info)?;
+                let (mut sink, mut source) = client.get_async_pubsub().await?.split();
+                sink.subscribe(&stream_key).await?;
+
                 loop {
+                    let args: ReadStreamArgs<D, R, P> = (
+                        event_mode_clone.load(Ordering::Acquire),
+                        &stream_key,
+                        &queue_name,
+                        block_interval,
+                        &consumer_group,
+                        &consumer_name,
+                        &emitter_clone,
+                        &metrics,
+                        &prefix_clone,
+                        &name_clone,
+                        &mut connection,
+                        &mut source,
+                    );
+                    process_queue_events(args).await?;
+
                     if metrics.is_idle()
                         && !is_inital.load(Ordering::Acquire)
                         && !pause_workers
@@ -270,33 +355,6 @@ impl<
                         println!("send pause signal ");
                     } else {
                         resume_helper(&metrics, &pause_workers, &notifier);
-                    }
-                    let options = StreamReadOptions::default().block(block_interval);
-                    let reply: StreamReadReply = connection
-                        .xread_options(&[&stream_key], &["$"], &options)
-                        .await?;
-                    let events: Vec<QueueStreamEvent<R, P>> =
-                        QueueStreamEvent::from_stream_read_reply(&stream_key, reply);
-                    if !events.is_empty() {
-                        for event in events.into_iter() {
-                            //print!("{event:#?}");
-
-                            let state = event.event;
-                            let param = EventParameters::<D, R, P>::from_queue_event(
-                                &queue_name,
-                                event,
-                                &mut connection,
-                            )
-                            .await?;
-
-                            emitter_clone.emit(state, param).await;
-                            if let Ok(updated) =
-                                get_job_metrics(&prefix_clone, &name_clone, &mut conn).await
-                            {
-                                metrics.update(&updated);
-                            }
-                        }
-                        // keep the queue's metrics up to date
                     }
                     is_inital.compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed);
                 }
@@ -308,6 +366,7 @@ impl<
         let stream_listener = Arc::new(task);
         //
         Ok(Self {
+            event_mode,
             pause_workers,
             worker_notifier,
             backoff: BackOff::new(),
@@ -470,7 +529,13 @@ impl<
         }
         // check of retries_exhausion here;
 
-        pipeline.xadd(events_key, "*", &items);
+        match self.event_mode.load(Ordering::Acquire) {
+            QueueEventMode::PubSub => {}
+            QueueEventMode::Stream => {
+                pipeline.xadd(events_key, "*", &items);
+            }
+        }
+
         let _: redis::Value = pipeline.query_async(&mut conn).await?;
         Ok(())
     }
@@ -522,7 +587,12 @@ impl<
         };
         let items = [("event", state)];
 
-        pipeline.xadd(events_key, "*", &items);
+        match self.event_mode.load(Ordering::Acquire) {
+            QueueEventMode::PubSub => {}
+            QueueEventMode::Stream => {
+                pipeline.xadd(events_key, "*", &items);
+            }
+        }
         let _: redis::Value = pipeline.query_async(&mut conn).await?;
         self.paused
             .store(pause, std::sync::atomic::Ordering::Relaxed);
