@@ -6,6 +6,7 @@ use thiserror::Error;
 use tokio::task::JoinError;
 use uuid::Uuid;
 mod backtrace_utils;
+
 pub(crate) use backtrace_utils::{BacktraceCatcher, CaughtError, CaughtPanicInfo};
 #[derive(Debug, Error)]
 pub enum KioError {
@@ -16,7 +17,7 @@ pub enum KioError {
     #[error(transparent)]
     DealPoolConfig(#[from] deadpool_redis::CreatePoolError),
     #[error(transparent)]
-    SerdeJsonError(#[from] serde_json::Error), // Handle serde_json errors
+    JsonError(#[from] simd_json::Error), // Handle serde_json errors
     #[error(transparent)]
     SerdeDeserializeError(#[from] serde::de::value::Error),
     // Standard library errors

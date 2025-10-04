@@ -59,14 +59,14 @@ impl<R: Serialize, P: Serialize> ToRedisArgs for QueueStreamEvent<R, P> {
     where
         W: ?Sized + redis::RedisWrite,
     {
-        out.write_arg_fmt(serde_json::to_string_pretty(self).unwrap_or_default());
+        out.write_arg_fmt(simd_json::to_string_pretty(self).unwrap_or_default());
     }
 }
 
 impl<R: DeserializeOwned, P: DeserializeOwned> FromRedisValue for QueueStreamEvent<R, P> {
     fn from_redis_value(v: &redis::Value) -> redis::RedisResult<Self> {
-        let msg = String::from_redis_value(v)?;
-        let value = serde_json::from_str(&msg).map_err(std::io::Error::other)?;
+        let mut msg: Vec<u8> = Vec::from_redis_value(v)?;
+        let value = simd_json::from_slice(&mut msg).map_err(std::io::Error::other)?;
         Ok(value)
     }
 }
@@ -109,23 +109,24 @@ impl<R: DeserializeOwned, P: DeserializeOwned> TryFrom<&StreamId> for QueueStrea
             ..Default::default()
         };
         for (key, val) in &value.map {
-            let val_str = String::from_redis_value(val)?;
+            let mut val_str: Vec<u8> = Vec::from_redis_value(val)?;
             match key.to_lowercase().as_str() {
-                "job_id" => event.job_id = val_str.parse()?,
-                "name" => event.name = Some(val_str),
-                "delay" => event.delay = serde_json::from_str(&val_str)?,
-                "worker_id" => event.worker_id = serde_json::from_str(&val_str)?,
-                "priority" => event.priority = serde_json::from_str(&val_str)?,
-                "data" => event.progress_data = serde_json::from_str(&val_str)?,
+                "job_id" => event.job_id = simd_json::from_slice(&mut val_str)?,
+                "name" => event.name = simd_json::from_slice(&mut val_str)?,
+                "delay" => event.delay = simd_json::from_slice(&mut val_str)?,
+                "worker_id" => event.worker_id = simd_json::from_slice(&mut val_str)?,
+                "priority" => event.priority = simd_json::from_slice(&mut val_str)?,
+                "data" => event.progress_data = simd_json::from_slice(&mut val_str)?,
 
-                "returnedvalue" => event.retuned_value = serde_json::from_str(&val_str)?,
-                "failedreason" => event.failed_reason = serde_json::from_str(&val_str)?,
+                "returnedvalue" => event.retuned_value = simd_json::from_slice(&mut val_str)?,
+                "failedreason" => event.failed_reason = simd_json::from_slice(&mut val_str)?,
 
                 "event" => {
-                    let parsed = JobState::from_str(&val_str).map_err(std::io::Error::other)?;
+                    let parsed =
+                        simd_json::from_slice(&mut val_str).map_err(std::io::Error::other)?;
                     event.event = parsed;
                 }
-                "prev" => event.prev = JobState::from_str(&val_str).ok(),
+                "prev" => event.prev = simd_json::from_slice(&mut val_str).ok(),
                 _ => { /* Ignore unknown fields if your hash might contain others */ }
             }
         }

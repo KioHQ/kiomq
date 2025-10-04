@@ -39,13 +39,14 @@ pub fn fetch_redis_pass() -> Option<String> {
 }
 
 pub fn serialize_into_pairs<V: Serialize>(item: &V) -> Vec<(String, String)> {
-    if let Ok(value) = serde_json::to_value(item) {
-        if let Some(obj) = value.as_object() {
-            return obj
-                .into_iter()
-                .map(|(key, val)| (key.to_owned(), val.to_string()))
-                .collect();
-        }
+    use simd_json::BorrowedValue;
+    if let Ok(BorrowedValue::Object(obj)) = simd_json::serde::to_borrowed_value(item) {
+        return obj
+            .into_iter()
+            .flat_map(|(key, val)| {
+                simd_json::to_string_pretty(&val).map(|val| (key.to_string(), val))
+            })
+            .collect();
     }
     vec![]
 }
@@ -455,9 +456,9 @@ where
             let mut pipeline = redis::pipe();
             pipeline.hget(&job_key, "attemptsMade");
             pipeline.hget(&job_key, "token");
-            let (attempts, token): (u64, Option<String>) = pipeline.query_async(&mut conn).await?;
+            let (attempts, token): (u64, Option<Vec<u8>>) = pipeline.query_async(&mut conn).await?;
             let token: Option<JobToken> =
-                token.and_then(|e| serde_json::from_str(&e).ok().flatten());
+                token.and_then(|mut e| simd_json::from_slice(&mut e).ok().flatten());
             let token = token.unwrap_or_default();
             reason.run = attempts;
             queue_clone

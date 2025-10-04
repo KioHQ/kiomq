@@ -508,17 +508,17 @@ impl<
                 pipeline.rpush(next_state_key, job_id);
             }
         }
-        let dst = serde_json::to_string(&to)?;
+        let dst = simd_json::to_string(&to)?;
         pipeline.hset(&job_key, "state", dst);
         if let Some(backtrace) = backtrace {
             // there is an empty vect stored
-            let previous: String = conn.hget(&job_key, "stackTrace").await?;
-            let mut previous: Vec<Trace> = serde_json::from_str(&previous)?;
+            let mut previous: Vec<u8> = conn.hget(&job_key, "stackTrace").await?;
+            let mut previous: Vec<Trace> = simd_json::from_slice(&mut previous)?;
             previous.push(backtrace);
             pipeline.hset(
                 &job_key,
                 "stackTrace",
-                serde_json::to_string_pretty(&previous)?,
+                simd_json::to_string_pretty(&previous)?,
             );
         }
 
@@ -528,7 +528,7 @@ impl<
             "returnedValue"
         };
         if let Some(data) = value.as_ref() {
-            let data = serde_json::to_string_pretty(&data)?;
+            let data = simd_json::to_string_pretty(&data)?;
             pipeline.hset(&job_key, payload_key, &data);
             pipeline.hset(&job_key, "finishedOn", ts);
         }
@@ -554,7 +554,7 @@ impl<
                 pipeline.publish(events_key, event);
             }
             QueueEventMode::Stream => {
-                let data = serde_json::to_string_pretty(&value)?;
+                let data = simd_json::to_string_pretty(&value)?;
                 let mut items = vec![
                     ("event", to.to_string().to_lowercase()),
                     ("prev", from.to_string().to_lowercase()),
@@ -871,8 +871,8 @@ impl<
         self.move_job_to_state(job_id, prev_state, JobState::Active, None, None, None)
             .await?;
         let items = [
-            ("processedOn", serde_json::to_string(&ts)?),
-            ("token", serde_json::to_string(&token)?),
+            ("processedOn", simd_json::to_string(&ts)?),
+            ("token", simd_json::to_string(&token)?),
         ];
         let _: () = conn.hset_multiple(&job_key, &items).await?;
         let job = conn.hgetall(&job_key).await?;
@@ -1209,7 +1209,7 @@ impl<D, R, P> Queue<D, R, P> {
                     ("event", JobState::Processing.to_string().to_lowercase()),
                     ("prev", state.to_string().to_lowercase()),
                     ("job_id", job_id.to_string()),
-                    ("worker_id", serde_json::to_string(&worker_id)?),
+                    ("worker_id", simd_json::to_string(&worker_id)?),
                 ];
 
                 pipe.xadd(events_stream_key, "*", &items);

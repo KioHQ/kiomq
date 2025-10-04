@@ -12,7 +12,6 @@ use derive_more::Debug;
 use futures::future::{BoxFuture, Future, FutureExt, TryFutureExt};
 use redis::aio::ConnectionLike;
 use serde::{de::DeserializeOwned, Serialize};
-use serde_json::json;
 use std::{
     fmt::format,
     sync::{

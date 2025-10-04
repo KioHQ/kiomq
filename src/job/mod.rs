@@ -131,9 +131,9 @@ pub struct Job<D, R, P> {
 }
 impl FromRedisValue for JobState {
     fn from_redis_value(v: &Value) -> RedisResult<Self> {
-        let value_str = String::from_redis_value(v)?;
-        let state = JobState::from_str(&value_str)
-            .or(serde_json::from_str(&value_str))
+        let mut bytes: Vec<u8> = Vec::from_redis_value(v)?;
+        let state = JobState::from_str(&String::from_utf8(bytes.clone())?)
+            .or_else(|_| simd_json::from_slice(&mut bytes))
             .map_err(std::io::Error::other)?;
 
         Ok(state)
@@ -159,11 +159,11 @@ use uuid::Uuid;
 pub struct JobToken(pub Uuid, pub Uuid, pub u64);
 impl FromRedisValue for JobToken {
     fn from_redis_value(v: &Value) -> RedisResult<Self> {
-        let value_str = String::from_redis_value(v)?;
-        if value_str == "null" {
+        let mut bytes: Vec<u8> = Vec::from_redis_value(v)?;
+        if bytes == b"null" {
             return Err(std::io::Error::other("null passed").into());
         }
-        let token = serde_json::from_str(&value_str)
+        let token = simd_json::from_slice(&mut bytes)
             .map_err(|_| std::io::Error::other("failed to parse"))?;
         Ok(token)
     }
@@ -179,7 +179,7 @@ impl ToRedisArgs for JobToken {
     where
         W: ?Sized + redis::RedisWrite,
     {
-        out.write_arg_fmt(serde_json::to_string(self).unwrap_or_default());
+        out.write_arg_fmt(simd_json::to_string(self).unwrap_or_default());
     }
 }
 // skip comparing the data,progress and return_value field;
@@ -227,7 +227,7 @@ impl<D, R, P> Job<D, R, P> {
             let job_key = format!("{queue_name}:{id}");
             let mut pipeline = redis::pipe();
             pipeline.atomic();
-            let progress_str = serde_json::to_string_pretty(&value)?;
+            let progress_str = simd_json::to_string_pretty(&value)?;
             let events_stream_key = format!("{queue_name}:events");
             pipeline.hset(job_key, "progress", &progress_str);
             // check for the queue_event_mode
@@ -284,48 +284,72 @@ where
     P: for<'de> Deserialize<'de>,
 {
     fn from_redis_value(v: &Value) -> redis::RedisResult<Self> {
+        use std::io::Error;
+        let other = Error::other;
         let mut job: Job<D, R, P> = Job::new("", None, None, None);
-        let map = HashMap::<String, String>::from_redis_value(v)?;
-        for (key, value) in map.iter() {
-            match key.to_lowercase().as_str() {
-                "id" => job.id = serde_json::from_str(value)?,
-                "timestamp" => {
-                    job.ts = serde_json::from_str::<Option<i64>>(value)?
-                        .and_then(Dt::from_timestamp_micros)
-                        .unwrap_or_default();
+        let mut map = v
+            .as_map_iter()
+            .ok_or(std::io::Error::other("failed to extract map"))?;
+        for (key, value) in map {
+            if let (Value::BulkString(key), Value::BulkString(bytes)) = (key, value) {
+                let mut bytes = bytes.to_vec();
+                match key.as_slice() {
+                    b"id" => job.id = simd_json::from_slice(&mut bytes).map_err(other)?,
+                    b"timestamp" => {
+                        job.ts = simd_json::from_slice::<Option<u64>>(&mut bytes)
+                            .map_err(other)?
+                            .and_then(|t| Dt::from_timestamp_micros(t as i64))
+                            .unwrap_or_default();
+                    }
+                    b"opts" => job.opts = simd_json::from_slice(&mut bytes).map_err(other)?,
+                    b"name" => job.name = simd_json::from_slice(&mut bytes).map_err(other)?,
+                    b"queuename" | b"queueName" => {
+                        job.queue_name = simd_json::from_slice(&mut bytes).map_err(other)?
+                    }
+                    b"state" => {
+                        job.state = JobState::from_str(&String::from_utf8(bytes.to_vec())?)
+                            .or(simd_json::from_slice(&mut bytes))
+                            .map_err(std::io::Error::other)?
+                    }
+                    b"token" => {
+                        job.token = simd_json::from_slice(&mut bytes).unwrap_or_default();
+                    }
+                    b"progress" => {
+                        job.progress = simd_json::from_slice(&mut bytes).map_err(other)?
+                    }
+                    b"attemptsmade" | b"attemptsMade" => {
+                        job.attempts_made = simd_json::from_slice(&mut bytes).map_err(other)?
+                    }
+                    b"delay" => job.delay = simd_json::from_slice(&mut bytes).map_err(other)?,
+                    b"priority" => {
+                        job.priority = simd_json::from_slice(&mut bytes).map_err(other)?
+                    }
+                    b"data" => job.data = simd_json::from_slice(&mut bytes).map_err(other)?,
+                    b"returnedvalue" | b"returnedValue" => {
+                        job.returned_value = simd_json::from_slice(&mut bytes).map_err(other)?
+                    }
+                    b"stacktrace" | b"stackTrace" => {
+                        job.stack_trace = simd_json::from_slice(&mut bytes).map_err(other)?
+                    }
+                    b"logs" => job.logs = simd_json::from_slice(&mut bytes).map_err(other)?,
+                    b"failedreason" | b"failedReason" => {
+                        job.failed_reason = simd_json::from_slice(&mut bytes).map_err(other)?;
+                    }
+                    b"processedon" | b"processedOn" => {
+                        job.processed_on = simd_json::from_slice::<Option<u64>>(&mut bytes)
+                            .map_err(other)?
+                            .and_then(|t| Dt::from_timestamp_micros(t as i64))
+                    } // Assuming Dt is handled by simd_json
+                    b"finishedon" | b"finishedOn" => {
+                        job.finished_on = simd_json::from_slice::<Option<u64>>(&mut bytes)
+                            .map_err(other)?
+                            .and_then(|t| Dt::from_timestamp_micros(t as i64))
+                    }
+                    b"stalledcounter" | b"stalledCounter" => {
+                        job.stalled_counter = simd_json::from_slice(&mut bytes).map_err(other)?
+                    }
+                    _ => { /* Ignore unknown fields if your hash might contain others */ }
                 }
-                "opts" => job.opts = serde_json::from_str(value)?,
-                "name" => job.name = serde_json::from_str(value)?,
-                "queuename" => job.queue_name = serde_json::from_str(value)?,
-                "state" => {
-                    job.state = JobState::from_str(value)
-                        .or(serde_json::from_str(value))
-                        .map_err(std::io::Error::other)?
-                }
-                "token" => {
-                    job.token = serde_json::from_str(value).unwrap_or_default();
-                }
-                "progress" => job.progress = serde_json::from_str(value)?,
-                "attemptsmade" => job.attempts_made = serde_json::from_str(value)?,
-                "delay" => job.delay = serde_json::from_str(value)?,
-                "priority" => job.priority = serde_json::from_str(value)?,
-                "data" => job.data = serde_json::from_str(value)?,
-                "returnedvalue" => job.returned_value = serde_json::from_str(value)?,
-                "stacktrace" => job.stack_trace = serde_json::from_str(value)?,
-                "logs" => job.logs = serde_json::from_str(value)?,
-                "failedreason" => {
-                    job.failed_reason = serde_json::from_str(value)?;
-                }
-                "processedon" => {
-                    job.processed_on = serde_json::from_str::<Option<i64>>(value)?
-                        .and_then(Dt::from_timestamp_micros);
-                } // Assuming Dt is handled by serde_json
-                "finishedon" => {
-                    job.finished_on = serde_json::from_str::<Option<i64>>(value)?
-                        .and_then(Dt::from_timestamp_micros);
-                }
-                "stalledcounter" => job.stalled_counter = serde_json::from_str(value)?,
-                _ => { /* Ignore unknown fields if your hash might contain others */ }
             }
         }
         Ok(job)
