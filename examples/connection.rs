@@ -1,6 +1,6 @@
 use std::{
     sync::{atomic::AtomicUsize, Arc},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use deadpool_redis::{Config, Connection};
@@ -69,7 +69,7 @@ async fn main() -> KioResult<()> {
 
         //let priority = count - _i; // ucomment to use a priority of count - index (job_id -1)
         let job_opts = JobOptions {
-            //delay: 500 * _i as u64, // uncomment to add delay
+            delay: 100 * _i as u64, // uncomment to add delay
             //priority, // uncomment to set priority
             ..Default::default()
         };
@@ -83,12 +83,14 @@ async fn main() -> KioResult<()> {
         ..Default::default()
     };
     let processor = |con: _, job: Job<_, _, _>| process_callback(con, job);
-    let _worker = Worker::new(&queue, processor, Some(opts.clone()))?;
+    //let _worker = Worker::new(&queue, processor, Some(opts.clone()))?;
     let worker = Worker::new(&queue, processor, Some(opts))?;
     //worker.run()?;
     queue.bulk_add_only(iterator).await?;
     let now = Instant::now();
-    while counter.load(std::sync::atomic::Ordering::Acquire) < count {}
+    while counter.load(std::sync::atomic::Ordering::Acquire) < count {
+        tokio::time::sleep(Duration::from_secs(20)).await;
+    }
     dbg!(now.elapsed());
     worker.close(true);
     if worker.closed() {
