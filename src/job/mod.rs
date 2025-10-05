@@ -306,11 +306,7 @@ where
                     b"queuename" | b"queueName" => {
                         job.queue_name = simd_json::from_slice(&mut bytes).map_err(other)?
                     }
-                    b"state" => {
-                        job.state = JobState::from_str(&String::from_utf8(bytes.to_vec())?)
-                            .or(simd_json::from_slice(&mut bytes))
-                            .map_err(std::io::Error::other)?
-                    }
+                    b"state" => job.state = JobState::from_redis_value(value)?,
                     b"token" => {
                         job.token = simd_json::from_slice(&mut bytes).unwrap_or_default();
                     }

@@ -92,44 +92,53 @@ use redis::{
     FromRedisValue, ToRedisArgs,
 };
 impl<R: DeserializeOwned, P: DeserializeOwned> QueueStreamEvent<R, P> {
-    pub fn from_stream_read_reply(events_key: &str, reply: StreamReadReply) -> Vec<Self> {
-        if let Some(keyed_events) = reply.keys.iter().find(|event| event.key == events_key) {
-            let events = keyed_events.ids.iter().flat_map(Self::try_from).collect();
+    pub fn from_stream_read_reply(events_key: &str, mut reply: StreamReadReply) -> Vec<Self> {
+        if let Some(keyed_events) = reply.keys.iter_mut().find(|event| event.key == events_key) {
+            let events = keyed_events
+                .ids
+                .iter_mut()
+                .flat_map(Self::try_from)
+                .collect();
             return events;
         }
         vec![]
     }
 }
-impl<R: DeserializeOwned, P: DeserializeOwned> TryFrom<&StreamId> for QueueStreamEvent<R, P> {
+impl<R: DeserializeOwned, P: DeserializeOwned> TryFrom<&mut StreamId> for QueueStreamEvent<R, P> {
     type Error = KioError;
 
-    fn try_from(value: &StreamId) -> Result<Self, Self::Error> {
+    fn try_from(value: &mut StreamId) -> Result<Self, Self::Error> {
         let mut event = Self {
             id: value.id.parse()?,
             ..Default::default()
         };
-        for (key, val) in &value.map {
-            let mut val_str: Vec<u8> = Vec::from_redis_value(val)?;
-            match key.to_lowercase().as_str() {
-                "job_id" => event.job_id = simd_json::from_slice(&mut val_str)?,
-                "name" => event.name = simd_json::from_slice(&mut val_str)?,
-                "delay" => event.delay = simd_json::from_slice(&mut val_str)?,
-                "worker_id" => event.worker_id = simd_json::from_slice(&mut val_str)?,
-                "priority" => event.priority = simd_json::from_slice(&mut val_str)?,
-                "data" => event.progress_data = simd_json::from_slice(&mut val_str)?,
+        for (key, val) in value.map.iter_mut() {
+            if let redis::Value::BulkString(bytes) = val {
+                match key.to_lowercase().as_str() {
+                    "job_id" => event.job_id = simd_json::from_slice(bytes)?,
+                    "name" => {
+                        event.name = simd_json::from_slice(bytes).unwrap_or_else(|_| {
+                            Some(String::from_redis_value(val).unwrap_or_default())
+                        })
+                    }
+                    "delay" => event.delay = simd_json::from_slice(bytes)?,
+                    "worker_id" => event.worker_id = simd_json::from_slice(bytes)?,
+                    "priority" => event.priority = simd_json::from_slice(bytes)?,
+                    "data" => event.progress_data = simd_json::from_slice(bytes)?,
 
-                "returnedvalue" => event.retuned_value = simd_json::from_slice(&mut val_str)?,
-                "failedreason" => event.failed_reason = simd_json::from_slice(&mut val_str)?,
+                    "returnedvalue" => event.retuned_value = simd_json::from_slice(bytes)?,
+                    "failedreason" => event.failed_reason = simd_json::from_slice(bytes)?,
 
-                "event" => {
-                    let parsed =
-                        simd_json::from_slice(&mut val_str).map_err(std::io::Error::other)?;
-                    event.event = parsed;
+                    "event" => {
+                        let parsed = JobState::from_redis_value(val)?;
+                        event.event = parsed;
+                    }
+                    "prev" => event.prev = simd_json::from_slice(bytes).ok(),
+                    _ => { /* Ignore unknown fields if your hash might contain others */ }
                 }
-                "prev" => event.prev = simd_json::from_slice(&mut val_str).ok(),
-                _ => { /* Ignore unknown fields if your hash might contain others */ }
             }
         }
+
         Ok(event)
     }
 }
