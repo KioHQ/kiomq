@@ -1,6 +1,6 @@
 use std::{
     sync::{atomic::AtomicUsize, Arc},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use deadpool_redis::{Config, Connection};
@@ -30,8 +30,8 @@ async fn main() -> KioResult<()> {
             type_: Some("exponential".to_owned()),
             delay: Some(200),
         })),
-        //event_mode: Some(QueueEventMode::PubSub),
-        ..Default::default()
+        event_mode: Some(QueueEventMode::PubSub),
+        //..Default::default()
     };
     let counter = Arc::new(AtomicUsize::default());
     let events = counter.clone();
@@ -62,7 +62,7 @@ async fn main() -> KioResult<()> {
     };
     queue.on_all_events(event_listener).await;
 
-    let count = 10;
+    let count = 10000;
     let iterator = (0..count).map(|_i| {
         //use rand::Rng;
         //let priority = rand::rng().random_range(1..count); // ucomment to use  random priority
@@ -83,7 +83,7 @@ async fn main() -> KioResult<()> {
         ..Default::default()
     };
     let processor = |con: _, job: Job<_, _, _>| process_callback(con, job);
-    //let _worker = Worker::new(&queue, processor, Some(opts.clone()))?;
+    let _worker = Worker::new(&queue, processor, Some(opts.clone()))?;
     let worker = Worker::new(&queue, processor, Some(opts))?;
     //worker.run()?;
     queue.bulk_add_only(iterator).await?;
@@ -94,7 +94,7 @@ async fn main() -> KioResult<()> {
     dbg!(now.elapsed());
     worker.close(true);
     if worker.closed() {
-        //queue.obliterate().await?;
+        queue.obliterate().await?;
     }
     Ok(())
 }
