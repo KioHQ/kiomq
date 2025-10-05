@@ -7,6 +7,7 @@ use serde::{
     Deserialize, Serialize,
 };
 use std::str::FromStr;
+use std::time::Instant;
 use uuid::Uuid;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash, Debug)]
 pub struct StreamEventId(pub Dt, pub u64);
@@ -108,6 +109,7 @@ impl<R: DeserializeOwned, P: DeserializeOwned> TryFrom<&mut StreamId> for QueueS
     type Error = KioError;
 
     fn try_from(value: &mut StreamId) -> Result<Self, Self::Error> {
+        use std::io::Error;
         let mut event = Self {
             id: value.id.parse()?,
             ..Default::default()
@@ -115,15 +117,13 @@ impl<R: DeserializeOwned, P: DeserializeOwned> TryFrom<&mut StreamId> for QueueS
         for (key, val) in value.map.iter_mut() {
             if let redis::Value::BulkString(bytes) = val {
                 match key.to_lowercase().as_str() {
-                    "job_id" => event.job_id = simd_json::from_slice(bytes)?,
-                    "name" => {
-                        event.name = simd_json::from_slice(bytes).unwrap_or_else(|_| {
-                            Some(String::from_redis_value(val).unwrap_or_default())
-                        })
+                    "job_id" => event.job_id = u64::from_redis_value(val)?,
+                    "name" => event.name = Option::from_redis_value(val)?,
+                    "delay" => event.delay = Option::from_redis_value(val)?,
+                    "worker_id" => {
+                        event.worker_id = simd_json::from_slice(bytes).map_err(Error::other)?;
                     }
-                    "delay" => event.delay = simd_json::from_slice(bytes)?,
-                    "worker_id" => event.worker_id = simd_json::from_slice(bytes)?,
-                    "priority" => event.priority = simd_json::from_slice(bytes)?,
+                    "priority" => event.priority = Option::from_redis_value(val)?,
                     "data" => event.progress_data = simd_json::from_slice(bytes)?,
 
                     "returnedvalue" => event.retuned_value = simd_json::from_slice(bytes)?,
@@ -133,7 +133,8 @@ impl<R: DeserializeOwned, P: DeserializeOwned> TryFrom<&mut StreamId> for QueueS
                         let parsed = JobState::from_redis_value(val)?;
                         event.event = parsed;
                     }
-                    "prev" => event.prev = simd_json::from_slice(bytes).ok(),
+                    "prev" => event.prev = Option::from_redis_value(val)?,
+
                     _ => { /* Ignore unknown fields if your hash might contain others */ }
                 }
             }

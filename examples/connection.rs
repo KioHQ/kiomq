@@ -62,14 +62,14 @@ async fn main() -> KioResult<()> {
     };
     queue.on_all_events(event_listener).await;
 
-    let count = 100;
+    let count = 10;
     let iterator = (0..count).map(|_i| {
         //use rand::Rng;
         //let priority = rand::rng().random_range(1..count); // ucomment to use  random priority
 
         //let priority = count - _i; // ucomment to use a priority of count - index (job_id -1)
         let job_opts = JobOptions {
-            delay: 100 * _i as u64, // uncomment to add delay
+            //delay: 100 * _i as u64, // uncomment to add delay
             //priority, // uncomment to set priority
             ..Default::default()
         };
@@ -89,12 +89,12 @@ async fn main() -> KioResult<()> {
     queue.bulk_add_only(iterator).await?;
     let now = Instant::now();
     while counter.load(std::sync::atomic::Ordering::Acquire) < count {
-        tokio::time::sleep(Duration::from_secs(20)).await;
+        //tokio::time::sleep(Duration::from_secs(20)).await;
     }
     dbg!(now.elapsed());
     worker.close(true);
     if worker.closed() {
-        queue.obliterate().await?;
+        //queue.obliterate().await?;
     }
     Ok(())
 }
