@@ -14,7 +14,7 @@ use redis::aio::PubSubStream;
 use redis::streams::{StreamReadOptions, StreamReadReply};
 use serde::ser;
 use serde::{de::DeserializeOwned, Serialize};
-use std::fmt::Write;
+use std::fmt::{format, Write};
 use std::num::NonZero;
 use tokio::sync::Notify;
 use tokio::task_local;
@@ -476,27 +476,29 @@ where
     }
     Ok(())
 }
+#[allow(clippy::too_many_arguments)]
 /// Utilily function for pipelining
-pub async fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
+pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
+    queue_name: &str,
+    event_mode: QueueEventMode,
+    is_paused: bool,
+    id: u64,
+    prior_counter: u64,
     opts: JobOptions,
-    queue: &Queue<D, R, P>,
     job: &mut Job<D, R, P>,
     name: &str,
     pipeline: &mut redis::Pipeline,
-    conn: &mut deadpool_redis::Connection,
 ) -> KioResult<()> {
     let JobOptions {
         priority,
         delay,
-        id,
+        id: _,
         attempts,
         remove_on_fail,
         remove_on_complete,
         ref backoff,
     } = opts;
     job.add_opts(opts);
-    let queue_name = format!("{}:{}", &queue.prefix, &queue.name);
-    let id = queue.fetch_id().await?;
     if delay > 0 && delay < MIN_DELAY_MS_LIMIT {
         return Err(QueueError::DelayBelowAllowedLimit {
             limit_ms: MIN_DELAY_MS_LIMIT,
@@ -505,21 +507,20 @@ pub async fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
         .into());
     };
     //queue.job_count.
-    let prefix = &queue.prefix;
-    let job_key = CollectionSuffix::Job(id).to_collection_name(&queue.prefix, &queue.name);
-    let events_keys = CollectionSuffix::Events.to_collection_name(&queue.prefix, &queue.name);
+    let job_key = format!("{queue_name}:{id}");
+    let events_keys = format!("{queue_name}:events");
 
-    let waiting_or_paused = if !queue.is_paused() {
+    let waiting_or_paused = if !is_paused {
         CollectionSuffix::Wait
     } else {
         CollectionSuffix::Paused
     };
     let to_delay = delay > 0;
     let to_priorize = priority > 0 && !to_delay;
-    let waiting_key = waiting_or_paused.to_collection_name(&queue.prefix, &queue.name);
+    let waiting_key = format!("{queue_name}:{waiting_or_paused}").to_lowercase();
     pipeline.atomic();
     if to_delay {
-        let delayed_key = CollectionSuffix::Delayed.to_collection_name(&queue.prefix, &queue.name);
+        let delayed_key = format!("{queue_name}:delayed");
         let expected_active_time = job.ts + TimeDelta::milliseconds(delay as i64);
         pipeline.zadd(delayed_key, id, expected_active_time.timestamp_millis());
         job.state = JobState::Delayed;
@@ -527,10 +528,9 @@ pub async fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
     // handle prioritized_jobs
     else if to_priorize {
         let priority_counter_key =
-            CollectionSuffix::PriorityCounter.to_collection_name(&queue.prefix, &queue.name);
+            format!("{queue_name}:{}", CollectionSuffix::PriorityCounter).to_lowercase();
         let prioritized_key =
-            CollectionSuffix::Prioritized.to_collection_name(&queue.prefix, &queue.name);
-        let prior_counter: u64 = conn.incr(&priority_counter_key, 1).await?;
+            format!("{queue_name}:{}", CollectionSuffix::Prioritized).to_lowercase();
         let score = calculate_next_priority_score(priority, prior_counter);
         pipeline.zadd(&prioritized_key, id, score);
         job.state = JobState::Priorized;
@@ -547,7 +547,7 @@ pub async fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
     } else {
         JobState::Wait
     };
-    match queue.event_mode.load(std::sync::atomic::Ordering::Acquire) {
+    match event_mode {
         QueueEventMode::PubSub => {
             let mut event = QueueStreamEvent::<R, P> {
                 job_id: id,
