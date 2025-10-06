@@ -1,6 +1,6 @@
 use std::{
     sync::{atomic::AtomicUsize, Arc},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use deadpool_redis::{Config, Connection};
@@ -62,12 +62,12 @@ async fn main() -> KioResult<()> {
     };
     queue.on_all_events(event_listener).await;
 
-    let count = 10000;
+    let count = 5000;
     let iterator = (0..count).map(|_i| {
         //use rand::Rng;
         //let priority = rand::rng().random_range(1..count); // ucomment to use  random priority
 
-        //let priority = count - _i; // ucomment to use a priority of count - index (job_id -1)
+        //let priority = (count - _i) as u64; // ucomment to use a priority of count - index (job_id -1)
         let job_opts = JobOptions {
             //delay: 100 * _i as u64, // uncomment to add delay
             //priority, // uncomment to set priority
@@ -83,13 +83,16 @@ async fn main() -> KioResult<()> {
         ..Default::default()
     };
     let processor = |con: _, job: Job<_, _, _>| process_callback(con, job);
-    let _worker = Worker::new(&queue, processor, Some(opts.clone()))?;
+    //let _worker = Worker::new(&queue, processor, Some(opts.clone()))?;
+    //let _worker = Worker::new(&queue, processor, Some(opts.clone()))?;
     let worker = Worker::new(&queue, processor, Some(opts))?;
-    //worker.run()?;
+    let adding = Instant::now();
     queue.bulk_add_only(iterator).await?;
+    println!("adding items took {:?}", adding.elapsed());
+    //worker.run()?;
     let now = Instant::now();
     while counter.load(std::sync::atomic::Ordering::Acquire) < count {
-        //tokio::time::sleep(Duration::from_secs(20)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
     }
     dbg!(now.elapsed());
     worker.close(true);

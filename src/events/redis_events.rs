@@ -13,7 +13,7 @@ use uuid::Uuid;
 pub struct StreamEventId(pub Dt, pub u64);
 impl StreamEventId {
     pub fn from_timestamp_millis(ts: i64) -> Self {
-        let dt = Dt::from_timestamp_millis(ts).unwrap_or_default();
+        let dt = Dt::from_timestamp_millis(ts).unwrap_or_else(|| Utc::now());
         Self(dt, 0)
     }
 }

@@ -1,7 +1,7 @@
 use crossbeam_queue::SegQueue;
 use futures::future::Future;
-use futures::FutureExt;
-use std::default;
+use futures::stream::{FuturesOrdered, FuturesUnordered};
+use futures::{FutureExt, StreamExt};
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
@@ -32,7 +32,9 @@ use redis::{
     self, pipe, AsyncCommands, FromRedisValue, JsonAsyncCommands, LposOptions, Pipeline,
     RedisResult, ToRedisArgs, Value,
 };
-
+/// a counter for adding b/ulk jobs,
+static START: AtomicU64 = AtomicU64::new(0);
+static PC_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 /// An envelope representing the result of running the worker's callback
@@ -391,39 +393,109 @@ impl<
         })
     }
 
-    pub async fn bulk_add<I: Iterator<Item = (String, Option<JobOptions>, D)>>(
+    pub async fn bulk_add<I: Iterator<Item = (String, Option<JobOptions>, D)> + Send>(
         &self,
         iter: I,
     ) -> KioResult<Vec<Job<D, R, P>>> {
         let mut conn = self.get_connection().await?;
         let mut pipeline = redis::pipe();
-        pipeline.atomic();
         let mut result = vec![];
+        pipeline.atomic();
+        let id_key = CollectionSuffix::Id.to_collection_name(&self.prefix, &self.name);
+        let priority_counter_key =
+            CollectionSuffix::PriorityCounter.to_collection_name(&self.prefix, &self.name);
+        let max_len_hint = iter.size_hint().1.unwrap_or_default();
+        pipeline.incr(&id_key, max_len_hint);
+        pipeline.get(&priority_counter_key);
+        let (end, counter): (usize, Option<u64>) = pipeline.query_async(&mut conn).await?;
+        let pc = counter.unwrap_or_default() + 1;
+        PC_COUNTER.store(pc, Ordering::Relaxed);
+        let mut start = (end - max_len_hint) + 1;
+        START.store(start as u64, Ordering::Relaxed);
+        let mut is_prioritized = false;
+        //let mut iter = iter.par_bridge();
         for (ref name, opts, data) in iter {
             let mut opts = opts.unwrap_or_default();
             self.update_job_opts(&mut opts);
             let queue_name = format!("{}:{}", self.prefix, self.name);
+            let id = START.fetch_add(1, Ordering::AcqRel);
+            let prior_counter = if opts.priority > 0 {
+                is_prioritized = true;
+                PC_COUNTER.fetch_add(1, Ordering::AcqRel)
+            } else {
+                PC_COUNTER.load(Ordering::Acquire)
+            };
+            let event_mode = self.event_mode.load(Ordering::Acquire);
+            let is_paused = self.is_paused();
             let mut job = Job::<D, R, P>::new(name, Some(data), opts.id, Some(&queue_name));
-            prepare_for_insert(opts, self, &mut job, name, &mut pipeline, &mut conn).await?;
-            result.push(job);
+            prepare_for_insert(
+                &queue_name,
+                event_mode,
+                is_paused,
+                id,
+                prior_counter,
+                opts,
+                &mut job,
+                name,
+                &mut pipeline,
+            )?;
+            result.push(job)
+        }
+        if is_prioritized {
+            pipeline.incr(&priority_counter_key, PC_COUNTER.load(Ordering::Acquire));
         }
         pipeline.query_async::<()>(&mut conn).await?;
 
         Ok(result)
     }
-    pub async fn bulk_add_only<I: Iterator<Item = (String, Option<JobOptions>, D)>>(
+    pub async fn bulk_add_only<I: Iterator<Item = (String, Option<JobOptions>, D)> + Send>(
         &self,
         iter: I,
     ) -> KioResult<()> {
         let mut conn = self.get_connection().await?;
         let mut pipeline = redis::pipe();
         pipeline.atomic();
+        let id_key = CollectionSuffix::Id.to_collection_name(&self.prefix, &self.name);
+        let priority_counter_key =
+            CollectionSuffix::PriorityCounter.to_collection_name(&self.prefix, &self.name);
+        let max_len_hint = iter.size_hint().1.unwrap_or_default();
+        pipeline.incr(&id_key, max_len_hint);
+        pipeline.get(&priority_counter_key);
+        let (end, counter): (usize, Option<u64>) = pipeline.query_async(&mut conn).await?;
+        let pc = counter.unwrap_or_default() + 1;
+        PC_COUNTER.store(pc, Ordering::Relaxed);
+        let mut start = (end - max_len_hint) + 1;
+        START.store(start as u64, Ordering::Relaxed);
+        let mut is_prioritized = false;
+        //let mut iter = iter.par_bridge();
         for (ref name, opts, data) in iter {
             let mut opts = opts.unwrap_or_default();
             self.update_job_opts(&mut opts);
             let queue_name = format!("{}:{}", self.prefix, self.name);
+            let id = START.fetch_add(1, Ordering::AcqRel);
+            let prior_counter = if opts.priority > 0 {
+                is_prioritized = true;
+                PC_COUNTER.fetch_add(1, Ordering::AcqRel)
+            } else {
+                PC_COUNTER.load(Ordering::Acquire)
+            };
+            let event_mode = self.event_mode.load(Ordering::Acquire);
+            let is_paused = self.is_paused();
             let mut job = Job::<D, R, P>::new(name, Some(data), opts.id, Some(&queue_name));
-            prepare_for_insert(opts, self, &mut job, name, &mut pipeline, &mut conn).await?;
+            prepare_for_insert(
+                &queue_name,
+                event_mode,
+                is_paused,
+                id,
+                prior_counter,
+                opts,
+                &mut job,
+                name,
+                &mut pipeline,
+            )?;
+        }
+        if is_prioritized {
+            pipeline.incr(&priority_counter_key, PC_COUNTER.load(Ordering::Acquire));
         }
         pipeline.query_async::<()>(&mut conn).await?;
 
@@ -439,11 +511,31 @@ impl<
         let mut opts = opts.unwrap_or_default();
         self.update_job_opts(&mut opts);
         let queue_name = format!("{}:{}", self.prefix, self.name);
+        let id = self.fetch_id().await?;
+        let event_mode = self.event_mode.load(Ordering::Acquire);
+        let is_paused = self.is_paused();
         let mut pipeline = redis::pipe();
         pipeline.atomic();
         let mut job = Job::<D, R, P>::new(name, Some(data), opts.id, Some(&queue_name));
+        let priority_counter_key =
+            CollectionSuffix::PriorityCounter.to_collection_name(&self.prefix, &self.name);
         let mut conn = self.get_connection().await?;
-        prepare_for_insert(opts, self, &mut job, name, &mut pipeline, &mut conn).await?;
+        let prior_counter: u64 = conn.get(&priority_counter_key).await?;
+
+        if opts.priority > 0 {
+            pipeline.incr(&priority_counter_key, 1);
+        }
+        prepare_for_insert(
+            &queue_name,
+            event_mode,
+            is_paused,
+            id,
+            prior_counter + 1,
+            opts,
+            &mut job,
+            name,
+            &mut pipeline,
+        )?;
         pipeline.query_async::<()>(&mut conn).await?;
 
         Ok(job)
@@ -1151,7 +1243,6 @@ impl<D, R, P> Queue<D, R, P> {
         let mut conn = self.conn_pool.get().await?;
         let id_key = CollectionSuffix::Id.to_collection_name(&self.prefix, &self.name);
         let id = conn.incr(&id_key, 1_u64).await?;
-        self.job_count.swap(id, std::sync::atomic::Ordering::AcqRel);
         Ok(id)
     }
     pub fn is_paused(&self) -> bool {
