@@ -14,6 +14,7 @@ use serde::{
 };
 
 mod backoff;
+mod repeat;
 use crate::{events::QueueStreamEvent, queue::Queue, CollectionSuffix, KioError, KioResult};
 pub use backoff::{BackOff, BackOffJobOptions, BackOffOptions, StoredFn};
 /// alias for DateTime<Utc>
