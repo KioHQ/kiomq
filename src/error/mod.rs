@@ -6,8 +6,8 @@ use thiserror::Error;
 use tokio::task::JoinError;
 use uuid::Uuid;
 mod backtrace_utils;
-
 pub(crate) use backtrace_utils::{BacktraceCatcher, CaughtError, CaughtPanicInfo};
+use croner::errors::CronError;
 #[derive(Debug, Error)]
 pub enum KioError {
     #[error(transparent)]
@@ -47,6 +47,8 @@ pub enum KioError {
     WorkerError(#[from] WorkerError),
     #[error(transparent)]
     JobError(#[from] JobError),
+    #[error(transparent)]
+    CronerError(#[from] CronError),
 }
 
 #[derive(Debug, Display, Error)]
