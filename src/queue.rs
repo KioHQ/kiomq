@@ -20,12 +20,13 @@ use crate::utils::{
 use crate::worker::{WorkerOpts, MIN_DELAY_MS_LIMIT};
 use crate::{
     get_job_metrics, queue, BackOff, BackOffJobOptions, BackOffOptions, Dt, FailedDetails,
-    JobOptions, JobToken, KeepJobs, KioResult, RemoveOnCompletionOrFailure, StoredFn, Trace,
+    JobOptions, JobToken, KeepJobs, KioResult, RemoveOnCompletionOrFailure, Repeat, StoredFn,
+    Trace,
 };
 use async_backtrace::backtrace;
 use chrono::{TimeDelta, Utc};
 use deadpool_redis::{Config, Pool, Runtime};
-use serde::de::{DeserializeOwned, Error};
+use serde::de::{value, DeserializeOwned, Error};
 use serde::{ser, Deserialize, Serialize};
 
 use redis::{
@@ -139,6 +140,21 @@ impl ToRedisArgs for QueueEventMode {
         out.write_arg_fmt(value);
     }
 }
+
+pub enum RetryOptions<'a> {
+    Failed(&'a BackOffJobOptions),
+    WithRepeat(&'a Repeat),
+}
+impl<'a> From<&'a BackOffJobOptions> for RetryOptions<'a> {
+    fn from(value: &'a BackOffJobOptions) -> Self {
+        RetryOptions::Failed(value)
+    }
+}
+impl<'a> From<&'a Repeat> for RetryOptions<'a> {
+    fn from(value: &'a Repeat) -> Self {
+        Self::WithRepeat(value)
+    }
+}
 #[derive(Debug, Clone)]
 pub struct QueueOpts {
     pub remove_on_fail: Option<RemoveOnCompletionOrFailure>,
@@ -146,6 +162,7 @@ pub struct QueueOpts {
     pub attempts: u64,
     pub default_backoff: Option<BackOffJobOptions>,
     pub event_mode: Option<QueueEventMode>,
+    pub repeat: Option<Repeat>,
 }
 impl Default for QueueOpts {
     fn default() -> Self {
@@ -153,6 +170,7 @@ impl Default for QueueOpts {
             event_mode: Some(QueueEventMode::default()),
             remove_on_fail: Default::default(),
             remove_on_complete: Default::default(),
+            repeat: None,
             attempts: 1,
             default_backoff: None,
         }
@@ -1079,7 +1097,7 @@ impl<
         let mut pipeline = redis::pipe();
         pipeline.atomic();
 
-        let last_id = self.current_jobs();
+        let last_id = self.current_metrics.last_id.load(Ordering::Acquire);
         (1..=last_id).for_each(|id| {
             let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
             pipeline.del(job_key);
@@ -1197,7 +1215,41 @@ impl<D, R, P> Queue<D, R, P> {
         let backoff_opts = BackOff::normalize(Some(backoff_job_opts))?;
         self.backoff.calculate(Some(backoff_opts), attempts, None)
     }
-    pub async fn retry_job(
+    pub async fn retry_job<'a, T: Into<RetryOptions<'a>>>(
+        &self,
+        job_id: u64,
+        opts: T,
+        attempts: u64,
+    ) -> KioResult<()> {
+        let opts = opts.into();
+        match opts {
+            RetryOptions::Failed(backoff_job_opts) => {
+                self.retry_failed(job_id, backoff_job_opts, attempts).await
+            }
+            RetryOptions::WithRepeat(repeat) => {
+                if let Some(next_delayed_timestamp) =
+                    repeat.next_occurrence(&self.backoff, attempts)
+                {
+                    let [delayed_key, job_id_key, wait_key] = [
+                        CollectionSuffix::Delayed,
+                        CollectionSuffix::Job(job_id),
+                        CollectionSuffix::Wait,
+                    ]
+                    .map(|collection| collection.to_collection_name(&self.prefix, &self.name));
+                    let mut conn = self.get_connection().await?;
+                    match next_delayed_timestamp {
+                        0 => conn.lpush::<_, u64, ()>(&wait_key, job_id).await?,
+                        _ => {
+                            conn.zadd::<_, _, _, ()>(delayed_key, job_id, next_delayed_timestamp)
+                                .await?
+                        }
+                    };
+                }
+                Ok(())
+            }
+        }
+    }
+    async fn retry_failed(
         &self,
         job_id: u64,
         backoff_job_opts: &BackOffJobOptions,
@@ -1237,6 +1289,9 @@ impl<D, R, P> Queue<D, R, P> {
         }
         if opts.backoff.is_none() {
             opts.backoff = self.opts.default_backoff.clone();
+        }
+        if opts.repeat.is_none() {
+            opts.repeat = self.opts.repeat.clone();
         }
     }
     pub async fn fetch_id(&self) -> KioResult<u64> {
