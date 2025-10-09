@@ -64,21 +64,23 @@ async fn main() -> KioResult<()> {
         fs::create_dir("compressed").await?;
     }
     let sizes = [(1280, 720), (640, 480), (1920, 1080), (3840, 2160)];
-    for (height, width) in sizes {
+    let iter = sizes.into_iter().map(|(height, width)| {
         let size = Size { height, width };
         let data = ProcessData {
             size,
             path: input_path.into(),
         };
-        queue
-            .add_job(height.to_string().as_str(), data, None)
-            .await?;
-    }
+        (height.to_string().to_lowercase(), None, data)
+    });
+
     let opts = WorkerOpts {
         concurrency: sizes.len(),
         lock_duration: 120000,
+        stalled_interval: 120000,
+
         ..Default::default()
     };
+    queue.bulk_add_only(iter).await?;
     let worker = Worker::new(&queue, processor, Some(opts))?;
     let updating_metrics = queue.current_metrics.clone();
 
@@ -100,7 +102,13 @@ async fn main() -> KioResult<()> {
         .await;
     worker.run()?;
 
-    while !updating_metrics.all_jobs_completed() {}
+    while updating_metrics
+        .completed
+        .load(std::sync::atomic::Ordering::Acquire)
+        < updating_metrics
+            .last_id
+            .load(std::sync::atomic::Ordering::Acquire)
+    {}
     worker.close(true);
     if !worker.is_running() {
         queue.obliterate().await?;

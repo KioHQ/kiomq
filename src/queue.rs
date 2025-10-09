@@ -538,8 +538,9 @@ impl<
         let priority_counter_key =
             CollectionSuffix::PriorityCounter.to_collection_name(&self.prefix, &self.name);
         let mut conn = self.get_connection().await?;
-        let prior_counter: u64 = conn.get(&priority_counter_key).await?;
+        let prior_counter: Option<u64> = conn.get(&priority_counter_key).await?;
 
+        let prior_counter = prior_counter.unwrap_or_default();
         if opts.priority > 0 {
             pipeline.incr(&priority_counter_key, 1);
         }
