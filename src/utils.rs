@@ -146,11 +146,20 @@ where
                 )
                 .await?;
             if let Some(entry) = jobs_in_progress.remove(&job_id) {
-                //handle.abort(); // remove task from the queue
                 let (job, _, handle) = entry.value();
-                queue
-                    .clean_up_job(job_id, job.opts.remove_on_complete)
-                    .await?;
+                if completed.attempts_made < job.opts.attempts {
+                    if let Some(repeat_opts) = completed.opts.repeat.as_ref() {
+                        //dbg!("job here", job_id, &repeat_opts);
+                        queue
+                            .retry_job(job_id, repeat_opts, completed.attempts_made - 1)
+                            .await?;
+                    }
+                } else {
+                    queue
+                        .clean_up_job(job_id, job.opts.remove_on_complete)
+                        .await?;
+                }
+
                 let handle_id = handle.load(std::sync::atomic::Ordering::Acquire);
                 task_sender.push((handle_id, job_id, move_to_state));
             }
@@ -497,6 +506,7 @@ pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
         remove_on_fail,
         remove_on_complete,
         ref backoff,
+        repeat: _,
     } = opts;
     job.add_opts(opts);
     if delay > 0 && delay < MIN_DELAY_MS_LIMIT {

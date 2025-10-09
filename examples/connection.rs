@@ -6,7 +6,7 @@ use std::{
 use deadpool_redis::{Config, Connection};
 use kio_mq::{
     fetch_redis_pass, framed, BackOffJobOptions, EventParameters, Job, JobOptions, KioResult,
-    Queue, QueueEventMode, QueueOpts, RemoveOnCompletionOrFailure, Worker, WorkerOpts,
+    Queue, QueueEventMode, QueueOpts, RemoveOnCompletionOrFailure, Repeat, Worker, WorkerOpts,
 };
 use uuid::Uuid;
 #[tokio::main]
@@ -22,16 +22,17 @@ async fn main() -> KioResult<()> {
         age: Some(60 * 60),
         count: None,
     });
+    let backoff_opts = BackOffJobOptions::Opts(kio_mq::BackOffOptions {
+        type_: Some("exponential".to_owned()),
+        delay: Some(200),
+    });
     let queue_opts = QueueOpts {
         remove_on_fail: Some(remove_opts),
         remove_on_complete: Some(remove_opts),
         attempts: 2,
-        default_backoff: Some(BackOffJobOptions::Opts(kio_mq::BackOffOptions {
-            type_: Some("exponential".to_owned()),
-            delay: Some(200),
-        })),
+        default_backoff: Some(backoff_opts.clone()),
         event_mode: Some(QueueEventMode::PubSub),
-        //..Default::default()
+        ..Default::default()
     };
     let counter = Arc::new(AtomicUsize::default());
     let events = counter.clone();
@@ -62,17 +63,24 @@ async fn main() -> KioResult<()> {
     };
     queue.on_all_events(event_listener).await;
 
-    let count = 5000;
-    let iterator = (0..count).map(|_i| {
+    let count = 500;
+    let repeats = 2;
+    use croner::Cron;
+    let cron_schedule: Cron = "1/2 * * * * *".parse()?;
+    let iterator = (0..count).map(move |_i| {
         //use rand::Rng;
         //let priority = rand::rng().random_range(1..count); // ucomment to use  random priority
 
         //let priority = (count - _i) as u64; // ucomment to use a priority of count - index (job_id -1)
-        let job_opts = JobOptions {
+        let mut job_opts = JobOptions {
             //delay: 100 * _i as u64, // uncomment to add delay
             //priority, // uncomment to set priority
             ..Default::default()
         };
+        if _i == 2 {
+            job_opts.attempts = repeats + 1;
+            job_opts.repeat = Some(Repeat::WithCron(Box::new(cron_schedule.clone())));
+        }
         let name = Uuid::new_v4().to_string();
         (name, Some(job_opts), _i as i32)
     });
@@ -91,7 +99,7 @@ async fn main() -> KioResult<()> {
     println!("adding items took {:?}", adding.elapsed());
     //worker.run()?;
     let now = Instant::now();
-    while counter.load(std::sync::atomic::Ordering::Acquire) < count {
+    while counter.load(std::sync::atomic::Ordering::Acquire) < count + (repeats as usize) {
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     dbg!(now.elapsed());

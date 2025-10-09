@@ -17,6 +17,7 @@ mod backoff;
 mod repeat;
 use crate::{events::QueueStreamEvent, queue::Queue, CollectionSuffix, KioError, KioResult};
 pub use backoff::{BackOff, BackOffJobOptions, BackOffOptions, StoredFn};
+pub use repeat::Repeat;
 /// alias for DateTime<Utc>
 pub(crate) type Dt = DateTime<Utc>;
 #[derive(
@@ -68,6 +69,7 @@ pub struct JobOptions {
     pub remove_on_complete: Option<RemoveOnCompletionOrFailure>,
     pub remove_on_fail: Option<RemoveOnCompletionOrFailure>,
     pub backoff: Option<BackOffJobOptions>,
+    pub repeat: Option<Repeat>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, Hash, PartialEq)]
