@@ -684,3 +684,15 @@ where
     }
     Ok(())
 }
+pub fn resume_helper(
+    current_metrics: &JobMetrics,
+    pause_workers: &AtomicBool,
+    worker_notifier: &Notify,
+) {
+    use std::sync::atomic::Ordering;
+    let workers_paused = pause_workers.load(Ordering::Acquire);
+    if current_metrics.queue_has_work() && workers_paused {
+        worker_notifier.notify_waiters();
+        pause_workers.store(false, Ordering::Release);
+    }
+}
