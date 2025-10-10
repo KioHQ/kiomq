@@ -6,7 +6,6 @@ use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use std::time::Duration;
-use std::usize;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use uuid::Uuid;

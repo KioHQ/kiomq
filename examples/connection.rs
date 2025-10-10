@@ -66,24 +66,24 @@ async fn main() -> KioResult<()> {
     let count = 10;
     let repeats = 2;
     use croner::Cron;
-    let cron_schedule: Cron = "1/2 * * * * *".parse()?;
+    let _cron_schedule: Cron = "1/2 * * * * *".parse()?;
     let iterator = (0..count).map(move |_i| {
         //use rand::Rng;
         //let priority = rand::rng().random_range(1..count); // ucomment to use  random priority
 
-        //let priority = (count - _i) as u64; // ucomment to use a priority of count - index (job_id -1)
+        let priority = (count - _i) as u64; // ucomment to use a priority of count - index (job_id -1)
         let mut job_opts = JobOptions {
-            //delay: 100 * _i as u64, // uncomment to add delay
-            //priority, // uncomment to set priority
+            //delay: (100 * _i as i64).into(), // uncomment to add delay
+            priority, // uncomment to set priority
             ..Default::default()
         };
         if _i == 2 {
             job_opts.attempts = repeats + 1;
-            job_opts.repeat = Some(Repeat::WithCron(Box::new(cron_schedule.clone())));
-            job_opts.delay = cron_schedule.clone().into();
+            //job_opts.repeat = Some(Repeat::WithCron(Box::new(_cron_schedule.clone())));
+            //job_opts.delay = _cron_schedule.clone().into();
         }
         let name = Uuid::new_v4().to_string();
-        (name, Some(job_opts), _i as i32)
+        (name, Some(job_opts), _i)
     });
 
     let opts = WorkerOpts {
@@ -100,7 +100,7 @@ async fn main() -> KioResult<()> {
     println!("adding items took {:?}", adding.elapsed());
     //worker.run()?;
     let now = Instant::now();
-    while counter.load(std::sync::atomic::Ordering::Acquire) < count + (repeats as usize) {
+    while !queue.current_metrics.all_jobs_completed() {
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     dbg!(now.elapsed());
