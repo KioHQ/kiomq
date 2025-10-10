@@ -6,7 +6,7 @@ use std::{
 use deadpool_redis::{Config, Connection};
 use kio_mq::{
     fetch_redis_pass, framed, BackOffJobOptions, EventParameters, Job, JobOptions, KioResult,
-    Queue, QueueEventMode, QueueOpts, RemoveOnCompletionOrFailure, Repeat, Worker, WorkerOpts,
+    Queue, QueueEventMode, QueueOpts, RemoveOnCompletionOrFailure, Worker, WorkerOpts,
 };
 use uuid::Uuid;
 #[tokio::main]
@@ -79,7 +79,7 @@ async fn main() -> KioResult<()> {
         };
         if _i == 2 {
             job_opts.attempts = repeats + 1;
-            //job_opts.repeat = Some(Repeat::WithCron(Box::new(_cron_schedule.clone())));
+            //job_opts.repeat = _cron_schedule.as_str().try_into().ok();
             //job_opts.delay = _cron_schedule.clone().into();
         }
         let name = Uuid::new_v4().to_string();
