@@ -80,7 +80,6 @@ async fn main() -> KioResult<()> {
 
         ..Default::default()
     };
-    queue.bulk_add_only(iter).await?;
     let worker = Worker::new(&queue, processor, Some(opts))?;
     let updating_metrics = queue.current_metrics.clone();
 
@@ -101,14 +100,9 @@ async fn main() -> KioResult<()> {
         })
         .await;
     worker.run()?;
+    queue.bulk_add_only(iter).await?;
 
-    while updating_metrics
-        .completed
-        .load(std::sync::atomic::Ordering::Acquire)
-        < updating_metrics
-            .last_id
-            .load(std::sync::atomic::Ordering::Acquire)
-    {}
+    while !updating_metrics.all_jobs_completed() {}
     worker.close(true);
     if !worker.is_running() {
         queue.obliterate().await?;
