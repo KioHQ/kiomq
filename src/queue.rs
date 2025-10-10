@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use std::time::Duration;
+use std::usize;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -423,9 +424,8 @@ impl<
         let priority_counter_key =
             CollectionSuffix::PriorityCounter.to_collection_name(&self.prefix, &self.name);
         let max_len_hint = iter.size_hint().1.unwrap_or_default();
-        pipeline.incr(&id_key, max_len_hint);
-        pipeline.get(&priority_counter_key);
-        let (end, counter): (usize, Option<u64>) = pipeline.query_async(&mut conn).await?;
+        let end: usize = conn.incr(&id_key, max_len_hint).await?;
+        let counter: Option<u64> = conn.get(&priority_counter_key).await?;
         let pc = counter.unwrap_or_default() + 1;
         PC_COUNTER.store(pc, Ordering::Relaxed);
         let mut start = (end - max_len_hint) + 1;
@@ -477,9 +477,8 @@ impl<
         let priority_counter_key =
             CollectionSuffix::PriorityCounter.to_collection_name(&self.prefix, &self.name);
         let max_len_hint = iter.size_hint().1.unwrap_or_default();
-        pipeline.incr(&id_key, max_len_hint);
-        pipeline.get(&priority_counter_key);
-        let (end, counter): (usize, Option<u64>) = pipeline.query_async(&mut conn).await?;
+        let end: usize = conn.incr(&id_key, max_len_hint).await?;
+        let counter: Option<u64> = conn.get(&priority_counter_key).await?;
         let pc = counter.unwrap_or_default() + 1;
         PC_COUNTER.store(pc, Ordering::Relaxed);
         let mut start = (end - max_len_hint) + 1;
