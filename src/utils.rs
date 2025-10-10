@@ -500,7 +500,7 @@ pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
 ) -> KioResult<()> {
     let JobOptions {
         priority,
-        delay,
+        ref delay,
         id: _,
         attempts,
         remove_on_fail,
@@ -508,6 +508,10 @@ pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
         ref backoff,
         repeat: _,
     } = opts;
+    let dt = Utc::now();
+    let expected_dt_ts = delay.next_occurrance_timestamp_ms();
+    let delay_dt = delay.clone();
+    let delay = delay.as_diff_ms(dt) as u64;
     job.add_opts(opts);
     if delay > 0 && delay < MIN_DELAY_MS_LIMIT {
         return Err(QueueError::DelayBelowAllowedLimit {
@@ -531,9 +535,10 @@ pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
     pipeline.atomic();
     if to_delay {
         let delayed_key = format!("{queue_name}:delayed");
-        let expected_active_time = job.ts + TimeDelta::milliseconds(delay as i64);
-        pipeline.zadd(delayed_key, id, expected_active_time.timestamp_millis());
-        job.state = JobState::Delayed;
+        if let Some(expected_active_time) = expected_dt_ts {
+            pipeline.zadd(delayed_key, id, expected_active_time);
+            job.state = JobState::Delayed;
+        }
     }
     // handle prioritized_jobs
     else if to_priorize {
