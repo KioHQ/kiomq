@@ -63,7 +63,7 @@ async fn main() -> KioResult<()> {
     };
     queue.on_all_events(event_listener).await;
 
-    let count = 500;
+    let count = 10;
     let repeats = 2;
     use croner::Cron;
     let cron_schedule: Cron = "1/2 * * * * *".parse()?;
@@ -80,6 +80,7 @@ async fn main() -> KioResult<()> {
         if _i == 2 {
             job_opts.attempts = repeats + 1;
             job_opts.repeat = Some(Repeat::WithCron(Box::new(cron_schedule.clone())));
+            job_opts.delay = cron_schedule.clone().into();
         }
         let name = Uuid::new_v4().to_string();
         (name, Some(job_opts), _i as i32)

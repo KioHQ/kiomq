@@ -14,10 +14,15 @@ use serde::{
 };
 
 mod backoff;
+mod delay;
 mod repeat;
-use crate::{events::QueueStreamEvent, queue::Queue, CollectionSuffix, KioError, KioResult};
+use crate::{
+    events::QueueStreamEvent, job::delay::JobDelay, queue::Queue, CollectionSuffix, KioError,
+    KioResult,
+};
 pub use backoff::{BackOff, BackOffJobOptions, BackOffOptions, StoredFn};
 pub use repeat::Repeat;
+
 /// alias for DateTime<Utc>
 pub(crate) type Dt = DateTime<Utc>;
 #[derive(
@@ -62,7 +67,7 @@ impl ToRedisArgs for JobState {
 #[serde(rename_all = "camelCase")]
 pub struct JobOptions {
     pub priority: u64,
-    pub delay: u64,
+    pub delay: JobDelay,
     pub id: Option<u64>,
     pub attempts: u64,
     /// total number of attempts to try the job until it completes.
@@ -218,8 +223,8 @@ impl<D, R, P> Job<D, R, P> {
 
     pub fn add_opts(&mut self, opts: JobOptions) {
         self.priority = opts.priority;
-        self.delay = opts.delay;
-        self.opts = opts;
+        self.delay = opts.delay.as_diff_ms(self.ts) as u64;
+        self.opts = opts.clone();
     }
     pub async fn update_progress(&mut self, value: P, conn: &mut Connection) -> Result<(), KioError>
     where
