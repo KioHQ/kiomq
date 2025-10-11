@@ -15,7 +15,7 @@ use crate::events::{QueueStreamEvent, StreamEventId};
 use crate::job::{Job, JobState};
 use crate::utils::{
     calculate_next_priority_score, prepare_for_insert, process_queue_events, promote_jobs,
-    resume_helper, serialize_into_pairs, JobQueue, ReadStreamArgs,
+    query_all_batched, resume_helper, serialize_into_pairs, JobQueue, ReadStreamArgs,
 };
 use crate::worker::{WorkerOpts, MIN_DELAY_MS_LIMIT};
 use crate::{
@@ -77,7 +77,7 @@ impl<
         use typed_emitter::TypedEmitter;
         let opts = queue_opts.unwrap_or_default();
         let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
-        let prefix = prefix.unwrap_or("kio").to_lowercase();
+        let prefix = prefix.unwrap_or("{kio}").to_lowercase();
         let meta_key = CollectionSuffix::Meta.to_collection_name(&prefix, name);
         let name = name.to_lowercase();
         let emitter = Arc::new(TypedEmitter::new());
@@ -186,13 +186,13 @@ impl<
         iter: I,
     ) -> KioResult<Vec<Job<D, R, P>>> {
         let mut conn = self.get_connection().await?;
-        let mut pipeline = redis::pipe();
         let mut result = vec![];
-        pipeline.atomic();
         let id_key = CollectionSuffix::Id.to_collection_name(&self.prefix, &self.name);
         let priority_counter_key =
             CollectionSuffix::PriorityCounter.to_collection_name(&self.prefix, &self.name);
         let max_len_hint = iter.size_hint().1.unwrap_or_default();
+        let mut pipeline = redis::Pipeline::with_capacity((max_len_hint * 3) + 1);
+        pipeline.atomic();
         let end: usize = conn.incr(&id_key, max_len_hint).await?;
         let counter: Option<u64> = conn.get(&priority_counter_key).await?;
         let pc = counter.unwrap_or_default() + 1;
@@ -231,8 +231,8 @@ impl<
         if is_prioritized {
             pipeline.incr(&priority_counter_key, PC_COUNTER.load(Ordering::Acquire));
         }
-        pipeline.query_async::<()>(&mut conn).await?;
 
+        query_all_batched(conn, pipeline).await?;
         Ok(result)
     }
     pub async fn bulk_add_only<I: Iterator<Item = (String, Option<JobOptions>, D)> + Send>(
@@ -240,12 +240,12 @@ impl<
         iter: I,
     ) -> KioResult<()> {
         let mut conn = self.get_connection().await?;
-        let mut pipeline = redis::pipe();
-        pipeline.atomic();
         let id_key = CollectionSuffix::Id.to_collection_name(&self.prefix, &self.name);
         let priority_counter_key =
             CollectionSuffix::PriorityCounter.to_collection_name(&self.prefix, &self.name);
         let max_len_hint = iter.size_hint().1.unwrap_or_default();
+        let mut pipeline = redis::Pipeline::with_capacity((max_len_hint * 3) + 1);
+        pipeline.atomic();
         let end: usize = conn.incr(&id_key, max_len_hint).await?;
         let counter: Option<u64> = conn.get(&priority_counter_key).await?;
         let pc = counter.unwrap_or_default() + 1;
@@ -283,7 +283,9 @@ impl<
         if is_prioritized {
             pipeline.incr(&priority_counter_key, PC_COUNTER.load(Ordering::Acquire));
         }
-        pipeline.query_async::<()>(&mut conn).await?;
+        println!("sending {} commands to redis", pipeline.len());
+        //pipeline.query_async::<()>(&mut conn).await?;
+        query_all_batched(conn, pipeline).await?;
 
         Ok(())
     }

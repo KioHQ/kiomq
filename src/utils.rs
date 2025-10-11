@@ -696,3 +696,39 @@ pub fn resume_helper(
         pause_workers.store(false, Ordering::Release);
     }
 }
+
+use redis::{Cmd, Pipeline};
+fn split_pipeline(mut p: Pipeline, chunk_size: usize) -> Vec<Pipeline> {
+    // Take ownership of the internal command list
+    let cmds = unsafe {
+        // Access private field via raw pointer trick
+        let cmds_ptr = &mut p as *mut Pipeline as *mut Vec<redis::Cmd>;
+        std::mem::take(&mut *cmds_ptr)
+    };
+    cmds.chunks(chunk_size)
+        .map(|chunk| {
+            let mut p = redis::Pipeline::with_capacity(chunk_size);
+            for c in chunk {
+                p.add_command(c.clone());
+            }
+            p
+        })
+        .collect()
+}
+pub async fn query_all_batched(
+    conn: deadpool_redis::Connection,
+    mut p: Pipeline,
+) -> redis::RedisResult<()>
+where
+{
+    let chunk_size = 10000;
+    let pipelines = split_pipeline(p, chunk_size);
+    let futs = pipelines.into_iter().map(|mut p| {
+        let mut c = conn.clone();
+        async move { p.query_async::<()>(&mut c).await }
+    });
+    for res in futs {
+        res.await?;
+    }
+    Ok(())
+}
