@@ -124,6 +124,7 @@ impl<D: DeserializeOwned, R: DeserializeOwned, P: DeserializeOwned> EventParamet
                 job_id: event.job_id,
                 status: event.prev.unwrap_or_default(),
             },
+            JobState::Obliterated => Self::Void,
         };
 
         Ok(parameter)

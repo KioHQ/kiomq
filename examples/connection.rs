@@ -63,7 +63,7 @@ async fn main() -> KioResult<()> {
     };
     queue.on_all_events(event_listener).await;
 
-    let count = 10;
+    let count = 2;
     let repeats = 2;
     use croner::Cron;
     let _cron_schedule: Cron = "1/2 * * * * *".parse()?;
@@ -108,6 +108,7 @@ async fn main() -> KioResult<()> {
     if worker.closed() {
         queue.obliterate().await?;
     }
+    dbg!(queue.current_metrics);
     Ok(())
 }
 #[framed]

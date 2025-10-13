@@ -650,6 +650,7 @@ where
             let reply: StreamReadReply = connection
                 .xread_options(&[&stream_key], &[">"], &options)
                 .await?;
+
             let events = QueueStreamEvent::<R, P>::from_stream_read_reply(stream_key, reply);
             for event in events {
                 process_each_event(
