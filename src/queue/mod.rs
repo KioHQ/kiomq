@@ -226,6 +226,7 @@ impl<
                 name,
                 &mut pipeline,
             )?;
+            job.id = Some(id);
             result.push(job)
         }
         if is_prioritized {
@@ -326,18 +327,18 @@ impl<
             &mut pipeline,
         )?;
         pipeline.query_async::<()>(&mut conn).await?;
-
+        job.id = Some(id);
         Ok(job)
     }
     pub fn current_jobs(&self) -> u64 {
         self.job_count.load(std::sync::atomic::Ordering::Acquire)
     }
-    pub async fn get_job(&self, id: u64) -> KioResult<Job<D, R, P>> {
+    pub async fn get_job(&self, id: u64) -> Option<Job<D, R, P>> {
         use redis::Value;
         let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
-        let mut conn = self.conn_pool.get().await?;
-        let value: Job<_, _, _> = conn.hgetall(job_key).await?;
-        Ok(value)
+        let mut conn = self.conn_pool.get().await.ok()?;
+        let value: Option<Job<_, _, _>> = conn.hgetall(job_key).await.ok()?;
+        value
     }
 
     pub async fn move_job_to_state(

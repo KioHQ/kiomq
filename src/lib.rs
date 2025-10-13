@@ -7,6 +7,7 @@ mod timer;
 mod utils;
 mod worker;
 pub use async_backtrace::{frame, framed};
+pub use deadpool_redis::Config;
 pub use error::KioError;
 pub(crate) use events::EventEmitter;
 pub use events::EventParameters;
