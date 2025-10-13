@@ -1,6 +1,7 @@
 ### kio-mq
 
 [![CI](https://github.com/spencerjibz/kio-mq/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/spencerjibz/kio-mq/actions/workflows/ci.yml)
+
 A simple async background task queue based on Redis (inspired by BullMQ).
 
 ### Development Status
