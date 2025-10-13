@@ -53,6 +53,7 @@ pub enum JobState {
     Failed,
     Delayed,
     Progress,
+    Obliterated,
     Processing,
 }
 impl ToRedisArgs for JobState {

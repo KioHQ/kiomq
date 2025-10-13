@@ -1,6 +1,9 @@
-use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc,
+use std::{
+    default,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
 };
 
 use crate::{
@@ -64,6 +67,7 @@ impl From<JobState> for CollectionSuffix {
             JobState::Progress => CollectionSuffix::Prefix,
             JobState::Priorized => CollectionSuffix::Prioritized,
             JobState::Processing => CollectionSuffix::Meta,
+            JobState::Obliterated => CollectionSuffix::Events,
         }
     }
 }
@@ -241,5 +245,9 @@ impl JobMetrics {
             && !self.has_active_jobs()
             && self.workers_idle()
             && self.last_id.load(Ordering::Acquire) > 0
+    }
+    pub fn clear(&self) {
+        let default = Self::default();
+        self.update(&default);
     }
 }

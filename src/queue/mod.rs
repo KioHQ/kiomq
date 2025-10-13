@@ -837,6 +837,9 @@ impl<
 
     pub async fn obliterate(&self) -> KioResult<()> {
         self.delete_all_jobs().await?;
+        let events_stream_key =
+            CollectionSuffix::Events.to_collection_name(&self.prefix, &self.name);
+
         // delete all other grouped collections;
         let mut conn = self.conn_pool.get().await?;
         let mut pipeline = redis::pipe();
@@ -847,11 +850,12 @@ impl<
             CollectionSuffix::Completed,
             CollectionSuffix::Failed,
             CollectionSuffix::Events,
-            CollectionSuffix::Meta,
             CollectionSuffix::Id,
             CollectionSuffix::Events,
             CollectionSuffix::Stalled,
             CollectionSuffix::Marker,
+            CollectionSuffix::Prioritized,
+            CollectionSuffix::PriorityCounter,
             CollectionSuffix::Meta,
         ]
         .iter()
@@ -859,8 +863,32 @@ impl<
             let key = name.to_collection_name(&self.prefix, &self.name);
             pipeline.del(key);
         });
-
+        let event_mode = self.event_mode.load(Ordering::Acquire);
+        let event = JobState::Obliterated;
+        let last_id = self.current_metrics.last_id.load(Ordering::Acquire);
+        match event_mode {
+            QueueEventMode::PubSub => {
+                let item: QueueStreamEvent<(), ()> = QueueStreamEvent {
+                    job_id: last_id,
+                    event,
+                    ..Default::default()
+                };
+                pipeline.publish(&events_stream_key, item);
+            }
+            QueueEventMode::Stream => {
+                pipeline.xadd(
+                    &events_stream_key,
+                    "*",
+                    &[
+                        ("event", event.to_string().to_lowercase()),
+                        ("job_id", last_id.to_string()),
+                    ],
+                );
+            }
+        }
+        pipeline.del(&events_stream_key);
         let done: () = pipeline.query_async(&mut conn).await?;
+        self.current_metrics.clear();
         Ok(done)
     }
     async fn delete_all_jobs(&self) -> KioResult<()> {
