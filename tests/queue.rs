@@ -127,4 +127,38 @@ mod queue {
         queue.obliterate().await?;
         Ok(())
     }
+    #[tokio_shared_rt::test(shared)]
+    async fn pause_and_resume() -> KioResult<()> {
+        let config = &CONFIG;
+        let name = Uuid::new_v4().to_string();
+        let queue = Queue::<i32, i32, i32>::new(None, &name, config, None).await?;
+        let _job = queue.add_job(&name, 1, None).await?;
+        let metrics = queue.get_metrics().await?;
+        assert_eq!(
+            metrics.waiting.load(std::sync::atomic::Ordering::Acquire),
+            1
+        );
+        // when the queue is paused, the waiting list is renamed to paused;
+        queue.pause_or_resume().await?;
+        let metrics = queue.get_metrics().await?;
+        assert_eq!(
+            queue.is_paused(),
+            metrics.paused.load(std::sync::atomic::Ordering::Acquire)
+        );
+        assert_eq!(
+            metrics.waiting.load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
+        // resume here
+        queue.pause_or_resume().await?;
+        let metrics = queue.get_metrics().await?;
+        assert!(!queue.is_paused());
+        assert!(!metrics.paused.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(
+            metrics.waiting.load(std::sync::atomic::Ordering::Acquire),
+            1
+        );
+        queue.obliterate().await?;
+        Ok(())
+    }
 }
