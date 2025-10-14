@@ -1,73 +1,108 @@
-on:
-     push:
-          branches:
-               - main
-     pull_request:
-          branches:
-               - main
-
 name: Continuous integration
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
 
 jobs:
-     check:
-          name: Check
-          runs-on: ubuntu-latest
-          steps:
-               - uses: actions/checkout@v1
-               - uses: actions-rs/toolchain@v1
-                 with:
-                      toolchain: stable
-                      override: true
-               - uses: actions-rs/cargo@v1
-                 with:
-                      command: check
-               - name: Start Redis
-                 uses: supercharge/redis-github-action@1.7.0
-                 with:
-                      redis-version: 7
-                      redis-password: ${{secrets.REDIS_PASSWORD}}
+  check:
+    name: Check
+    env:
+      REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v1
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      - uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-clippy
+      - uses: actions-rs/cargo@v1
+        with:
+          command: check
 
-     test:
-          name: Test Suite
-          runs-on: ubuntu-latest
-          steps:
-               - uses: actions/checkout@v1
-               - uses: actions-rs/toolchain@v1
-                 with:
-                      toolchain: stable
-                      override: true
-               - uses: actions-rs/cargo@v1
-                 env:
-                      REDIS_PASSWORD: ${{secrets.REDIS_PASSWORD}}
-                 with:
-                      command: test
+  test:
+    name: Test Suite
+    env:
+      REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v1
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
 
-     fmt:
-          name: Rustfmt
-          runs-on: ubuntu-latest
-          steps:
-               - uses: actions/checkout@v1
-               - uses: actions-rs/toolchain@v1
-                 with:
-                      toolchain: stable
-                      override: true
-               - run: rustup component add rustfmt
-               - uses: actions-rs/cargo@v1
-                 with:
-                      command: fmt
-                      args: --all -- --check
+      - name: Start Redis
+        uses: supercharge/redis-github-action@1.7.0
+        with:
+          redis-version: 7
+          redis-password: ${{ secrets.REDIS_PASSWORD }}
+      - name: Install cargo nextest
+        uses: taiki-e/install-action@nextest
+      - uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-clippy
+      - name: Run tests
+        env:
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+        run: cargo nextest run --release
+  fmt:
+    name: Rustfmt
+    env:
+      REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v1
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      - run: rustup component add rustfmt
+      - uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check
 
-     clippy:
-          name: Clippy
-          runs-on: ubuntu-latest
-          steps:
-               - uses: actions/checkout@v1
-               - uses: actions-rs/toolchain@v1
-                 with:
-                      toolchain: stable
-                      override: true
-               - run: rustup component add clippy
-               - uses: actions-rs/cargo@v1
-                 with:
-                      command: clippy
-                      args: -- -D warnings
+  clippy:
+    name: Clippy
+    env:
+      REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v1
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      - uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-clippy
+      - run: rustup component add clippy
+      - uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: -- -D warnings
