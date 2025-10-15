@@ -1,0 +1,212 @@
+#[cfg(test)]
+mod worker {
+    use kio_mq::{fetch_redis_pass, EventParameters, Job, JobOptions, KioError, QueueEventMode};
+    use kio_mq::{Config, KioResult, Queue, QueueOpts, Worker};
+    use std::collections::VecDeque;
+    use std::sync::{Arc, LazyLock};
+    use uuid::Uuid;
+    static CONFIG: LazyLock<Config> = LazyLock::new(|| {
+        let password = fetch_redis_pass();
+        let mut config = Config::default();
+        if let Some(cfg) = config.connection.as_mut() {
+            cfg.redis.password = password;
+        }
+        config
+    });
+    #[tokio_shared_rt::test(shared)]
+    async fn run_jobs_to_completion() -> KioResult<()> {
+        let config = &CONFIG;
+        let queue_opts = QueueOpts::default();
+        let name = Uuid::new_v4().to_string();
+        let queue = Queue::<i32, i32, i32>::new(None, &name, config, Some(queue_opts)).await?;
+        let job_iterator = (0..4).map(|i| (i.to_string(), None, i));
+        let processor = move |_conn, job: kio_mq::Job<i32, i32, i32>| async move {
+            Ok::<i32, KioError>(job.data.unwrap())
+        };
+        let worker = Worker::new(&queue, processor, None)?;
+        worker.run()?;
+        assert!(worker.is_running());
+        let jobs = queue.bulk_add(job_iterator).await?;
+        // wait for metrics to update
+        while !queue.get_metrics().await?.all_jobs_completed() {}
+        worker.close(false);
+        assert!(!worker.is_running());
+        let metrics = queue.current_metrics.as_ref();
+        assert_eq!(
+            metrics.waiting.load(std::sync::atomic::Ordering::Acquire),
+            0,
+        );
+        assert_eq!(
+            metrics.completed.load(std::sync::atomic::Ordering::Acquire),
+            jobs.len() as u64,
+        );
+        queue.obliterate().await?;
+        Ok(())
+    }
+    #[tokio_shared_rt::test(shared)]
+    async fn run_delayed_jobs() -> KioResult<()> {
+        use crossbeam_queue::ArrayQueue;
+        let config = &CONFIG;
+        let queue_opts = QueueOpts {
+            event_mode: Some(QueueEventMode::PubSub),
+            ..Default::default()
+        };
+        let name = Uuid::new_v4().to_string();
+        let queue = Queue::<i32, i32, i32>::new(None, &name, config, Some(queue_opts)).await?;
+        let count: i32 = 4;
+        let job_iterator = (0..count).map(|i| {
+            let job_opts = JobOptions {
+                delay: ((i * 100) as i64).into(),
+                ..Default::default()
+            };
+            (i.to_string(), Some(job_opts), i)
+        });
+        let completed: Arc<ArrayQueue<Job<_, _, _>>> = Arc::new(ArrayQueue::new(count as usize));
+        let jobs = completed.clone();
+        queue.on(
+            kio_mq::JobState::Completed,
+            move |state: kio_mq::EventParameters<i32, i32, i32>| {
+                let completed = jobs.clone();
+                async move {
+                    if let EventParameters::Completed {
+                        job,
+                        prev_state: _,
+                        result: _,
+                    } = state
+                    {
+                        let _ = completed.push(job);
+                    }
+                }
+            },
+        );
+        let processor = move |_conn, job: kio_mq::Job<i32, i32, i32>| async move {
+            Ok::<i32, KioError>(job.data.unwrap())
+        };
+        let worker = Worker::new(&queue, processor, None)?;
+        worker.run()?;
+        let jobs = queue.bulk_add(job_iterator).await?;
+        assert!(worker.is_running());
+        // wait for metrics to update
+        while !queue.get_metrics().await?.all_jobs_completed() {}
+        worker.close(false);
+        assert!(!worker.is_running());
+        assert_eq!(completed.len(), count as usize);
+        let metrics = queue.current_metrics.as_ref();
+        assert_eq!(
+            metrics.delayed.load(std::sync::atomic::Ordering::Acquire),
+            0,
+        );
+        assert_eq!(
+            metrics.completed.load(std::sync::atomic::Ordering::Acquire),
+            jobs.len() as u64,
+        );
+        queue.obliterate().await?;
+        while let Some(job) = completed.pop() {
+            // check delay is with accepted range
+            let diff = (job.processed_on.unwrap_or_default() - job.ts).num_milliseconds();
+            let delay = job.delay as i64;
+            let allowable_delay_diff = 90;
+            if delay > 0 {
+                assert!(diff - delay <= allowable_delay_diff);
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio_shared_rt::test(shared)]
+    async fn pauses_and_resumes_when_queue_is_idle() -> KioResult<()> {
+        use std::time::Duration;
+        let config = &CONFIG;
+        let queue_opts = QueueOpts::default();
+        let name = Uuid::new_v4().to_string();
+        let queue = Queue::<i32, i32, i32>::new(None, &name, config, Some(queue_opts)).await?;
+        let job_iterator = (0..4).map(|i| (i.to_string(), None, i));
+        let processor = move |_conn, job: kio_mq::Job<i32, i32, i32>| async move {
+            Ok::<i32, KioError>(job.data.unwrap())
+        };
+        let worker = Worker::new(&queue, processor, None)?;
+        worker.run()?;
+        assert!(worker.is_running());
+        queue.bulk_add(job_iterator).await?;
+        // wait for all previous to complete
+        while !queue.get_metrics().await?.all_jobs_completed() {}
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(worker.is_idle());
+        queue.add_job("test", 1, None).await?;
+        // wait for new job to get picked up
+        while queue.get_metrics().await?.queue_has_work() {}
+        assert!(!worker.is_idle());
+        assert!(worker.is_running());
+        let metrics = queue.current_metrics.as_ref();
+        assert_eq!(
+            metrics.waiting.load(std::sync::atomic::Ordering::Acquire),
+            0,
+        );
+        queue.obliterate().await?;
+        Ok(())
+    }
+    #[tokio_shared_rt::test(shared)]
+    async fn run_prioritized_jobs_correctly() -> KioResult<()> {
+        use crossbeam_queue::ArrayQueue;
+        let config = &CONFIG;
+        let queue_opts = QueueOpts::default();
+        let name = Uuid::new_v4().to_string();
+        let queue = Queue::<i32, i32, i32>::new(None, &name, config, Some(queue_opts)).await?;
+        let count: i32 = 4;
+        let job_iterator = (0..count).map(|i| {
+            let job_opts = JobOptions {
+                priority: (count - i) as u64,
+                ..Default::default()
+            };
+            (i.to_string(), Some(job_opts), i)
+        });
+        let completed: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(count as usize));
+        let jobs = completed.clone();
+        queue.on(
+            kio_mq::JobState::Completed,
+            move |state: kio_mq::EventParameters<i32, i32, i32>| {
+                let completed = jobs.clone();
+                async move {
+                    if let EventParameters::Completed {
+                        job,
+                        prev_state: _,
+                        result: _,
+                    } = state
+                    {
+                        let id = job.id.unwrap();
+                        let _ = completed.push(id);
+                    }
+                }
+            },
+        );
+        let processor = move |_conn, job: kio_mq::Job<i32, i32, i32>| async move {
+            Ok::<i32, KioError>(job.data.unwrap())
+        };
+        let worker = Worker::new(&queue, processor, None)?;
+        worker.run()?;
+        let mut jobs = queue.bulk_add(job_iterator).await?;
+        // wait for metrics to update
+        while !queue.get_metrics().await?.all_jobs_completed() {}
+        assert_eq!(completed.len(), count as usize);
+        let metrics = queue.current_metrics.as_ref();
+        assert_eq!(
+            metrics.waiting.load(std::sync::atomic::Ordering::Acquire),
+            0,
+        );
+        assert_eq!(
+            metrics.completed.load(std::sync::atomic::Ordering::Acquire),
+            jobs.len() as u64,
+        );
+        jobs.sort_unstable_by(|a, b| a.id.cmp(&b.id).reverse());
+        let mut expected_ordered: VecDeque<u64> = jobs
+            .into_iter()
+            .map(|job| job.id.unwrap_or_default())
+            .collect();
+        while let (Some(expected), Some(recieved)) = (expected_ordered.pop_front(), completed.pop())
+        {
+            assert_eq!(expected, recieved);
+        }
+        queue.obliterate().await?;
+        Ok(())
+    }
+}
