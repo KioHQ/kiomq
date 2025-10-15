@@ -37,7 +37,17 @@ pub(crate) type JobMap<D, R, P> = Arc<SkipMap<u64, JobMeta<D, R, P>>>;
 type Task = JoinHandle<KioResult<()>>;
 use tokio::task::Id;
 pub(crate) type ProcessingQueue = Arc<SkipMap<u64, Task>>;
+use atomig::{Atom, Atomic};
+use derive_more::IsVariant;
 pub use worker_opts::WorkerOpts;
+#[derive(Atom, IsVariant, Default, Debug)]
+#[repr(u8)]
+pub(crate) enum WorkerState {
+    Active,
+    #[default]
+    Idle,
+    Closed,
+}
 pub(crate) use worker_opts::MIN_DELAY_MS_LIMIT;
 #[derive(Clone, Debug)]
 pub struct Worker<D, R, P> {
@@ -48,7 +58,7 @@ pub struct Worker<D, R, P> {
     processor: Arc<WorkerCallback<D, R, P>>,
     pub opts: WorkerOpts,
     pub cancellation_token: CancellationToken,
-    active: Arc<AtomicBool>,
+    state: Arc<Atomic<WorkerState>>,
     processing: ProcessingQueue,
     stalled_check_timer: Timer,
     extend_lock_timer: Timer,
@@ -132,7 +142,7 @@ impl<
             stalled_check_timer,
             extend_lock_timer,
             opts,
-            active: Arc::default(),
+            state: Arc::default(),
             id,
             queue,
             jobs_in_progress,
@@ -150,8 +160,15 @@ impl<
     }
 
     pub fn is_running(&self) -> bool {
-        self.active.load(std::sync::atomic::Ordering::Acquire)
+        self.state
+            .load(std::sync::atomic::Ordering::Acquire)
+            .is_active()
             && !self.cancellation_token.is_cancelled()
+    }
+    pub fn is_idle(&self) -> bool {
+        self.state
+            .load(std::sync::atomic::Ordering::Acquire)
+            .is_idle()
     }
     pub fn run(&self) -> KioResult<()> {
         if self.is_running() {
@@ -169,20 +186,24 @@ impl<
             self.active_job_count.clone(),
             self.processor.clone(),
             self.queue.clone(),
-            self.active.clone(),
+            self.state.clone(),
             self.continue_notifier.clone(),
             self.extend_lock_timer.clone(),
             self.stalled_check_timer.clone(),
         );
         let main = main_loop(params);
         tokio::spawn(main.boxed());
-        self.active
-            .store(true, std::sync::atomic::Ordering::Release);
+        self.state
+            .store(WorkerState::Active, std::sync::atomic::Ordering::Release);
 
         Ok(())
     }
     pub fn closed(&self) -> bool {
         self.cancellation_token.is_cancelled()
+            && self
+                .state
+                .load(std::sync::atomic::Ordering::AcqRel)
+                .is_closed()
     }
     /// Stops the worker from running (adding more jobs to run)
     /// If true is passed as an argument, all actively running jobs are stopped too.
@@ -194,8 +215,8 @@ impl<
         self.extend_lock_timer.stop();
         self.cancellation_token.cancel();
 
-        self.active
-            .store(false, std::sync::atomic::Ordering::Release);
+        self.state
+            .store(WorkerState::Closed, std::sync::atomic::Ordering::Release);
         if stop_active_jobs {
             self.jobs_in_progress.iter().for_each(|pair| {
                 let (job, _, current_handle) = pair.value();
