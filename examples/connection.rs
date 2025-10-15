@@ -61,7 +61,7 @@ async fn main() -> KioResult<()> {
             }
         }
     };
-    queue.on_all_events(event_listener).await;
+    queue.on_all_events(event_listener);
 
     let count = 2;
     let repeats = 2;

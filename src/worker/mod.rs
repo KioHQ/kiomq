@@ -211,19 +211,19 @@ impl<
         }
     }
 
-    pub async fn on<F, C>(&self, event: JobState, callback: C) -> Uuid
+    pub fn on<F, C>(&self, event: JobState, callback: C) -> Uuid
     where
         C: Fn(EventParameters<D, R, P>) -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + Sync + 'static,
     {
-        self.queue.on(event, callback).await
+        self.queue.on(event, callback)
     }
-    pub async fn on_all_events<F, C>(&self, callback: C) -> Uuid
+    pub fn on_all_events<F, C>(&self, callback: C) -> Uuid
     where
         C: Fn(EventParameters<D, R, P>) -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + Sync + 'static,
     {
-        self.queue.on_all_events(callback).await
+        self.queue.on_all_events(callback)
     }
     pub fn remove_event_listener(&self, id: Uuid) -> Option<Uuid> {
         self.queue.remove_event_listener(id)
