@@ -19,6 +19,7 @@ derive_more = { version = "2.0.1", features = [
   "from",
   "debug",
   "from_str",
+  "is_variant",
 ] }
 dotenv = "0.15.0"
 futures = { version = "0.3.31", features = ["executor"] }

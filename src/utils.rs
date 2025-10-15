@@ -1,7 +1,7 @@
 use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo, JobError, QueueError};
 use crate::events::QueueStreamEvent;
 use crate::timer::Timer;
-use crate::worker::{JobMap, ProcessingQueue, WorkerCallback, MIN_DELAY_MS_LIMIT};
+use crate::worker::{JobMap, ProcessingQueue, WorkerCallback, WorkerState, MIN_DELAY_MS_LIMIT};
 use crate::{
     utils, EventEmitter, EventParameters, FailedDetails, JobOptions, JobState, JobToken, KioError,
     QueueEventMode, Trace, WorkerOpts,
@@ -264,7 +264,7 @@ type MainLoopParams<D, R, P> = (
     Arc<AtomicUsize>,
     Arc<WorkerCallback<D, R, P>>,
     Arc<Queue<D, R, P>>,
-    Arc<AtomicBool>,
+    Arc<atomig::Atomic<WorkerState>>,
     Arc<Notify>,
     Timer,
     Timer,
@@ -290,7 +290,7 @@ where
         active_job_count,
         processor,
         queue,
-        is_active,
+        worker_state,
         paused_here,
         extend_lock_timer,
         stall_timer,
@@ -308,6 +308,7 @@ where
     let worker_id = id;
     let to_pause = Arc::new(AtomicBool::default());
     let pause_schedular = to_pause.clone();
+    let worker_state_clone = worker_state.clone();
     tokio::spawn(
         async move {
             while !cancel_token.is_cancelled() {
@@ -325,7 +326,6 @@ where
                         let handle = entry.value();
                         let id = entry.key();
                         handle.abort();
-                        //dbg!(job_id, handle);
                         queue_clone
                             .update_processing_count(false, worker_id, job_id, state)
                             .await?;
@@ -335,9 +335,11 @@ where
                     println!("pausing scheduler loop");
                     extend_lock_timer.pause();
                     stall_timer.pause();
+                    worker_state_clone.store(WorkerState::Idle, Ordering::Release);
                     notifer.notified().await;
                     extend_lock_timer.resume();
                     stall_timer.resume();
+                    worker_state_clone.store(WorkerState::Active, Ordering::Release);
                 }
                 tokio::task::yield_now().await;
             }
@@ -411,7 +413,12 @@ where
         tokio::task::yield_now().await;
     }
     if cancellation_token.is_cancelled() {
-        is_active.compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed);
+        worker_state.compare_exchange(
+            WorkerState::Active,
+            WorkerState::Closed,
+            Ordering::Acquire,
+            Ordering::Relaxed,
+        );
     }
     Ok(())
 }
