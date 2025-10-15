@@ -817,14 +817,14 @@ impl<
     pub async fn emit(&self, event: JobState, data: EventParameters<D, R, P>) {
         self.emitter.emit(event, data).await
     }
-    pub async fn on<F, C>(&self, event: JobState, callback: C) -> Uuid
+    pub fn on<F, C>(&self, event: JobState, callback: C) -> Uuid
     where
         C: Fn(EventParameters<D, R, P>) -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + Sync + 'static,
     {
         self.emitter.on(event, callback)
     }
-    pub async fn on_all_events<F, C>(&self, callback: C) -> Uuid
+    pub fn on_all_events<F, C>(&self, callback: C) -> Uuid
     where
         C: Fn(EventParameters<D, R, P>) -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + Sync + 'static,

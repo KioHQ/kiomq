@@ -83,22 +83,21 @@ async fn main() -> KioResult<()> {
     let worker = Worker::new(&queue, processor, Some(opts))?;
     let updating_metrics = queue.current_metrics.clone();
 
-    worker
-        .on_all_events(move |event| async move {
-            if let EventParameters::Completed {
-                job,
-                prev_state: _,
-                result,
-            } = event
-            {
-                let id = job.id.unwrap();
-                let completed_in =
-                    (job.finished_on.unwrap() - job.processed_on.unwrap()).num_milliseconds();
-                let size = result.processed_size;
-                println!(" completed job {id}  for {size:?} in {completed_in} mills");
-            }
-        })
-        .await;
+    worker.on_all_events(move |event| async move {
+        if let EventParameters::Completed {
+            job,
+            prev_state: _,
+            result,
+        } = event
+        {
+            let id = job.id.unwrap();
+            let completed_in =
+                (job.finished_on.unwrap() - job.processed_on.unwrap()).num_milliseconds();
+            let size = result.processed_size;
+            println!(" completed job {id}  for {size:?} in {completed_in} mills");
+        }
+    });
+
     worker.run()?;
     queue.bulk_add_only(iter).await?;
 
