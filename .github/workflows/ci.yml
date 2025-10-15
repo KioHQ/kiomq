@@ -63,7 +63,7 @@ jobs:
       - name: Run tests
         env:
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
-        run: cargo nextest run --release
+        run: cargo nextest run 
   fmt:
     name: Rustfmt
     env:
