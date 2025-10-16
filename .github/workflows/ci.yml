@@ -34,9 +34,21 @@ jobs:
 
   test:
     name: Test Suite
-    env:
-      REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+    # env:
+    #   REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
     runs-on: ubuntu-latest
+    services:
+      keydb:
+        image: eqalpha/keydb:x86_64_v6.3.4
+        #env:
+        #  REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "keydb-cli  ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v1
       - uses: actions-rs/toolchain@v1
@@ -48,26 +60,28 @@ jobs:
         id: cpu-cores
       - name: Log of cpu cores
         run: echo ${{ steps.cpu-cores.outputs.count }}
-      - name: Start Redis
-        uses: supercharge/redis-github-action@1.7.0
-        with:
-          redis-version: 7
-          redis-password: ${{ secrets.REDIS_PASSWORD }}
-      - name: Install cargo nextest
-        uses: taiki-e/install-action@nextest
-      - uses: actions/cache@v3
+      - name: Cache Cargo
+        uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-clippy
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Cache cargo-nextest
+        id: cache-nextest
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-nextest
+          key: nextest-${{ runner.os }}-v0
+      - name: Install cargo nextest
+        uses: taiki-e/install-action@nextest
       - name: Run tests
-        env:
-          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
-        run: cargo nextest run
+        #env:
+        #REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+        run: cargo nextest run --all --locked   --fail-fast --no-fail-fast -- --skip worker
   fmt:
     name: Rustfmt
     env:
