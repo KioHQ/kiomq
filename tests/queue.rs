@@ -12,7 +12,7 @@ mod queue {
         }
         config
     });
-    #[tokio_shared_rt::test(shared)]
+    #[tokio::test]
     async fn add_and_fetch_job_single() -> KioResult<()> {
         let config = &CONFIG;
         let queue_opts = QueueOpts::default();
@@ -33,7 +33,7 @@ mod queue {
         queue.obliterate().await?;
         Ok(())
     }
-    #[tokio_shared_rt::test(shared)]
+    #[tokio::test]
     async fn add_bulk_jobs() -> KioResult<()> {
         let config = &CONFIG;
         let queue_opts = QueueOpts::default();
@@ -51,7 +51,7 @@ mod queue {
         queue.obliterate().await?;
         Ok(())
     }
-    #[tokio_shared_rt::test(shared)]
+    #[tokio::test]
     async fn obliterate() -> KioResult<()> {
         let config = &CONFIG;
         let queue_opts = QueueOpts::default();
@@ -74,7 +74,7 @@ mod queue {
         );
         Ok(())
     }
-    #[tokio_shared_rt::test(shared)]
+    #[tokio::test]
     async fn add_delayed_jobs() -> KioResult<()> {
         let config = &CONFIG;
         let queue_opts = QueueOpts::default();
@@ -102,7 +102,7 @@ mod queue {
         queue.obliterate().await?;
         Ok(())
     }
-    #[tokio_shared_rt::test(shared)]
+    #[tokio::test]
     async fn add_prioritized() -> KioResult<()> {
         let config = &CONFIG;
         let queue_opts = QueueOpts::default();
@@ -127,7 +127,7 @@ mod queue {
         queue.obliterate().await?;
         Ok(())
     }
-    #[tokio_shared_rt::test(shared)]
+    #[tokio::test]
     async fn pause_and_resume() -> KioResult<()> {
         let config = &CONFIG;
         let name = Uuid::new_v4().to_string();
