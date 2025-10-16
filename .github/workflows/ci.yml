@@ -43,7 +43,11 @@ jobs:
         with:
           toolchain: stable
           override: true
-
+      - name: fetch  CPU cores
+        uses: SimenB/github-actions-cpu-cores@v2
+        id: cpu-cores
+      - name: Log of cpu cores
+        run: echo ${{ steps.cpu-cores.outputs.count }}
       - name: Start Redis
         uses: supercharge/redis-github-action@1.7.0
         with:
@@ -63,7 +67,7 @@ jobs:
       - name: Run tests
         env:
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
-        run: cargo nextest run 
+        run: cargo nextest run
   fmt:
     name: Rustfmt
     env:
