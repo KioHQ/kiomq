@@ -13,7 +13,7 @@ mod worker {
         }
         config
     });
-    #[tokio_shared_rt::test(shared)]
+    #[tokio::test(flavor = "multi_thread")]
     async fn run_jobs_to_completion() -> KioResult<()> {
         let config = &CONFIG;
         let queue_opts = QueueOpts::default();
@@ -43,7 +43,8 @@ mod worker {
         queue.obliterate().await?;
         Ok(())
     }
-    #[tokio_shared_rt::test(shared)]
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn run_delayed_jobs() -> KioResult<()> {
         use crossbeam_queue::ArrayQueue;
         let config = &CONFIG;
@@ -112,8 +113,7 @@ mod worker {
         }
         Ok(())
     }
-
-    #[tokio_shared_rt::test(shared)]
+    #[tokio::test(flavor = "multi_thread")]
     async fn pauses_and_resumes_when_queue_is_idle() -> KioResult<()> {
         use std::time::Duration;
         let config = &CONFIG;
@@ -145,7 +145,8 @@ mod worker {
         queue.obliterate().await?;
         Ok(())
     }
-    #[tokio_shared_rt::test(shared)]
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn run_prioritized_jobs_correctly() -> KioResult<()> {
         use crossbeam_queue::ArrayQueue;
         let config = &CONFIG;
