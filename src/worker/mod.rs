@@ -24,14 +24,13 @@ use std::{
 use uuid::Uuid;
 mod worker_opts;
 use crate::error::WorkerError;
+use crate::events::{EventEmitter, EventParameters};
 use crossbeam_skiplist::SkipMap;
 use tokio::{
     sync::Notify,
     task::{AbortHandle, JoinHandle},
 };
 use tokio_util::sync::CancellationToken;
-mod worker_events;
-use crate::events::{EventEmitter, EventParameters};
 type JobMeta<D, R, P> = (Job<D, R, P>, JobToken, AtomicU64);
 pub(crate) type JobMap<D, R, P> = Arc<SkipMap<u64, JobMeta<D, R, P>>>;
 type Task = JoinHandle<KioResult<()>>;
@@ -68,6 +67,7 @@ pub struct Worker<D, R, P> {
     continue_notifier: Arc<Notify>,
 }
 use deadpool_redis::Connection;
+mod processor_types;
 pub(crate) type WorkerCallback<D, R, P> =
     dyn Fn(Connection, Job<D, R, P>) -> BoxFuture<'static, KioResult<R>> + Send + 'static + Sync;
 
