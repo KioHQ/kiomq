@@ -108,7 +108,6 @@ async fn main() -> KioResult<()> {
     if worker.closed() {
         queue.obliterate().await?;
     }
-    dbg!(queue.current_metrics);
     Ok(())
 }
 #[framed]
@@ -117,7 +116,7 @@ async fn process_callback(
     mut job: Job<i32, i32, i32>,
 ) -> Result<i32, std::io::Error> {
     let progress = job.progress.unwrap_or_default();
-    let _ = job.update_progress(progress + 1, &mut con).await;
+    let _ = job.update_progress(progress + 1, &mut con);
     //let id: u64 = job.id.unwrap_or_default().parse().unwrap_or_default();
     //if id % 2 == 0 && job.attempts_made < job.opts.attempts - 1 {
     //    //uncomment the line below to test to catching panics
