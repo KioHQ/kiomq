@@ -1,19 +1,25 @@
+use async_backtrace::Location as LocationTrace;
 use futures::future::{Future, FutureExt};
 use std::cell::RefCell;
-use std::error::Error;
 use std::panic::Location;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::LazyLock;
 use std::sync::Mutex;
-
-use async_backtrace::Location as LocationTrace;
+use tokio::task::JoinError;
 type Backtrace = Option<Box<[LocationTrace]>>;
-
+use thiserror::Error;
 #[derive(Debug)]
 pub enum CaughtError {
     Panic(CaughtPanicInfo),
-    Error(Box<dyn Error + Send>, Backtrace),
+    Error(Box<dyn std::error::Error + Send>, Backtrace),
+    JoinError(JoinError),
 }
+impl From<JoinError> for CaughtError {
+    fn from(value: JoinError) -> Self {
+        Self::JoinError(value)
+    }
+}
+
 #[derive(Debug)]
 pub struct CaughtPanicInfo {
     pub payload: String,
@@ -80,7 +86,7 @@ impl BacktraceCatcher {
     where
         F: Future<Output = Result<T, E>> + Send,
         T: Send,
-        E: Error + Send + 'static,
+        E: std::error::Error + Send + 'static,
     {
         static PANIC_INFO: LazyLock<Mutex<Option<CaughtPanicInfo>>> = LazyLock::new(Mutex::default);
 

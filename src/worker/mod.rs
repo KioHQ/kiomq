@@ -2,6 +2,7 @@ use crate::{
     error::{BacktraceCatcher, CaughtError, CaughtPanicInfo},
     job, queue,
     timer::Timer,
+    worker::processor_types::SyncFn,
     Job, JobState, JobToken, KioError, KioResult, Queue,
 };
 
@@ -54,7 +55,7 @@ pub struct Worker<D, R, P> {
     queue: Arc<Queue<D, R, P>>,
     jobs_in_progress: JobMap<D, R, P>,
     #[debug(skip)]
-    processor: Arc<WorkerCallback<D, R, P>>,
+    processor: WorkerCallback<D, R, P>,
     pub opts: WorkerOpts,
     pub cancellation_token: CancellationToken,
     state: Arc<Atomic<WorkerState>>,
@@ -68,8 +69,8 @@ pub struct Worker<D, R, P> {
 }
 use deadpool_redis::Connection;
 mod processor_types;
-pub(crate) type WorkerCallback<D, R, P> =
-    dyn Fn(Connection, Job<D, R, P>) -> BoxFuture<'static, KioResult<R>> + Send + 'static + Sync;
+use processor_types::Callback;
+pub(crate) type WorkerCallback<D, R, P> = Callback<D, R, P>;
 
 impl<
         D: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
@@ -77,15 +78,47 @@ impl<
         P: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
     > Worker<D, R, P>
 {
-    pub fn new<C, F, E>(
+    pub fn new_sync<C, E>(
         queue: &Queue<D, R, P>,
         processor: C,
         worker_opts: Option<WorkerOpts>,
     ) -> KioResult<Self>
     where
         KioError: From<E>,
-        C: Fn(Connection, Job<D, R, P>) -> F + Send + 'static + Sync,
-        F: Future<Output = Result<R, E>> + Send + 'static,
+        C: Fn(redis::Connection, Job<D, R, P>) -> Result<R, E> + Send + Sync + 'static,
+        P: Send + Sync + 'static,
+        R: Send + Sync + 'static,
+        D: Send + Sync + 'static,
+        E: std::error::Error + Send + 'static,
+    {
+        Self::new::<C, SyncFn<C, D, R, P, E>, E>(queue, processor, worker_opts)
+    }
+    pub fn new_async<C, Fut, E>(
+        queue: &Queue<D, R, P>,
+        processor: C,
+        worker_opts: Option<WorkerOpts>,
+    ) -> KioResult<Self>
+    where
+        KioError: From<E>,
+        C: Fn(Connection, Job<D, R, P>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<R, E>> + Send + 'static,
+        P: Send + Sync + 'static,
+        R: Send + Sync + 'static,
+        D: Send + Sync + 'static,
+        E: std::error::Error + Send + 'static,
+    {
+        use processor_types::AsyncFn;
+        Self::new::<C, AsyncFn<C, D, R, P, E>, E>(queue, processor, worker_opts)
+    }
+    fn new<C, F, E>(
+        queue: &Queue<D, R, P>,
+        processor: C,
+        worker_opts: Option<WorkerOpts>,
+    ) -> KioResult<Self>
+    where
+        KioError: From<E>,
+        C: Into<F>,
+        Callback<D, R, P>: From<F>,
         P: Send + Sync + 'static,
         R: Send + Sync + 'static,
         D: Send + Sync + 'static,
@@ -94,10 +127,9 @@ impl<
         let queue = Arc::new(queue.clone());
         let pool = queue.conn_pool.clone();
         let jobs_in_progress: JobMap<_, _, _> = Arc::new(SkipMap::new());
-        let callback = move |conn: Connection, job: Job<D, R, P>| {
-            let fut = async_backtrace::frame!(processor(conn, job));
-            fut.map_err(|e| e.into()).boxed()
-        };
+        let f: F = processor.into();
+        let callback = Callback::from(f);
+
         let id = Uuid::new_v4();
         let mut opts = worker_opts.unwrap_or_default();
         let queue_clone = queue.clone();
@@ -146,7 +178,7 @@ impl<
             id,
             queue,
             jobs_in_progress,
-            processor: Arc::new(callback),
+            processor: callback,
             cancellation_token: CancellationToken::new(),
             processing: Arc::default(),
             mini_block_timout: 10000, // 10s

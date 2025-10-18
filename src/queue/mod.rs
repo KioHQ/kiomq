@@ -59,6 +59,7 @@ pub struct Queue<D, R, P> {
     pub(crate) backoff: BackOff,
     pub(crate) worker_notifier: Arc<Notify>,
     pub pause_workers: Arc<AtomicBool>,
+    redis_client: redis::Client,
 }
 
 impl<
@@ -111,6 +112,8 @@ impl<
         let pause_workers_clone = pause_workers.clone();
         let event_mode_clone = event_mode.clone();
         let connection_info = cfg.connection.clone().unwrap();
+        let client = redis::Client::open(connection_info)?;
+        let (mut sink, mut source) = client.get_async_pubsub().await?.split();
 
         let task: JoinHandle<KioResult<()>> = tokio::spawn(
             async move {
@@ -124,8 +127,6 @@ impl<
                 let c_group: () = connection
                     .xgroup_create_mkstream(&stream_key, &consumer_group, "$")
                     .await?;
-                let client = redis::Client::open(connection_info)?;
-                let (mut sink, mut source) = client.get_async_pubsub().await?.split();
                 sink.subscribe(&stream_key).await?;
 
                 loop {
@@ -164,7 +165,9 @@ impl<
         );
         let stream_listener = Arc::new(task);
         //
+
         Ok(Self {
+            redis_client: client,
             event_mode,
             pause_workers,
             worker_notifier,
@@ -1116,6 +1119,10 @@ impl<D, R, P> Queue<D, R, P> {
             &self.pause_workers,
             &self.worker_notifier,
         );
+    }
+    pub fn get_blocking_connection(&self) -> KioResult<redis::Connection> {
+        let conn = self.redis_client.get_connection()?;
+        Ok(conn)
     }
     pub async fn get_metrics(&self) -> KioResult<JobMetrics> {
         let mut conn = self.conn_pool.get().await?;
