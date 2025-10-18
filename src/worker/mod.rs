@@ -19,7 +19,6 @@ use std::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize},
         Arc,
     },
-    thread::sleep,
     time::Duration,
 };
 use uuid::Uuid;
@@ -57,7 +56,7 @@ pub struct Worker<D, R, P> {
     #[debug(skip)]
     processor: WorkerCallback<D, R, P>,
     pub opts: WorkerOpts,
-    pub cancellation_token: CancellationToken,
+    cancellation_token: CancellationToken,
     state: Arc<Atomic<WorkerState>>,
     processing: ProcessingQueue,
     stalled_check_timer: Timer,
@@ -67,8 +66,8 @@ pub struct Worker<D, R, P> {
     active_job_count: Arc<AtomicUsize>,
     continue_notifier: Arc<Notify>,
 }
+use crate::utils::processor_types;
 use deadpool_redis::Connection;
-mod processor_types;
 use processor_types::Callback;
 pub(crate) type WorkerCallback<D, R, P> = Callback<D, R, P>;
 
@@ -162,7 +161,6 @@ impl<
             let opts = opts_clone.clone();
             async move {
                 if let Ok((failed, stalled)) = queue.make_stalled_jobs_wait(&opts).await {
-                    // do something with results
                     //dbg!(failed, stalled);
                 }
             }
