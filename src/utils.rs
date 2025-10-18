@@ -118,19 +118,33 @@ pub(crate) async fn process_job<D, R, P>(
     token: JobToken,
     jobs_in_progress: JobMap<D, R, P>,
     queue: Arc<Queue<D, R, P>>,
-    callback: Arc<WorkerCallback<D, R, P>>,
+    callback: WorkerCallback<D, R, P>,
 ) -> KioResult<()>
 where
     R: Serialize + Send + Clone + DeserializeOwned + 'static + Sync,
     D: Clone + Serialize + DeserializeOwned + Send + 'static,
     P: Clone + Serialize + DeserializeOwned + Send + 'static + Sync,
 {
+    use crate::worker::WorkerCallback;
     use crate::JobState;
     let job_id = job.id.unwrap_or_default();
     let conn = queue.conn_pool.get().await?;
     let attempts_made = job.attempts_made;
-    let callback = async_backtrace::frame!(callback(conn, job));
-    let returned = BacktraceCatcher::catch(callback).await;
+    let returned = match callback {
+        WorkerCallback::Sync(cb) => {
+            let blocking_conn = queue.get_blocking_connection()?;
+            async_backtrace::frame!(tokio::task::spawn_blocking(move || cb(blocking_conn, job)))
+                .await?
+                .map_err(|e| {
+                    let backtrace = async_backtrace::backtrace();
+                    CaughtError::Error(Box::new(e), backtrace)
+                })
+        }
+        WorkerCallback::Async(cb) => {
+            let callback = async_backtrace::frame!(cb(conn, job));
+            BacktraceCatcher::catch(callback).await
+        }
+    };
     match returned {
         Ok(result) => {
             let ts = Utc::now().timestamp_micros();
@@ -172,6 +186,7 @@ where
                     location,
                 }) => (payload, backtrace),
                 CaughtError::Error(error, backtrace) => (error.to_string(), backtrace),
+                CaughtError::JoinError(join_error) => (join_error.to_string(), None),
             };
             let backtrace: Option<Vec<String>> =
                 backtrace.map(|trace| trace.iter().map(|loc| loc.to_string()).collect());
@@ -262,7 +277,7 @@ type MainLoopParams<D, R, P> = (
     Arc<AtomicU64>,
     JobMap<D, R, P>,
     Arc<AtomicUsize>,
-    Arc<WorkerCallback<D, R, P>>,
+    WorkerCallback<D, R, P>,
     Arc<Queue<D, R, P>>,
     Arc<atomig::Atomic<WorkerState>>,
     Arc<Notify>,

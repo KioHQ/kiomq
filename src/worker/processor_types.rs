@@ -1,23 +1,71 @@
-//pub(crate) type WorkerCallback<D, R, P> =
-//    dyn Fn(Connection, Job<D, R, P>) -> BoxFuture<'static, KioResult<R>> + Send + 'static + Sync;
-use futures::future::{BoxFuture, Future, FutureExt};
+use crate::KioError;
+use futures::{
+    future::{BoxFuture, Future, FutureExt},
+    TryFutureExt,
+};
+use std::marker::PhantomData;
 
-use crate::{worker::WorkerCallback, Job};
-use deadpool_redis::Connection;
-type SyncCallback<D, R, P, E> =
-    dyn Fn(Connection, Job<D, R, P>) -> Result<R, E> + Send + Sync + 'static;
-type AsyncCallback<D, R, P, E> =
-    dyn Fn(Connection, Job<D, R, P>) -> BoxFuture<'static, Result<R, E>> + Send + Sync + 'static;
+use crate::{worker::WorkerCallback, Job, KioResult};
+use deadpool_redis::Connection as AsyncConnection;
+use redis::Connection;
+use std::sync::Arc;
+type SyncCallback<D, R, P> =
+    dyn Fn(Connection, Job<D, R, P>) -> KioResult<R> + Send + Sync + 'static;
+type AsyncCallback<D, R, P> = dyn Fn(AsyncConnection, Job<D, R, P>) -> BoxFuture<'static, KioResult<R>>
+    + Send
+    + Sync
+    + 'static;
+
 /// An enum representing both sync and async processors
-pub(crate) enum Callback<D, R, P, E> {
-    ASync(Box<AsyncCallback<D, R, P, E>>),
-    Sync(Box<SyncCallback<D, R, P, E>>),
+#[derive(Clone)]
+pub enum Callback<D, R, P> {
+    Async(Arc<AsyncCallback<D, R, P>>),
+    Sync(Arc<SyncCallback<D, R, P>>),
 }
-impl<T, D, R, P, E> From<T> for Callback<D, R, P, E>
+pub struct SyncFn<F, D, R, P, E>(pub F, PhantomData<(D, R, P, E)>);
+pub struct AsyncFn<F, D, R, P, E>(pub F, PhantomData<(D, R, P, E)>);
+
+impl<F, D, R, P, E> From<SyncFn<F, D, R, P, E>> for Callback<D, R, P>
 where
-    T: Fn(Connection, Job<D, R, P>) -> Result<R, E> + Send + Sync + 'static,
+    F: Fn(Connection, Job<D, R, P>) -> Result<R, E> + Send + Sync + 'static,
+    KioError: From<E>,
+    E: std::error::Error + Send + 'static,
 {
-    fn from(value: T) -> Self {
-        Self::Sync(Box::new(value))
+    fn from(SyncFn(f, _): SyncFn<F, D, R, P, E>) -> Self {
+        let callback = move |con: Connection, job: Job<_, _, _>| f(con, job).map_err(|e| e.into());
+        Self::Sync(Arc::new(callback))
+    }
+}
+
+impl<F, Fut, D, R, P, E> From<AsyncFn<F, D, R, P, E>> for Callback<D, R, P>
+where
+    F: Fn(AsyncConnection, Job<D, R, P>) -> Fut + Send + Sync + 'static,
+    KioError: From<E>,
+    Fut: Future<Output = Result<R, E>> + Send + 'static,
+    E: std::error::Error + Send + 'static,
+{
+    fn from(AsyncFn(f, _): AsyncFn<F, D, R, P, E>) -> Self {
+        let callback = move |conn: AsyncConnection, job: Job<D, R, P>| {
+            let fut = async_backtrace::frame!(f(conn, job));
+            fut.map_err(|e| e.into()).boxed()
+        };
+        Self::Async(Arc::new(callback))
+    }
+}
+impl<F, D, R, P, E> From<F> for SyncFn<F, D, R, P, E>
+where
+    F: Fn(Connection, Job<D, R, P>) -> Result<R, E> + Send + Sync + 'static,
+{
+    fn from(value: F) -> Self {
+        Self(value, PhantomData)
+    }
+}
+impl<F, Fut, D, R, P, E> From<F> for AsyncFn<F, D, R, P, E>
+where
+    F: Fn(AsyncConnection, Job<D, R, P>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<R, E>> + Send + 'static,
+{
+    fn from(value: F) -> Self {
+        Self(value, PhantomData)
     }
 }
