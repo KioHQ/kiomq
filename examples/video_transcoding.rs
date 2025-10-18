@@ -1,12 +1,10 @@
 use deadpool_redis::Config;
-use futures::FutureExt;
 use kio_mq::{
-    fetch_redis_pass, framed, EventParameters, Job, KioError, KioResult, Queue, Worker, WorkerOpts,
+    fetch_redis_pass, framed, EventParameters, Job, KioResult, Queue, Worker, WorkerOpts,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use tokio::sync::mpsc::Sender;
 type BoxedError = Box<dyn std::error::Error + Send>;
 use ffmpeg_sidecar::{
     command::FfmpegCommand,
@@ -102,51 +100,28 @@ async fn main() -> KioResult<()> {
 
     while !updating_metrics.all_jobs_completed() {}
     worker.close(true);
-    if !worker.is_running() {
+    if worker.closed() {
         queue.obliterate().await?;
     }
 
     Ok(())
 }
 
-enum Payload {
-    Progress(Progress),
-    Log(String),
-}
 #[framed]
 fn process_callback(
-    mut conn: redis::Connection,
-    mut job: Job<ProcessData, ReturnData, Progress>,
+    conn: redis::Connection,
+    job: Job<ProcessData, ReturnData, Progress>,
 ) -> KioResult<ReturnData> {
-    let data = job.data.clone();
-    let (sender, mut reciever) = tokio::sync::mpsc::channel(1000000000000);
-    //// task that recieves progress
-    //tokio::spawn(
-    //    async move {
-    //        while let Some(payload) = reciever.recv().await {
-    //            match payload {
-    //                Payload::Progress(ffmpeg_progress) => {
-    //                    job.update_progress(ffmpeg_progress, &mut conn).await?;
-    //                }
-    //                Payload::Log(ref _log) => {
-    //                    // TODO: do something with the logs here
-    //                }
-    //            }
-    //        }
-    //        Ok::<(), KioError>(())
-    //    }
-    //    .boxed(),
-    //);
-    transcode_video(data, sender)
+    transcode_video(conn, job)
 }
 
 #[framed]
 fn transcode_video(
-    data: Option<ProcessData>,
-    payload_sender: Sender<Payload>,
+    mut conn: redis::Connection,
+    mut job: Job<ProcessData, ReturnData, Progress>,
 ) -> KioResult<ReturnData> {
     use uuid::Uuid;
-    let data = data.unwrap_or_default();
+    let data = job.data.clone().unwrap_or_default();
     let input_path = data.path.to_str().expect("failed to extract");
 
     let size = data.size;
@@ -182,10 +157,7 @@ fn transcode_video(
                         current_progress.current_duration = parsed_duration;
                     }
                 }
-
-                payload_sender
-                    .blocking_send(Payload::Progress(current_progress))
-                    .map_err(std::io::Error::other)?;
+                job.update_progress(current_progress, &mut conn)?;
             }
 
             FfmpegEvent::Log(log_level, msg) => {
@@ -193,11 +165,8 @@ fn transcode_video(
                     return Err(std::io::Error::other(msg).into());
                 }
                 if !msg.is_empty() {
-                    let msg = msg.trim_ascii();
-                    let log = format!("{log_level:?}: {msg}");
-                    payload_sender
-                        .blocking_send(Payload::Log(log))
-                        .map_err(std::io::Error::other)?;
+                    //let msg = msg.trim_ascii();
+                    //let log = format!("{log_level:?}: {msg}");
                 }
             }
 
