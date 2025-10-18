@@ -94,7 +94,7 @@ async fn main() -> KioResult<()> {
     let processor = |con: _, job: Job<_, _, _>| process_callback(con, job);
     //let _worker = Worker::new(&queue, processor, Some(opts.clone()))?;
     //let _worker = Worker::new(&queue, processor, Some(opts.clone()))?;
-    let worker = Worker::new(&queue, processor, Some(opts))?;
+    let worker = Worker::new_async(&queue, processor, Some(opts))?;
     let adding = Instant::now();
     queue.bulk_add_only(iterator).await?;
     println!("adding items took {:?}", adding.elapsed());

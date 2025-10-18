@@ -1,8 +1,7 @@
-use deadpool_redis::{Config, Connection};
+use deadpool_redis::Config;
 use futures::FutureExt;
 use kio_mq::{
-    fetch_redis_pass, frame, framed, EventParameters, Job, KioError, KioResult, Queue, Worker,
-    WorkerOpts,
+    fetch_redis_pass, framed, EventParameters, Job, KioError, KioResult, Queue, Worker, WorkerOpts,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -80,7 +79,7 @@ async fn main() -> KioResult<()> {
 
         ..Default::default()
     };
-    let worker = Worker::new(&queue, processor, Some(opts))?;
+    let worker = Worker::new_sync(&queue, processor, Some(opts))?;
     let updating_metrics = queue.current_metrics.clone();
 
     worker.on_all_events(move |event| async move {
@@ -115,31 +114,30 @@ enum Payload {
     Log(String),
 }
 #[framed]
-async fn process_callback(
-    mut conn: Connection,
+fn process_callback(
+    mut conn: redis::Connection,
     mut job: Job<ProcessData, ReturnData, Progress>,
 ) -> KioResult<ReturnData> {
     let data = job.data.clone();
     let (sender, mut reciever) = tokio::sync::mpsc::channel(1000000000000);
-    // task that recieves progress
-    tokio::spawn(
-        async move {
-            while let Some(payload) = reciever.recv().await {
-                match payload {
-                    Payload::Progress(ffmpeg_progress) => {
-                        job.update_progress(ffmpeg_progress, &mut conn).await?;
-                    }
-                    Payload::Log(ref _log) => {
-                        // TODO: do something with the logs here
-                    }
-                }
-            }
-            Ok::<(), KioError>(())
-        }
-        .boxed(),
-    );
-    let task = frame!(tokio::task::spawn_blocking(move || transcode_video(data, sender)).boxed());
-    task.await?
+    //// task that recieves progress
+    //tokio::spawn(
+    //    async move {
+    //        while let Some(payload) = reciever.recv().await {
+    //            match payload {
+    //                Payload::Progress(ffmpeg_progress) => {
+    //                    job.update_progress(ffmpeg_progress, &mut conn).await?;
+    //                }
+    //                Payload::Log(ref _log) => {
+    //                    // TODO: do something with the logs here
+    //                }
+    //            }
+    //        }
+    //        Ok::<(), KioError>(())
+    //    }
+    //    .boxed(),
+    //);
+    transcode_video(data, sender)
 }
 
 #[framed]
