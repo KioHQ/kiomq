@@ -13,6 +13,7 @@ use serde::{
     Deserialize, Serialize,
 };
 
+use crate::utils::connection_types::ConnectionTypes;
 mod backoff;
 mod delay;
 mod repeat;
@@ -227,11 +228,14 @@ impl<D, R, P> Job<D, R, P> {
         self.delay = opts.delay.as_diff_ms(self.ts) as u64;
         self.opts = opts.clone();
     }
-    pub async fn update_progress(&mut self, value: P, conn: &mut Connection) -> Result<(), KioError>
+    pub fn update_progress<'a, C>(&mut self, value: P, conn: C) -> Result<(), KioError>
     where
         P: Serialize + Clone,
+        C: Into<ConnectionTypes<'a>>,
     {
         use crate::QueueEventMode;
+        use tokio::runtime::Handle;
+        let mut conn: ConnectionTypes<'a> = conn.into();
         if let (Some(queue_name), Some(id)) = (&self.queue_name, &self.id) {
             let job_key = format!("{queue_name}:{id}");
             let mut pipeline = redis::pipe();
@@ -241,8 +245,16 @@ impl<D, R, P> Job<D, R, P> {
             pipeline.hset(job_key, "progress", &progress_str);
             // check for the queue_event_mode
             let queue_meta_key = format!("{queue_name}:meta");
-            let event_mode: Option<QueueEventMode> =
-                conn.hget(&queue_meta_key, "event_mode").await?;
+            let event_mode: Option<QueueEventMode> = match conn {
+                ConnectionTypes::Sync(ref mut sync_conn) => {
+                    use redis::Commands;
+                    sync_conn.hget(&queue_meta_key, "event_mode")?
+                }
+                ConnectionTypes::Async(ref mut connection) => tokio::task::block_in_place(|| {
+                    let handle = Handle::current();
+                    handle.block_on(async { connection.hget(&queue_meta_key, "event_mode").await })
+                })?,
+            };
             let mode = event_mode.unwrap_or_default();
             match mode {
                 QueueEventMode::PubSub => {
@@ -265,7 +277,13 @@ impl<D, R, P> Job<D, R, P> {
                     pipeline.xadd(&events_stream_key, "*", &items);
                 }
             }
-            let _: redis::Value = pipeline.query_async(conn).await?;
+            let _: redis::Value = match conn {
+                ConnectionTypes::Sync(connection) => pipeline.query(connection)?,
+                ConnectionTypes::Async(conn) => tokio::task::block_in_place(|| {
+                    let handle = Handle::current();
+                    handle.block_on(async { pipeline.query_async(conn).await })
+                })?,
+            };
             self.progress = Some(value);
         }
         Ok(())

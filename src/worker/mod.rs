@@ -190,9 +190,11 @@ impl<
     }
 
     pub fn is_running(&self) -> bool {
-        self.state
+        (self
+            .state
             .load(std::sync::atomic::Ordering::Acquire)
             .is_active()
+            || self.is_idle())
             && !self.cancellation_token.is_cancelled()
     }
     pub fn is_idle(&self) -> bool {
@@ -201,7 +203,7 @@ impl<
             .is_idle()
     }
     pub fn run(&self) -> KioResult<()> {
-        if self.is_running() {
+        if self.is_running() && !self.is_idle() {
             return Err(WorkerError::WorkerAlreadyRunningWithId(self.id).into());
         }
         let handle = self.stalled_check_timer.run();
@@ -230,9 +232,9 @@ impl<
     }
     pub fn closed(&self) -> bool {
         self.cancellation_token.is_cancelled()
-            && self
+            || self
                 .state
-                .load(std::sync::atomic::Ordering::AcqRel)
+                .load(std::sync::atomic::Ordering::Acquire)
                 .is_closed()
     }
     /// Stops the worker from running (adding more jobs to run)
