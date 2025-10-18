@@ -23,7 +23,7 @@ mod worker {
         let processor = move |_conn, job: kio_mq::Job<i32, i32, i32>| async move {
             Ok::<i32, KioError>(job.data.unwrap())
         };
-        let worker = Worker::new(&queue, processor, None)?;
+        let worker = Worker::new_async(&queue, processor, None)?;
         worker.run()?;
         assert!(worker.is_running());
         let jobs = queue.bulk_add(job_iterator).await?;
@@ -83,7 +83,7 @@ mod worker {
         let processor = move |_conn, job: kio_mq::Job<i32, i32, i32>| async move {
             Ok::<i32, KioError>(job.data.unwrap())
         };
-        let worker = Worker::new(&queue, processor, None)?;
+        let worker = Worker::new_async(&queue, processor, None)?;
         worker.run()?;
         let jobs = queue.bulk_add(job_iterator).await?;
         assert!(worker.is_running());
@@ -124,7 +124,7 @@ mod worker {
         let processor = move |_conn, job: kio_mq::Job<i32, i32, i32>| async move {
             Ok::<i32, KioError>(job.data.unwrap())
         };
-        let worker = Worker::new(&queue, processor, None)?;
+        let worker = Worker::new_async(&queue, processor, None)?;
         worker.run()?;
         assert!(worker.is_running());
         queue.bulk_add(job_iterator).await?;
@@ -183,7 +183,7 @@ mod worker {
         let processor = move |_conn, job: kio_mq::Job<i32, i32, i32>| async move {
             Ok::<i32, KioError>(job.data.unwrap())
         };
-        let worker = Worker::new(&queue, processor, None)?;
+        let worker = Worker::new_async(&queue, processor, None)?;
         worker.run()?;
         let mut jobs = queue.bulk_add(job_iterator).await?;
         // wait for metrics to update
