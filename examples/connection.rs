@@ -63,7 +63,7 @@ async fn main() -> KioResult<()> {
     };
     queue.on_all_events(event_listener);
 
-    let count = 2;
+    let count = 10;
     let repeats = 2;
     use croner::Cron;
     let _cron_schedule: Cron = "1/2 * * * * *".parse()?;
@@ -71,10 +71,10 @@ async fn main() -> KioResult<()> {
         //use rand::Rng;
         //let priority = rand::rng().random_range(1..count); // ucomment to use  random priority
 
-        let priority = (count - _i) as u64; // ucomment to use a priority of count - index (job_id -1)
+        //let priority = (count - _i) as u64; // ucomment to use a priority of count - index (job_id -1)
         let mut job_opts = JobOptions {
             //delay: (100 * _i as i64).into(), // uncomment to add delay
-            priority, // uncomment to set priority
+            //priority, // uncomment to set priority
             ..Default::default()
         };
         if _i == 2 {
@@ -88,19 +88,19 @@ async fn main() -> KioResult<()> {
 
     let opts = WorkerOpts {
         autorun: true,
-        //concurrency: 1, // uncomment to use set concurrency
+        //concurrency: 100, // uncomment to use set concurrency
         ..Default::default()
     };
     let processor = |con: _, job: Job<_, _, _>| process_callback(con, job);
-    //let _worker = Worker::new(&queue, processor, Some(opts.clone()))?;
-    //let _worker = Worker::new(&queue, processor, Some(opts.clone()))?;
+    //let _worker = Worker::new_async(&queue, processor, Some(opts.clone()))?;
+    //let _worker = Worker::new_async(&queue, processor, Some(opts.clone()))?;
+    //let _worker = Worker::new_async(&queue, processor, Some(opts.clone()))?;
     let worker = Worker::new_async(&queue, processor, Some(opts))?;
     let adding = Instant::now();
     queue.bulk_add_only(iterator).await?;
     println!("adding items took {:?}", adding.elapsed());
-    //worker.run()?;
     let now = Instant::now();
-    while !queue.current_metrics.all_jobs_completed() {
+    while counter.load(std::sync::atomic::Ordering::Acquire) < count as usize {
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     dbg!(now.elapsed());
