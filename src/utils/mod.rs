@@ -326,6 +326,7 @@ where
     let to_pause = Arc::new(AtomicBool::default());
     let pause_schedular = to_pause.clone();
     let worker_state_clone = worker_state.clone();
+    let current_job_current = active_job_count.clone();
     tokio::spawn(
         async move {
             while !cancel_token.is_cancelled() {
@@ -343,6 +344,7 @@ where
                         let handle = entry.value();
                         let id = entry.key();
                         handle.abort();
+                        let count = current_job_current.fetch_sub(1, Ordering::AcqRel);
                         queue_clone
                             .update_processing_count(false, worker_id, job_id, state)
                             .await?;
@@ -368,7 +370,9 @@ where
 
     let now = Instant::now();
     while !cancellation_token.is_cancelled() {
-        while !cancellation_token.is_cancelled() && processing.len() < opts.concurrency {
+        while !cancellation_token.is_cancelled()
+            && active_job_count.load(Ordering::Acquire) < opts.concurrency
+        {
             let token_prefix = active_job_count.load(std::sync::atomic::Ordering::Acquire);
             let next_id = Uuid::new_v4();
             let token = JobToken(id, next_id, token_prefix as u64);
@@ -390,7 +394,7 @@ where
 
                 let state = job.state;
                 let callback = processor.clone();
-                active_job_count.fetch_add(1, Ordering::AcqRel);
+                let count = active_job_count.fetch_add(1, Ordering::AcqRel);
                 queue
                     .update_processing_count(true, worker_id, id, state)
                     .await?;
