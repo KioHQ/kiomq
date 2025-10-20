@@ -13,6 +13,7 @@ mod worker {
         }
         config
     });
+
     #[tokio::test(flavor = "multi_thread")]
     async fn run_jobs_to_completion() -> KioResult<()> {
         let config = &CONFIG;
@@ -41,6 +42,27 @@ mod worker {
             jobs.len() as u64,
         );
         queue.obliterate().await?;
+        Ok(())
+    }
+    #[tokio::test]
+    async fn errors_with_multiple_run_calls() -> KioResult<()> {
+        use kio_mq::WorkerError;
+        let config = &CONFIG;
+        let queue_opts = QueueOpts::default();
+        let name = Uuid::new_v4().to_string();
+        let queue = Queue::<i32, i32, i32>::new(None, &name, config, Some(queue_opts)).await?;
+        let processor = move |_conn, job: kio_mq::Job<i32, i32, i32>| async move {
+            Ok::<i32, KioError>(job.data.unwrap())
+        };
+        let worker = Worker::new_async(&queue, processor, None)?;
+        let id = worker.id;
+        worker.run()?;
+        let next_call = worker.run();
+        assert!(next_call.is_err());
+        if let Err(err) = next_call {
+            let _expected = KioError::WorkerError(WorkerError::WorkerAlreadyRunningWithId(id));
+            assert!(matches!(err, _expected))
+        }
         Ok(())
     }
 
