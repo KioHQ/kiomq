@@ -50,7 +50,7 @@ pub(crate) enum WorkerState {
 pub(crate) use worker_opts::MIN_DELAY_MS_LIMIT;
 #[derive(Clone, Debug)]
 pub struct Worker<D, R, P> {
-    id: Uuid,
+    pub id: Uuid,
     queue: Arc<Queue<D, R, P>>,
     jobs_in_progress: JobMap<D, R, P>,
     #[debug(skip)]
