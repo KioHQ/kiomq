@@ -6,24 +6,21 @@ A simple async background task queue based on Redis (inspired by BullMQ).
 
 ### Development Status
 
-1. Queue
-
+ #### Queue
 - [x] Creation of both (single and bulk) job(s)
 - [x] Pausing both the queue and workers(when idle)
 - [x] Delaying jobs with custom delay(even with cron)
 - [x] Priority Support
 - [x] Emitting Global Queue Events
 - [x] Cron scheduling for both initial delays and backoff
-
-2. Jobs
-
+      
+#### Jobs
 - [x] Serialisable directly from Redis
 - [x] Updating Progress whilst processing the job.
 - [x] Repeatable with Repeat Options
 - [x] Retryable on failure with Backoff Options
 
-3. Worker
-
+ ####  Worker
 - [x] Running jobs to completion
 - [x] Pause when the queue is idle and vice versa
 - [x] In-memory queue to run picked-up delayed jobs
@@ -38,4 +35,5 @@ Run tests using cargo as follows:
 ### License
 
 MIT License (MIT), see [LICENSE](LICENSE)
+
 
