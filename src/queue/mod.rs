@@ -30,8 +30,8 @@ use serde::de::{value, DeserializeOwned, Error};
 use serde::{ser, Deserialize, Serialize};
 mod options;
 
-pub(crate) use options::{CollectionSuffix, ProcessedResult};
-pub use options::{JobMetrics, QueueEventMode, QueueOpts, RetryOptions};
+pub(crate) use options::ProcessedResult;
+pub use options::{CollectionSuffix, JobMetrics, QueueEventMode, QueueOpts, RetryOptions};
 use redis::{
     self, pipe, AsyncCommands, FromRedisValue, JsonAsyncCommands, LposOptions, Pipeline,
     RedisResult, ToRedisArgs, Value,

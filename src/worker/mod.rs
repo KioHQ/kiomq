@@ -41,7 +41,7 @@ use derive_more::IsVariant;
 pub use worker_opts::WorkerOpts;
 #[derive(Atom, IsVariant, Default, Debug)]
 #[repr(u8)]
-pub(crate) enum WorkerState {
+pub enum WorkerState {
     Active,
     #[default]
     Idle,
@@ -57,7 +57,7 @@ pub struct Worker<D, R, P> {
     processor: WorkerCallback<D, R, P>,
     pub opts: WorkerOpts,
     cancellation_token: CancellationToken,
-    state: Arc<Atomic<WorkerState>>,
+    pub state: Arc<Atomic<WorkerState>>,
     processing: ProcessingQueue,
     stalled_check_timer: Timer,
     extend_lock_timer: Timer,
