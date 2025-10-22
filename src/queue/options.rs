@@ -23,7 +23,7 @@ pub enum ProcessedResult<R> {
 
 use derive_more::{Debug, Display};
 #[derive(Display, Serialize)]
-pub(crate) enum CollectionSuffix {
+pub enum CollectionSuffix {
     Active,    // (list)
     Completed, //Sorted Set
     Delayed,   // ZSET
