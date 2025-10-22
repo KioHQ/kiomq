@@ -36,16 +36,16 @@ jobs:
     name: Test Suite
     # env:
     #   REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
-    runs-on: ubuntu-latest
+    runs-on: buildjet-4vcpu-ubuntu-2204
     services:
-      keydb:
-        image: eqalpha/keydb:x86_64_v6.3.4
+      redis:
+        image: redis:latest    
         #env:
         #  REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
         ports:
           - 6379:6379
         options: >-
-          --health-cmd "keydb-cli  ping"
+          --health-cmd "redis-cli  ping"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 5
@@ -61,7 +61,7 @@ jobs:
       - name: Log of cpu cores
         run: echo ${{ steps.cpu-cores.outputs.count }}
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: buildjet/cache@v3
         with:
           path: |
             ~/.cargo/registry
@@ -72,16 +72,19 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Cache cargo-nextest
         id: cache-nextest
-        uses: actions/cache@v4
+        uses: buildjet/cache@v3
         with:
+          id: cache-nextest
           path: ~/.cargo/bin/cargo-nextest
           key: nextest-${{ runner.os }}-v0
+
       - name: Install cargo nextest
+        if: steps.cache-nextest.outputs.cache-hit != 'true'
         uses: taiki-e/install-action@nextest
       - name: Run tests
         #env:
         #REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
-        run: cargo nextest run --all --locked   --fail-fast --no-fail-fast -- --skip worker
+        run: cargo nextest run --all --locked   --fail-fast --no-fail-fast
   fmt:
     name: Rustfmt
     env:
