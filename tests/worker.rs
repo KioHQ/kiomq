@@ -188,14 +188,15 @@ mod worker {
         assert!(worker.is_idle());
         queue.add_job("test", 1, None).await?;
         // wait for new job to get picked up
-        while worker.is_idle() {}
+        while queue.get_metrics().await?.queue_has_work() {}
         assert!(!worker.is_idle());
         assert!(worker.is_running());
-        let metrics = queue.current_metrics.as_ref();
+        let metrics = queue.get_metrics().await?;
         assert_eq!(
             metrics.waiting.load(std::sync::atomic::Ordering::Acquire),
-            1,
+            0,
         );
+        assert_eq!(metrics.active.load(std::sync::atomic::Ordering::Acquire), 1);
         queue.obliterate().await?;
         Ok(())
     }
@@ -264,6 +265,8 @@ mod worker {
         let queue_opts = QueueOpts {
             remove_on_fail: Some(removal_opts),
             remove_on_complete: Some(removal_opts),
+            event_mode: Some(QueueEventMode::PubSub),
+
             ..Default::default()
         };
         let name = Uuid::new_v4().to_string();
@@ -280,7 +283,7 @@ mod worker {
                     result: _,
                 } = state
                 {
-                    let id = job.id.unwrap();
+                    let id = job.id.unwrap_or_default();
                     let _ = completed.push(id);
                 }
                 if let EventParameters::Failed {
@@ -306,7 +309,7 @@ mod worker {
         assert!(worker.is_running());
         let _jobs = queue.bulk_add(job_iterator).await?;
         // wait for metrics to update
-        while completed.len() < count as usize {}
+        while completed.len() != count as usize {}
         worker.close(false);
         let last_id = queue
             .current_metrics
