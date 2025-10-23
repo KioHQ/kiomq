@@ -39,7 +39,7 @@ jobs:
     runs-on: buildjet-4vcpu-ubuntu-2204
     services:
       redis:
-        image: redis:latest    
+        image: redis:latest
         #env:
         #  REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
         ports:
@@ -84,7 +84,7 @@ jobs:
       - name: Run tests
         #env:
         #REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
-        run: cargo nextest run --all --locked   --fail-fast --no-fail-fast
+        run: cargo nextest run  --locked --config-file ./.config/nextest.toml
   fmt:
     name: Rustfmt
     env:
