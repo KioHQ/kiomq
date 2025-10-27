@@ -27,8 +27,8 @@ static PC_COUNTER: AtomicU64 = AtomicU64::new(0);
 use tokio::sync::Mutex;
 #[derive(Clone, Debug)]
 pub struct RedisStore {
-    prefix: String,
-    name: String,
+    pub prefix: String,
+    pub name: String,
     consumer_group: String,
     consumer_name: String,
     stream_key: String,
@@ -108,10 +108,10 @@ where
         Ok(result)
     }
     fn queue_name(&self) -> &str {
-        self.name.as_ref()
+        &self.name
     }
     fn queue_prefix(&self) -> &str {
-        self.prefix.as_ref()
+        &self.prefix
     }
     fn update_job_progress(&self, job: &mut Job<D, R, P>, value: P) -> KioResult<()> {
         use crate::QueueEventMode;
