@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 async-backtrace = "0.2.7"
+async-trait = "0.1.89"
 atomig = { version = "0.4.3", features = ["derive", "serde"] }
 chrono = { version = "0.4.41", features = ["serde"] }
 croner = { version = "3.0.0", features = ["serde"] }
