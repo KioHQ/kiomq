@@ -115,28 +115,28 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
 // ---- UTIL FUNCTIONS for the worker
 
 #[async_backtrace::framed]
-pub(crate) async fn process_job<D, R, P>(
+pub(crate) async fn process_job<D, R, P, S>(
     task_sender: TaskToRemove,
     job: Job<D, R, P>,
     token: JobToken,
     jobs_in_progress: JobMap<D, R, P>,
-    queue: Arc<Queue<D, R, P>>,
-    callback: WorkerCallback<D, R, P>,
+    queue: Arc<Queue<D, R, P, S>>,
+    callback: WorkerCallback<D, R, P, S>,
 ) -> KioResult<()>
 where
     R: Serialize + Send + Clone + DeserializeOwned + 'static + Sync,
     D: Clone + Serialize + DeserializeOwned + Send + 'static,
     P: Clone + Serialize + DeserializeOwned + Send + 'static + Sync,
+    S: Clone + Store<D, R, P> + Send + 'static + Sync,
 {
     use crate::worker::WorkerCallback;
     use crate::JobState;
     let job_id = job.id.unwrap_or_default();
-    let conn = queue.conn_pool.get().await?;
     let attempts_made = job.attempts_made;
     let returned = match callback {
         WorkerCallback::Sync(cb) => {
-            let blocking_conn = queue.get_blocking_connection()?;
-            async_backtrace::frame!(tokio::task::spawn_blocking(move || cb(blocking_conn, job)))
+            let store = queue.store.clone();
+            async_backtrace::frame!(tokio::task::spawn_blocking(move || cb(store, job)))
                 .await?
                 .map_err(|e| {
                     let backtrace = async_backtrace::backtrace();
@@ -144,7 +144,8 @@ where
                 })
         }
         WorkerCallback::Async(cb) => {
-            let callback = async_backtrace::frame!(cb(conn, job));
+            let store = queue.store.clone();
+            let callback = async_backtrace::frame!(cb(store, job));
             BacktraceCatcher::catch(callback).await
         }
     };
@@ -239,8 +240,8 @@ where
     }
     Ok(())
 }
-pub(crate) async fn get_next_job<D, R, P>(
-    queue: &Queue<D, R, P>,
+pub(crate) async fn get_next_job<D, R, P, S>(
+    queue: &Queue<D, R, P, S>,
     token: JobToken,
     block_delay: u64,
     closed: bool,
@@ -251,6 +252,7 @@ where
     D: DeserializeOwned + Clone + Serialize + Send + 'static + Sync,
     R: DeserializeOwned + Clone + Serialize + Send + 'static + Sync,
     P: DeserializeOwned + Clone + Serialize + Send + 'static + Sync,
+    S: Clone + Store<D, R, P> + Send + 'static + Sync,
 {
     // handle pausing or closing;
     if closed {
@@ -272,7 +274,7 @@ where
     Ok(None)
 }
 
-type MainLoopParams<D, R, P> = (
+type MainLoopParams<D, R, P, S> = (
     Uuid,
     CancellationToken,
     ProcessingQueue,
@@ -280,8 +282,8 @@ type MainLoopParams<D, R, P> = (
     Arc<AtomicU64>,
     JobMap<D, R, P>,
     Arc<AtomicUsize>,
-    WorkerCallback<D, R, P>,
-    Arc<Queue<D, R, P>>,
+    WorkerCallback<D, R, P, S>,
+    Arc<Queue<D, R, P, S>>,
     Arc<atomig::Atomic<WorkerState>>,
     Arc<Notify>,
     Timer,
@@ -291,11 +293,12 @@ use tokio::task::{Id, JoinHandle};
 type TaskToRemove = Arc<SegQueue<(u64, u64, JobState)>>;
 pub(crate) type JobQueue = Arc<SegQueue<u64>>;
 #[async_backtrace::framed]
-pub(crate) async fn main_loop<D, R, P>(params: MainLoopParams<D, R, P>) -> KioResult<()>
+pub(crate) async fn main_loop<D, R, P, S>(params: MainLoopParams<D, R, P, S>) -> KioResult<()>
 where
     D: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
     R: Clone + DeserializeOwned + 'static + Serialize + Send + Sync,
     P: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
+    S: Clone + Store<D, R, P> + 'static + Send + Sync,
 {
     use std::sync::atomic::Ordering;
     let (
@@ -449,8 +452,8 @@ use chrono::TimeDelta;
 use redis::AsyncCommands;
 use std::time::{Duration, Instant};
 #[allow(clippy::too_many_arguments)]
-pub async fn promote_jobs<D, R, P>(
-    queue: &Queue<D, R, P>,
+pub async fn promote_jobs<D, R, P, S: Store<D, R, P> + Send + 'static + Clone>(
+    queue: &Queue<D, R, P, S>,
     date_time: Dt,
     mut interval_ms: i64,
     job_queue: JobQueue,

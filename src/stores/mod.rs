@@ -7,13 +7,10 @@ use crate::{
 };
 mod redis_store;
 use async_trait::async_trait;
-use erased_serde::Serialize;
+pub use redis_store::RedisStore;
 use tokio::{sync::Notify, task::JoinHandle};
 #[async_trait]
-pub trait Store<D, R, P>
-where
-    Self: Send,
-{
+pub trait Store<D, R, P> {
     fn queue_name(&self) -> &str;
     fn queue_prefix(&self) -> &str;
     async fn listener_to_events(
@@ -52,6 +49,7 @@ where
     async fn get_job(&self, id: u64) -> Option<Job<D, R, P>>;
     async fn get_token(&self, id: u64) -> Option<JobToken>;
     async fn get_state(&self, id: u64) -> Option<JobState>;
+    fn update_job_progress(&self, job: &mut Job<D, R, P>, value: P) -> KioResult<()>;
     async fn add_item(
         &self,
         col: CollectionSuffix,

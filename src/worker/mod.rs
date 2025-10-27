@@ -1,7 +1,9 @@
 use crate::{
     error::{BacktraceCatcher, CaughtError, CaughtPanicInfo},
     job, queue,
+    stores::Store,
     timer::Timer,
+    utils::processor_types::SharedStore,
     worker::processor_types::SyncFn,
     Job, JobState, JobToken, KioError, KioResult, Queue,
 };
@@ -10,7 +12,7 @@ use crate::utils::{get_next_job, main_loop};
 use chrono::Utc;
 use deadpool_redis::Pool;
 use derive_more::Debug;
-use futures::future::{BoxFuture, Future, FutureExt, TryFutureExt};
+use futures::future::{BoxFuture, Future, FutureExt, Shared, TryFutureExt};
 use redis::aio::ConnectionLike;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
@@ -49,12 +51,12 @@ pub enum WorkerState {
 }
 pub(crate) use worker_opts::MIN_DELAY_MS_LIMIT;
 #[derive(Clone, Debug)]
-pub struct Worker<D, R, P> {
+pub struct Worker<D, R, P, S> {
     pub id: Uuid,
-    queue: Arc<Queue<D, R, P>>,
+    queue: Arc<Queue<D, R, P, S>>,
     jobs_in_progress: JobMap<D, R, P>,
     #[debug(skip)]
-    processor: WorkerCallback<D, R, P>,
+    processor: WorkerCallback<D, R, P, S>,
     pub opts: WorkerOpts,
     cancellation_token: CancellationToken,
     pub state: Arc<Atomic<WorkerState>>,
@@ -69,62 +71,65 @@ pub struct Worker<D, R, P> {
 use crate::utils::processor_types;
 use deadpool_redis::Connection;
 use processor_types::Callback;
-pub(crate) type WorkerCallback<D, R, P> = Callback<D, R, P>;
+pub(crate) type WorkerCallback<D, R, P, S> = Callback<D, R, P, S>;
 
 impl<
         D: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
         R: Clone + DeserializeOwned + 'static + Serialize + Send + Sync,
         P: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
-    > Worker<D, R, P>
+        S: Clone + Store<D, R, P> + Send + 'static + Sync,
+    > Worker<D, R, P, S>
 {
     pub fn new_sync<C, E>(
-        queue: &Queue<D, R, P>,
+        queue: &Queue<D, R, P, S>,
         processor: C,
         worker_opts: Option<WorkerOpts>,
     ) -> KioResult<Self>
     where
         KioError: From<E>,
-        C: Fn(redis::Connection, Job<D, R, P>) -> Result<R, E> + Send + Sync + 'static,
+        C: Fn(SharedStore<S>, Job<D, R, P>) -> Result<R, E> + Send + Sync + 'static,
         P: Send + Sync + 'static,
         R: Send + Sync + 'static,
         D: Send + Sync + 'static,
+        S: Sync + Store<D, R, P> + Send + 'static,
         E: std::error::Error + Send + 'static,
     {
-        Self::new::<C, SyncFn<C, D, R, P, E>, E>(queue, processor, worker_opts)
+        Self::new::<C, SyncFn<C, D, R, P, S, E>, E>(queue, processor, worker_opts)
     }
     pub fn new_async<C, Fut, E>(
-        queue: &Queue<D, R, P>,
+        queue: &Queue<D, R, P, S>,
         processor: C,
         worker_opts: Option<WorkerOpts>,
     ) -> KioResult<Self>
     where
         KioError: From<E>,
-        C: Fn(Connection, Job<D, R, P>) -> Fut + Send + Sync + 'static,
+        C: Fn(SharedStore<S>, Job<D, R, P>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<R, E>> + Send + 'static,
         P: Send + Sync + 'static,
         R: Send + Sync + 'static,
+        S: Sync + Store<D, R, P> + Send + 'static,
         D: Send + Sync + 'static,
         E: std::error::Error + Send + 'static,
     {
         use processor_types::AsyncFn;
-        Self::new::<C, AsyncFn<C, D, R, P, E>, E>(queue, processor, worker_opts)
+        Self::new::<C, AsyncFn<C, D, R, P, S, E>, E>(queue, processor, worker_opts)
     }
     fn new<C, F, E>(
-        queue: &Queue<D, R, P>,
+        queue: &Queue<D, R, P, S>,
         processor: C,
         worker_opts: Option<WorkerOpts>,
     ) -> KioResult<Self>
     where
         KioError: From<E>,
         C: Into<F>,
-        Callback<D, R, P>: From<F>,
+        Callback<D, R, P, S>: From<F>,
         P: Send + Sync + 'static,
         R: Send + Sync + 'static,
         D: Send + Sync + 'static,
+        S: Store<D, R, P> + Send + Sync + 'static,
         E: std::error::Error + Send + 'static,
     {
         let queue = Arc::new(queue.clone());
-        let pool = queue.conn_pool.clone();
         let jobs_in_progress: JobMap<_, _, _> = Arc::new(SkipMap::new());
         let f: F = processor.into();
         let callback = Callback::from(f);
