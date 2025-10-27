@@ -9,6 +9,7 @@ mod redis_store;
 use async_trait::async_trait;
 pub use redis_store::RedisStore;
 use tokio::{sync::Notify, task::JoinHandle};
+#[allow(clippy::too_many_arguments)]
 #[async_trait]
 pub trait Store<D, R, P> {
     fn queue_name(&self) -> &str;
