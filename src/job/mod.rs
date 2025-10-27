@@ -228,7 +228,7 @@ impl<D, R, P> Job<D, R, P> {
         self.delay = opts.delay.as_diff_ms(self.ts) as u64;
         self.opts = opts.clone();
     }
-    pub fn update_progress<'a, C>(&mut self, value: P, store: &C) -> Result<(), KioError>
+    pub fn update_progress<C>(&mut self, value: P, store: &C) -> Result<(), KioError>
     where
         P: Serialize + Clone,
         C: Store<D, R, P>,
