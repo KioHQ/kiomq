@@ -1,9 +1,13 @@
 use deadpool_redis::Config;
 use kio_mq::{
-    fetch_redis_pass, framed, EventParameters, Job, KioResult, Queue, Worker, WorkerOpts,
+    fetch_redis_pass, framed, EventParameters, Job, KioResult, Queue, RedisStore, Store, Worker,
+    WorkerOpts,
 };
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::fs;
 type BoxedError = Box<dyn std::error::Error + Send>;
 use ffmpeg_sidecar::{
@@ -45,8 +49,8 @@ async fn main() -> KioResult<()> {
     if let Some(cfg) = config.connection.as_mut() {
         cfg.redis.password = fetch_redis_pass();
     }
-    let queue: Queue<ProcessData, ReturnData, Progress> =
-        Queue::new(None, "video-processing", &config, None).await?;
+    let store = RedisStore::new(None, "video-processing", &config).await?;
+    let queue = Queue::new(store, None).await?;
     let processor = |con: _, job: _| process_callback(con, job);
     // auto download ffmpeg if it's not installed;
     tokio::task::spawn_blocking(auto_download)
@@ -109,15 +113,15 @@ async fn main() -> KioResult<()> {
 
 #[framed]
 fn process_callback(
-    conn: redis::Connection,
+    store: Arc<RedisStore>,
     job: Job<ProcessData, ReturnData, Progress>,
 ) -> KioResult<ReturnData> {
-    transcode_video(conn, job)
+    transcode_video(store, job)
 }
 
 #[framed]
 fn transcode_video(
-    mut conn: redis::Connection,
+    store: Arc<RedisStore>,
     mut job: Job<ProcessData, ReturnData, Progress>,
 ) -> KioResult<ReturnData> {
     use uuid::Uuid;
@@ -157,7 +161,7 @@ fn transcode_video(
                         current_progress.current_duration = parsed_duration;
                     }
                 }
-                job.update_progress(current_progress, &mut conn)?;
+                store.update_job_progress(&mut job, current_progress)?;
             }
 
             FfmpegEvent::Log(log_level, msg) => {
