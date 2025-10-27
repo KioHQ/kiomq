@@ -3,10 +3,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use deadpool_redis::{Config, Connection};
+use deadpool_redis::Config;
 use kio_mq::{
     fetch_redis_pass, framed, BackOffJobOptions, EventParameters, Job, JobOptions, KioResult,
-    Queue, QueueEventMode, QueueOpts, RemoveOnCompletionOrFailure, Worker, WorkerOpts,
+    Queue, QueueEventMode, QueueOpts, RedisStore, RemoveOnCompletionOrFailure, Store, Worker,
+    WorkerOpts,
 };
 use uuid::Uuid;
 #[tokio::main]
@@ -35,8 +36,9 @@ async fn main() -> KioResult<()> {
         ..Default::default()
     };
     let counter = Arc::new(AtomicUsize::default());
+    let store = RedisStore::new(None, "trial", &config).await?;
     let events = counter.clone();
-    let queue = Queue::<i32, i32, i32>::new(None, "trial", &config, Some(queue_opts)).await?;
+    let queue = Queue::new(store, Some(queue_opts)).await?;
     let event_listener = move |state: EventParameters<_, _, _>| {
         let completed = events.clone();
         async move {
@@ -112,11 +114,11 @@ async fn main() -> KioResult<()> {
 }
 #[framed]
 async fn process_callback(
-    mut con: Connection,
+    store: Arc<RedisStore>,
     mut job: Job<i32, i32, i32>,
 ) -> Result<i32, std::io::Error> {
     let progress = job.progress.unwrap_or_default();
-    let _ = job.update_progress(progress + 1, &mut con);
+    let _ = store.update_job_progress(&mut job, progress + 1);
     //let id: u64 = job.id.unwrap_or_default().parse().unwrap_or_default();
     //if id % 2 == 0 && job.attempts_made < job.opts.attempts - 1 {
     //    //uncomment the line below to test to catching panics
