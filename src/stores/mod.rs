@@ -1,0 +1,107 @@
+use std::sync::{atomic::AtomicBool, Arc};
+
+use crate::{
+    events::QueueStreamEvent, BackOffJobOptions, CollectionSuffix, EventEmitter, Job, JobMetrics,
+    JobOptions, JobState, JobToken, KioResult, ProcessedResult, QueueEventMode, QueueOpts,
+    RemoveOnCompletionOrFailure, Trace, WorkerOpts,
+};
+mod redis_store;
+use async_trait::async_trait;
+use erased_serde::Serialize;
+use tokio::{sync::Notify, task::JoinHandle};
+#[async_trait]
+pub trait Store<D, R, P>
+where
+    Self: Send,
+{
+    fn queue_name(&self) -> &str;
+    fn queue_prefix(&self) -> &str;
+    async fn listener_to_events(
+        &self,
+        event_mode: QueueEventMode,
+        block_interval: Option<u64>,
+        emitter: &EventEmitter<D, R, P>,
+        metrics: &JobMetrics,
+    ) -> KioResult<()>;
+    async fn create_stream_listener(
+        &self,
+        emitter: EventEmitter<D, R, P>,
+        notifier: Arc<Notify>,
+        metrics: Arc<JobMetrics>,
+        pause_workers: Arc<AtomicBool>,
+        event_mode: QueueEventMode,
+    ) -> KioResult<JoinHandle<KioResult<()>>>;
+    async fn add_bulk_only(
+        &self,
+        iter: Box<dyn Iterator<Item = (String, Option<JobOptions>, D)> + Send>,
+        queue_opts: QueueOpts,
+        event_mode: QueueEventMode,
+        is_paused: bool,
+    ) -> KioResult<()>;
+    async fn add_bulk(
+        &self,
+        iter: Box<dyn Iterator<Item = (String, Option<JobOptions>, D)> + Send>,
+        queue_opts: QueueOpts,
+        event_mode: QueueEventMode,
+        is_paused: bool,
+    ) -> KioResult<Vec<Job<D, R, P>>>;
+    async fn get_delayed_at(&self, start: i64, stop: i64) -> KioResult<(Vec<u64>, Vec<u64>)>;
+    async fn pop_set(&self, col: CollectionSuffix, min: bool) -> KioResult<Vec<(u64, u64)>>;
+    async fn expire(&self, col: CollectionSuffix, secs: i64) -> KioResult<()>;
+    async fn get_metrics(&self) -> KioResult<JobMetrics>;
+    async fn get_job(&self, id: u64) -> Option<Job<D, R, P>>;
+    async fn get_token(&self, id: u64) -> Option<JobToken>;
+    async fn get_state(&self, id: u64) -> Option<JobState>;
+    async fn add_item(
+        &self,
+        col: CollectionSuffix,
+        item: u64,
+        score: Option<i64>,
+        append: bool,
+    ) -> KioResult<()>;
+    async fn pop_back_push_front(
+        &self,
+        src: CollectionSuffix,
+        dst: CollectionSuffix,
+    ) -> Option<u64>;
+
+    //async fn del
+    async fn move_job_to_state(
+        &self,
+        job_id: u64,
+        from: JobState,
+        to: JobState,
+        value: Option<ProcessedResult<R>>,
+        ts: Option<i64>,
+        backtrace: Option<Trace>,
+        event_mode: QueueEventMode,
+        is_paused: bool,
+    ) -> KioResult<()>;
+    async fn set_lock(&self, job_id: u64, token: JobToken, lock_duration: u64) -> KioResult<()>;
+    async fn set_fields(&self, job_id: u64, fields: &[(&str, String)]) -> KioResult<()>;
+    async fn incr(
+        &self,
+        key: CollectionSuffix,
+        delta: i64,
+        hash_key: Option<&str>,
+    ) -> KioResult<()>;
+    async fn get_counter(&self, key: CollectionSuffix, hash_key: Option<&str>) -> Option<u64>;
+    async fn publish_event(
+        &self,
+        event_mode: QueueEventMode,
+        event: QueueStreamEvent<R, P>,
+    ) -> KioResult<()>;
+    async fn move_stalled_jobs(
+        &self,
+        opts: &WorkerOpts,
+        (is_paused, target): (bool, JobState),
+        event_mode: QueueEventMode,
+    ) -> KioResult<(Vec<u64>, Vec<u64>)>;
+
+    async fn job_exist(&self, id: u64) -> bool;
+    async fn remove_item(&self, col: CollectionSuffix, item: u64) -> KioResult<()>;
+    fn remove(&self, key: CollectionSuffix) -> KioResult<()>;
+    async fn clear_collections(&self) -> KioResult<()>;
+    async fn clear_jobs(&self, last_id: u64) -> KioResult<()>;
+    async fn pause(&self, pause: bool, event_mode: QueueEventMode) -> KioResult<()>;
+}
