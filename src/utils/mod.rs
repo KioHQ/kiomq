@@ -1,10 +1,11 @@
 use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo, JobError, QueueError};
 use crate::events::QueueStreamEvent;
+use crate::stores::Store;
 use crate::timer::Timer;
 use crate::worker::{JobMap, ProcessingQueue, WorkerCallback, WorkerState, MIN_DELAY_MS_LIMIT};
 use crate::{
     utils, EventEmitter, EventParameters, FailedDetails, JobOptions, JobState, JobToken, KioError,
-    QueueEventMode, Trace, WorkerOpts,
+    QueueEventMode, QueueOpts, Trace, WorkerOpts,
 };
 use chrono::Utc;
 use crossbeam_queue::SegQueue;
@@ -459,19 +460,10 @@ where
     R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
     P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
 {
-    let [delayed_key] = [CollectionSuffix::Delayed]
-        .map(|collection| collection.to_collection_name(&queue.prefix, &queue.name));
-    let stop = (date_time + TimeDelta::milliseconds(interval_ms)).timestamp_millis();
     let start = date_time.timestamp_millis();
-    let mut pipeline = redis::pipe();
-    let mut conn = queue.get_connection().await?;
-    pipeline.atomic();
-    pipeline.zrangebyscore(&delayed_key, start, stop);
-    pipeline.zrangebyscore(&delayed_key, "-inf", format!("({start}"));
-    pipeline.zrembyscore(&delayed_key, start, stop);
-    let start = (date_time - TimeDelta::milliseconds(interval_ms)).timestamp_millis();
-    let (jobs, missed_deadline, done): (Vec<u64>, Vec<u64>, i64) =
-        pipeline.query_async(&mut conn).await?;
+    let stop = (date_time + TimeDelta::milliseconds(interval_ms)).timestamp_millis();
+    let (jobs, missed_deadline): (Vec<u64>, Vec<u64>) =
+        queue.store.get_delayed_at(start, stop).await?;
     if !jobs.is_empty() {
         tokio::time::sleep(Duration::from_millis(interval_ms as u64)).await;
         for job in jobs {
@@ -481,21 +473,18 @@ where
     if !missed_deadline.is_empty() {
         let queue_clone = queue.clone();
         let ts = date_time.timestamp_micros();
-        let mut conn = queue_clone.get_connection().await?;
         let move_to_state = JobState::Failed;
         for job_id in missed_deadline.iter() {
             let mut reason = FailedDetails {
                 run: 0,
                 reason: JobError::MissedDelayDeadline.to_string(),
             };
-            let job_key = CollectionSuffix::Job(*job_id)
-                .to_collection_name(&queue_clone.prefix, &queue_clone.name);
-            let mut pipeline = redis::pipe();
-            pipeline.hget(&job_key, "attemptsMade");
-            pipeline.hget(&job_key, "token");
-            let (attempts, token): (u64, Option<Vec<u8>>) = pipeline.query_async(&mut conn).await?;
-            let token: Option<JobToken> =
-                token.and_then(|mut e| simd_json::from_slice(&mut e).ok().flatten());
+            let attempts = queue
+                .store
+                .get_counter(CollectionSuffix::Job(*job_id), Some("attemptsMade"))
+                .await;
+            let token = queue.store.get_token(*job_id).await;
+            let attempts = attempts.unwrap_or_default();
             let token = token.unwrap_or_default();
             reason.run = attempts;
             queue_clone
@@ -509,7 +498,7 @@ where
                 )
                 .await?;
         }
-        let _: () = conn.zrem(&delayed_key, missed_deadline).await?;
+        //let _: () = conn.zrem(&delayed_key, missed_deadline).await?;
     }
     Ok(())
 }
@@ -626,78 +615,28 @@ pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
 
 pub(crate) type ReadStreamArgs<'a, D, R, P> = (
     QueueEventMode,
-    &'a str,
-    &'a str,
     usize,
-    &'a str,
-    &'a str,
     &'a EventEmitter<D, R, P>,
     Arc<JobMetrics>,
-    &'a str,
-    &'a str,
-    &'a mut deadpool_redis::Connection,
-    &'a mut PubSubStream,
 );
 // Helper function to process events from our queue-redis-stream
-pub async fn process_queue_events<'a, D, R, P>(
-    (
-        event_mode,
-        stream_key,
-        queue_name,
-        block_interval,
-        consumer_group,
-        consumer_name,
-        emitter,
-        metrics,
-        prefix,
-        name,
-        connection,
-        pubsub_source,
-    ): ReadStreamArgs<'a, D, R, P>,
+pub async fn process_queue_events<'a, D, R, P, S: Store<D, R, P> + Send>(
+    (event_mode, block_interval, emitter, metrics): ReadStreamArgs<'a, D, R, P>,
+    store: &S,
 ) -> KioResult<()>
 where
     D: DeserializeOwned + Clone + Send + 'static,
     R: DeserializeOwned + Clone + Send + Sync + 'static,
     P: DeserializeOwned + Clone + Send + Sync + 'static,
 {
-    match event_mode {
-        QueueEventMode::PubSub => {
-            if let Some(msg) = pubsub_source.next().await {
-                let event: QueueStreamEvent<R, P> = msg.get_payload()?;
-                process_each_event(
-                    event, emitter, queue_name, prefix, name, connection, &metrics,
-                )
-                .await?;
-            }
-        }
-        QueueEventMode::Stream => {
-            let options = StreamReadOptions::default()
-                .block(block_interval)
-                .group(consumer_group, consumer_name)
-                .noack();
-            let reply: StreamReadReply = connection
-                .xread_options(&[&stream_key], &[">"], &options)
-                .await?;
-
-            let events = QueueStreamEvent::<R, P>::from_stream_read_reply(stream_key, reply);
-            for event in events {
-                process_each_event(
-                    event, emitter, queue_name, prefix, name, connection, &metrics,
-                )
-                .await?;
-            }
-        }
-    };
-
-    Ok(())
+    store
+        .listener_to_events(event_mode, Some(block_interval as u64), emitter, &metrics)
+        .await
 }
-async fn process_each_event<D, R, P>(
+pub async fn process_each_event<D, R, P>(
     event: QueueStreamEvent<R, P>,
     emitter: &EventEmitter<D, R, P>,
-    queue_name: &str,
-    prefix: &str,
-    name: &str,
-    connection: &mut deadpool_redis::Connection,
+    store: &(impl Store<D, R, P> + Send),
     metrics: &JobMetrics,
 ) -> KioResult<()>
 where
@@ -706,9 +645,9 @@ where
     P: DeserializeOwned + Clone + Send + Sync + 'static,
 {
     let state = event.event;
-    let param = EventParameters::<D, R, P>::from_queue_event(queue_name, event, connection).await?;
+    let param = EventParameters::<D, R, P>::from_queue_event(event, store).await?;
     emitter.emit(state, param).await;
-    if let Ok(updated) = get_job_metrics(prefix, name, connection).await {
+    if let Ok(updated) = store.get_metrics().await {
         metrics.update(&updated);
     }
     Ok(())
@@ -760,4 +699,21 @@ where
         res.await?;
     }
     Ok(())
+}
+pub fn update_job_opts(queue_opts: &QueueOpts, opts: &mut JobOptions) {
+    if opts.remove_on_complete.is_none() {
+        opts.remove_on_complete = queue_opts.remove_on_complete;
+    }
+    if opts.remove_on_fail.is_none() {
+        opts.remove_on_fail = queue_opts.remove_on_fail;
+    }
+    if opts.attempts < queue_opts.attempts {
+        opts.attempts = queue_opts.attempts;
+    }
+    if opts.backoff.is_none() {
+        opts.backoff = queue_opts.default_backoff.clone();
+    }
+    if opts.repeat.is_none() {
+        opts.repeat = queue_opts.repeat.clone();
+    }
 }

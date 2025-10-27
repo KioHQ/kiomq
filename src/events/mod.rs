@@ -1,4 +1,4 @@
-use crate::{FailedDetails, Job, JobState};
+use crate::{FailedDetails, Job, JobError, JobState};
 use derive_more::Debug;
 use redis::AsyncCommands;
 use uuid::Uuid;
@@ -54,6 +54,7 @@ pub enum EventParameters<D, R, P> {
 }
 use std::{sync::Arc, time::Duration};
 pub type Events = JobState;
+use crate::stores::Store;
 use serde::de::DeserializeOwned;
 use typed_emitter::TypedEmitter;
 pub(crate) type EventEmitter<D, R, P> = Arc<TypedEmitter<JobState, EventParameters<D, R, P>>>;
@@ -63,14 +64,12 @@ pub use redis_events::{QueueStreamEvent, StreamEventId};
 use crate::KioResult;
 impl<D: DeserializeOwned, R: DeserializeOwned, P: DeserializeOwned> EventParameters<D, R, P> {
     pub async fn from_queue_event(
-        queue_name: &str,
         event: QueueStreamEvent<R, P>,
-        mut conn: &mut deadpool_redis::Connection,
+        mut store: &(impl Store<D, R, P> + Send),
     ) -> KioResult<Self> {
         let job_state = event.event;
         let job_id = &event.job_id;
-        let job_id_key = format!("{queue_name}{job_id}");
-        let fetch_job = conn.hgetall::<_, Job<D, R, P>>(&job_id_key);
+        let fetch_job = store.get_job(*job_id);
         let parameter = match job_state {
             JobState::Priorized => Self::Prioritized {
                 job_id: event.job_id,
@@ -90,7 +89,7 @@ impl<D: DeserializeOwned, R: DeserializeOwned, P: DeserializeOwned> EventParamet
                 prev_state: event.prev.unwrap_or_default(),
             },
             JobState::Active => {
-                let job = fetch_job.await?;
+                let job = fetch_job.await.ok_or(JobError::JobNotFound)?;
                 Self::Active {
                     job,
                     prev_state: event.prev,
@@ -99,7 +98,7 @@ impl<D: DeserializeOwned, R: DeserializeOwned, P: DeserializeOwned> EventParamet
             JobState::Paused => Self::Void,
             JobState::Resumed => Self::Void,
             JobState::Completed => {
-                let job = fetch_job.await?;
+                let job = fetch_job.await.ok_or(JobError::JobNotFound)?;
                 Self::Completed {
                     job,
                     prev_state: event.prev,
