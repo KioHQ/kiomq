@@ -42,14 +42,14 @@ use redis::{
     RedisResult, ToRedisArgs, Value,
 };
 #[derive(Debug, Clone)]
-pub struct Queue<D, R, P> {
+pub struct Queue<D, R, P, S> {
     pub paused: Arc<AtomicBool>,
     pub job_count: Arc<AtomicU64>,
     pub current_metrics: Arc<JobMetrics>,
     pub opts: QueueOpts,
     pub(crate) event_mode: Arc<Atomic<QueueEventMode>>,
     emitter: EventEmitter<D, R, P>,
-    pub(crate) store: Arc<dyn Store<D, R, P>>,
+    pub(crate) store: Arc<S>,
     #[debug(skip)]
     pub stream_listener: Arc<JoinHandle<KioResult<()>>>,
     pub(crate) backoff: BackOff,
@@ -60,13 +60,11 @@ pub struct Queue<D, R, P> {
 impl<
         D: Clone + Serialize + DeserializeOwned + Send + 'static,
         R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
+        S: Clone + Store<D, R, P> + Send + 'static,
         P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
-    > Queue<D, R, P>
+    > Queue<D, R, P, S>
 {
-    pub async fn new<S: Store<D, R, P> + 'static>(
-        store: S,
-        queue_opts: Option<QueueOpts>,
-    ) -> KioResult<Self> {
+    pub async fn new(store: S, queue_opts: Option<QueueOpts>) -> KioResult<Self> {
         use typed_emitter::TypedEmitter;
         let opts = queue_opts.unwrap_or_default();
         let emitter = Arc::new(TypedEmitter::new());
@@ -470,7 +468,7 @@ impl<D, R, P> MoveToActiveResult<D, R, P> {
 }
 // ----- UTILITY FUNCTIONS -------------------
 
-impl<D, R, P> Queue<D, R, P> {
+impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     pub fn register_backoff_strategy(
         &self,
         name: &str,

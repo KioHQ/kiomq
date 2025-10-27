@@ -14,6 +14,7 @@ pub(crate) use events::EventEmitter;
 pub use events::EventParameters;
 pub use job::*;
 pub use queue::*;
+pub use stores::*;
 pub use utils::{fetch_redis_pass, get_job_metrics};
 pub use worker::{Worker, WorkerOpts};
 
