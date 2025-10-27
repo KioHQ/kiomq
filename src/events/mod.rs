@@ -102,7 +102,7 @@ impl<D: DeserializeOwned, R: DeserializeOwned, P: DeserializeOwned> EventParamet
                 Self::Completed {
                     job,
                     prev_state: event.prev,
-                    result: event.retuned_value.expect("there is no result"),
+                    result: event.returned_value.expect("there is no result"),
                 }
             }
             JobState::Failed => Self::Failed {
