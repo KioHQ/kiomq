@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod queue {
-    use kio_mq::{fetch_redis_pass, JobOptions, JobState};
+    use kio_mq::{fetch_redis_pass, JobOptions, JobState, RedisStore};
     use kio_mq::{Config, KioResult, Queue, QueueOpts};
     use std::sync::LazyLock;
     use uuid::Uuid;
@@ -17,7 +17,8 @@ mod queue {
         let config = &CONFIG;
         let queue_opts = QueueOpts::default();
         let name = Uuid::new_v4().to_string();
-        let queue = Queue::<i32, i32, i32>::new(None, &name, config, Some(queue_opts)).await?;
+        let store = RedisStore::new(None, &name, config).await?;
+        let queue = Queue::<i32, i32, i32, _>::new(store, Some(queue_opts)).await?;
 
         let job = queue.add_job("test", 1, None).await?;
         // wait for metrics to update
@@ -38,7 +39,8 @@ mod queue {
         let config = &CONFIG;
         let queue_opts = QueueOpts::default();
         let name = Uuid::new_v4().to_string();
-        let queue = Queue::<i32, i32, i32>::new(None, &name, config, Some(queue_opts)).await?;
+        let store = RedisStore::new(None, &name, config).await?;
+        let queue = Queue::<i32, i32, i32, _>::new(store, Some(queue_opts)).await?;
         let job_iterator = (0..4).map(|i| (i.to_string(), None, i));
         let jobs = queue.bulk_add(job_iterator).await?;
         // wait for metrics to update
@@ -56,7 +58,8 @@ mod queue {
         let config = &CONFIG;
         let queue_opts = QueueOpts::default();
         let name = Uuid::new_v4().to_string();
-        let queue = Queue::<i32, i32, i32>::new(None, &name, config, Some(queue_opts)).await?;
+        let store = RedisStore::new(None, &name, config).await?;
+        let queue = Queue::<i32, i32, i32, _>::new(store, Some(queue_opts)).await?;
         let job_iterator = (0..4).map(|i| (i.to_string(), None, i));
         let jobs = queue.bulk_add(job_iterator).await?;
         let metrics = queue.get_metrics().await?;
@@ -83,8 +86,8 @@ mod queue {
             ..Default::default()
         };
         let name = Uuid::new_v4().to_string();
-        let queue = Queue::<i32, i32, i32>::new(None, &name, config, Some(queue_opts)).await?;
-
+        let store = RedisStore::new(None, &name, config).await?;
+        let queue = Queue::<i32, i32, i32, _>::new(store, Some(queue_opts)).await?;
         let job = queue.add_job("delay", 1, Some(job_opts)).await?;
         // wait for metrics to update
         let metrics = queue.get_metrics().await?;
@@ -111,7 +114,8 @@ mod queue {
             ..Default::default()
         };
         let name = Uuid::new_v4().to_string();
-        let queue = Queue::<i32, i32, i32>::new(None, &name, config, Some(queue_opts)).await?;
+        let store = RedisStore::new(None, &name, config).await?;
+        let queue = Queue::<i32, i32, i32, _>::new(store, Some(queue_opts)).await?;
 
         let job = queue.add_job("Priorized", 1, Some(job_opts)).await?;
         // wait for metrics to update
@@ -131,7 +135,8 @@ mod queue {
     async fn pause_and_resume() -> KioResult<()> {
         let config = &CONFIG;
         let name = Uuid::new_v4().to_string();
-        let queue = Queue::<i32, i32, i32>::new(None, &name, config, None).await?;
+        let store = RedisStore::new(None, &name, config).await?;
+        let queue = Queue::<i32, i32, i32, _>::new(store, None).await?;
         let _job = queue.add_job(&name, 1, None).await?;
         let metrics = queue.get_metrics().await?;
         assert_eq!(

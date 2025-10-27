@@ -1,7 +1,9 @@
 #[cfg(test)]
 mod worker {
     use crossbeam_queue::ArrayQueue;
-    use kio_mq::{fetch_redis_pass, EventParameters, Job, JobOptions, KioError, QueueEventMode};
+    use kio_mq::{
+        fetch_redis_pass, EventParameters, Job, JobOptions, KioError, QueueEventMode, RedisStore,
+    };
     use kio_mq::{Config, KioResult, Queue, QueueOpts, Worker};
     use std::collections::VecDeque;
     use std::sync::{Arc, LazyLock};
@@ -20,7 +22,8 @@ mod worker {
         let config = &CONFIG;
         let queue_opts = QueueOpts::default();
         let name = Uuid::new_v4().to_string();
-        let queue = Queue::<i32, i32, i32>::new(None, &name, config, Some(queue_opts)).await?;
+        let store = RedisStore::new(None, &name, config).await?;
+        let queue = Queue::<i32, i32, i32, _>::new(store, Some(queue_opts)).await?;
         let count = 4;
         let completed: Arc<ArrayQueue<Job<_, _, _>>> = Arc::new(ArrayQueue::new(count as usize));
         let jobs = completed.clone();
@@ -70,7 +73,8 @@ mod worker {
         let config = &CONFIG;
         let queue_opts = QueueOpts::default();
         let name = Uuid::new_v4().to_string();
-        let queue = Queue::<i32, i32, i32>::new(None, &name, config, Some(queue_opts)).await?;
+        let store = RedisStore::new(None, &name, config).await?;
+        let queue = Queue::<i32, i32, i32, _>::new(store, Some(queue_opts)).await?;
         let processor = move |_conn, job: kio_mq::Job<i32, i32, i32>| async move {
             Ok::<i32, KioError>(job.data.unwrap())
         };
@@ -95,7 +99,8 @@ mod worker {
             ..Default::default()
         };
         let name = Uuid::new_v4().to_string();
-        let queue = Queue::<i32, i32, i32>::new(None, &name, config, Some(queue_opts)).await?;
+        let store = RedisStore::new(None, &name, config).await?;
+        let queue = Queue::<i32, i32, i32, _>::new(store, Some(queue_opts)).await?;
         let count: i32 = 4;
         let job_iterator = (0..count).map(|i| {
             let job_opts = JobOptions {
@@ -154,7 +159,8 @@ mod worker {
             ..Default::default()
         };
         let name = Uuid::new_v4().to_string();
-        let queue = Queue::<i32, i32, i32>::new(None, &name, config, Some(queue_opts)).await?;
+        let store = RedisStore::new(None, &name, config).await?;
+        let queue = Queue::<i32, i32, i32, _>::new(store, Some(queue_opts)).await?;
         let count = 4;
         let completed: Arc<ArrayQueue<Job<_, _, _>>> = Arc::new(ArrayQueue::new(count as usize));
         let jobs = completed.clone();
@@ -207,9 +213,10 @@ mod worker {
         let config = &CONFIG;
         let queue_opts = QueueOpts::default();
         let name = Uuid::new_v4().to_string();
-        let queue = Queue::<i32, i32, i32>::new(None, &name, config, Some(queue_opts)).await?;
+        let store = RedisStore::new(None, &name, config).await?;
+        let queue = Queue::<i32, i32, i32, _>::new(store, Some(queue_opts)).await?;
         let count: i32 = 4;
-        let job_iterator = (0..count).map(|i| {
+        let job_iterator = (0..count).map(move |i| {
             let job_opts = JobOptions {
                 priority: (count - i) as u64,
                 ..Default::default()
@@ -271,7 +278,8 @@ mod worker {
         };
         let name = Uuid::new_v4().to_string();
         let count = 4;
-        let queue = Queue::<i32, i32, i32>::new(None, &name, config, Some(queue_opts)).await?;
+        let store = RedisStore::new(None, &name, config).await?;
+        let queue = Queue::<i32, i32, i32, _>::new(store.clone(), Some(queue_opts)).await?;
         let completed: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(count as usize));
         let jobs = completed.clone();
         queue.on_all_events(move |state: kio_mq::EventParameters<i32, i32, i32>| {
@@ -317,9 +325,9 @@ mod worker {
             .load(std::sync::atomic::Ordering::Acquire);
         let mut pipeline = redis::pipe();
         pipeline.atomic();
-        let mut conn = queue.get_connection().await?;
+        let mut conn = store.get_connection().await?;
         for id in 1..last_id {
-            let job_key = CollectionSuffix::Job(id).to_collection_name(&queue.prefix, &queue.name);
+            let job_key = CollectionSuffix::Job(id).to_collection_name(&store.prefix, &store.name);
             pipeline.exists(job_key);
         }
         let all_exist: Vec<bool> = pipeline.query_async(&mut conn).await?;
