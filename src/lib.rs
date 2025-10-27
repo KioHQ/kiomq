@@ -3,6 +3,7 @@ mod error;
 mod events;
 mod job;
 mod queue;
+mod stores;
 mod timer;
 mod utils;
 mod worker;
