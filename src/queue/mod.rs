@@ -72,11 +72,11 @@ impl<
         if let Ok(current_metrics) = store.get_metrics().await {
             metrics = current_metrics;
         }
+        let events_mode_exits: bool = store.metadata_field_exists("event_mode").await?;
         let event_mode = metrics.event_mode.clone();
         if let Some(passed_mode) = opts.event_mode {
-            if passed_mode != event_mode.load(Ordering::Acquire) {
-                //conn.hset::<_, _, _, ()>(&meta_key, "event_mode", passed_mode)
-                //    .await;
+            if !events_mode_exits && passed_mode != event_mode.load(Ordering::Acquire) {
+                store.set_event_mode(passed_mode).await?;
                 event_mode.swap(passed_mode, Ordering::AcqRel);
             }
         }

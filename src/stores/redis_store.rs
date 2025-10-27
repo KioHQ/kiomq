@@ -95,6 +95,18 @@ impl<
 where
     Self: Send,
 {
+    async fn metadata_field_exists(&self, field: &str) -> KioResult<bool> {
+        let mut conn = self.get_connection().await?;
+        let meta_key = CollectionSuffix::Meta.to_collection_name(&self.prefix, &self.name);
+        let result = conn.hexists(meta_key, field).await?;
+        Ok(result)
+    }
+    async fn set_event_mode(&self, event_mode: QueueEventMode) -> KioResult<()> {
+        let mut conn = self.get_connection().await?;
+        let meta_key = CollectionSuffix::Meta.to_collection_name(&self.prefix, &self.name);
+        let result = conn.hset(&meta_key, "event_mode", event_mode).await?;
+        Ok(result)
+    }
     fn queue_name(&self) -> &str {
         self.name.as_ref()
     }
@@ -175,6 +187,14 @@ where
         metrics: &JobMetrics,
     ) -> KioResult<()> {
         let store = Arc::new(self.clone());
+        if !self.subscribed.load(Ordering::Acquire) {
+            self.pubsub_sink
+                .lock()
+                .await
+                .subscribe(&self.stream_key)
+                .await?;
+            self.subscribed.store(true, Ordering::Release);
+        }
         match event_mode {
             QueueEventMode::PubSub => {
                 if let Some(msg) = self.pubsub_source.lock().await.next().await {
@@ -183,14 +203,6 @@ where
                 }
             }
             QueueEventMode::Stream => {
-                if !self.subscribed.load(Ordering::Acquire) {
-                    self.pubsub_sink
-                        .lock()
-                        .await
-                        .subscribe(&self.stream_key)
-                        .await?;
-                    self.subscribed.store(true, Ordering::Release);
-                }
                 let mut connection = self.get_connection().await?;
                 let mut options = StreamReadOptions::default()
                     .group(&self.consumer_group, &self.consumer_name)
@@ -485,7 +497,7 @@ where
                 ProcessedResult::Failed(failed_details) => {
                     event.failed_reason = Some(failed_details)
                 }
-                ProcessedResult::Success(value) => event.retuned_value = Some(value),
+                ProcessedResult::Success(value) => event.returned_value = Some(value),
             }
         }
 
@@ -546,8 +558,9 @@ where
             QueueEventMode::PubSub => pipeline.publish(events_stream_key, event),
             QueueEventMode::Stream => {
                 let mut items = crate::utils::serialize_into_pairs(&event);
-                // remove the id field;
-
+                // remove the id field
+                items.retain(|(key, _)| key != "id");
+                items.retain(|(key, val)| !val.contains("null"));
                 pipeline.xadd(events_stream_key, "*", &items)
             }
         };

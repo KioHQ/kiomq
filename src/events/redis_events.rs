@@ -40,6 +40,7 @@ impl Default for StreamEventId {
 }
 
 #[derive(Debug, Hash, Clone, Serialize, Deserialize)]
+//#[serde(rename_all = "camelCase")]
 pub struct QueueStreamEvent<R, P> {
     pub id: StreamEventId,
     pub priority: Option<u64>,
@@ -48,9 +49,10 @@ pub struct QueueStreamEvent<R, P> {
     pub prev: Option<JobState>,
     pub job_id: u64,
     #[debug(skip)]
-    pub retuned_value: Option<R>,
+    pub returned_value: Option<R>,
     pub failed_reason: Option<FailedDetails>,
     #[debug(skip)]
+    #[serde(rename = "data")]
     pub progress_data: Option<P>,
     pub name: Option<String>,
     pub worker_id: Option<Uuid>,
@@ -81,7 +83,7 @@ impl<R, P> Default for QueueStreamEvent<R, P> {
             event: Default::default(),
             prev: Default::default(),
             job_id: Default::default(),
-            retuned_value: None,
+            returned_value: None,
             name: Default::default(),
             progress_data: None,
             worker_id: None,
@@ -117,17 +119,21 @@ impl<R: DeserializeOwned, P: DeserializeOwned> TryFrom<&mut StreamId> for QueueS
         for (key, val) in value.map.iter_mut() {
             if let redis::Value::BulkString(bytes) = val {
                 match key.to_lowercase().as_str() {
-                    "job_id" => event.job_id = u64::from_redis_value(val)?,
+                    "job_id" | "jobid" => event.job_id = u64::from_redis_value(val)?,
                     "name" => event.name = Option::from_redis_value(val)?,
                     "delay" => event.delay = Option::from_redis_value(val)?,
-                    "worker_id" => {
+                    "worker_id" | "workerid" => {
                         event.worker_id = simd_json::from_slice(bytes).map_err(Error::other)?;
                     }
                     "priority" => event.priority = Option::from_redis_value(val)?,
                     "data" => event.progress_data = simd_json::from_slice(bytes)?,
 
-                    "returnedvalue" => event.retuned_value = simd_json::from_slice(bytes)?,
-                    "failedreason" => event.failed_reason = simd_json::from_slice(bytes)?,
+                    "returnedvalue" | "returned_value" => {
+                        event.returned_value = simd_json::from_slice(bytes)?
+                    }
+                    "failedreason" | "failed_reason" => {
+                        event.failed_reason = simd_json::from_slice(bytes)?
+                    }
 
                     "event" => {
                         let parsed = JobState::from_redis_value(val)?;

@@ -13,6 +13,8 @@ use tokio::{sync::Notify, task::JoinHandle};
 pub trait Store<D, R, P> {
     fn queue_name(&self) -> &str;
     fn queue_prefix(&self) -> &str;
+    async fn metadata_field_exists(&self, field: &str) -> KioResult<bool>;
+    async fn set_event_mode(&self, event_mode: QueueEventMode) -> KioResult<()>;
     async fn listener_to_events(
         &self,
         event_mode: QueueEventMode,
