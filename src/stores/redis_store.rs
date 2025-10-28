@@ -165,7 +165,8 @@ where
         pipeline.zrangebyscore(&delayed_key, start, stop);
         pipeline.zrangebyscore(&delayed_key, "-inf", format!("({start}"));
         pipeline.zrembyscore(&delayed_key, start, stop);
-        let (jobs, missed_deadline, done): (Vec<u64>, Vec<u64>, i64) =
+        pipeline.zrembyscore(&delayed_key, "-inf", start);
+        let (jobs, missed_deadline, done, _): (Vec<u64>, Vec<u64>, i64, i64) =
             pipeline.query_async(&mut conn).await?;
         Ok((jobs, missed_deadline))
     }

@@ -383,6 +383,7 @@ impl<
         };
         self.store.publish_event(event_mode, item).await?;
         self.current_metrics.clear();
+        self.store.clear_collections().await?;
         Ok(())
     }
     async fn delete_all_jobs(&self) -> KioResult<()> {
