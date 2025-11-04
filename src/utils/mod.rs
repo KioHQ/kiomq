@@ -343,6 +343,7 @@ where
                         .promote_delayed_jobs(date_time, interval_ms, job_queue.clone())
                         .await?;
                 }
+
                 while let Some((key, job_id, state)) = task_queue.pop() {
                     if let Some(entry) = running.remove(&key) {
                         let handle = entry.value();
@@ -434,7 +435,9 @@ where
                 paused_here.notified().await;
                 to_pause.store(false, Ordering::Relaxed);
             }
+            tokio::task::yield_now().await;
         }
+        //dbg!("yield main : ", id);
         tokio::task::yield_now().await;
     }
     if cancellation_token.is_cancelled() {
@@ -633,7 +636,7 @@ where
     P: DeserializeOwned + Clone + Send + Sync + 'static,
 {
     store
-        .listener_to_events(event_mode, Some(block_interval as u64), emitter, &metrics)
+        .listen_to_events(event_mode, Some(block_interval as u64), emitter, &metrics)
         .await
 }
 pub async fn process_each_event<D, R, P>(
@@ -719,4 +722,52 @@ pub fn update_job_opts(queue_opts: &QueueOpts, opts: &mut JobOptions) {
     if opts.repeat.is_none() {
         opts.repeat = queue_opts.repeat.clone();
     }
+}
+/// utily function to create stream_handles
+pub async fn create_listener_handle<D, R, P, S>(
+    store: &S,
+    emitter: EventEmitter<D, R, P>,
+    notifier: Arc<Notify>,
+    metrics: Arc<JobMetrics>,
+    pause_workers: Arc<AtomicBool>,
+    event_mode: QueueEventMode,
+) -> KioResult<JoinHandle<KioResult<()>>>
+where
+    D: Clone + Serialize + DeserializeOwned + Send + 'static,
+    R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
+    S: Clone + Store<D, R, P> + Send + 'static + Sync,
+    P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
+{
+    use std::sync::atomic::Ordering;
+    let store = store.clone();
+
+    let task: JoinHandle<KioResult<()>> = tokio::spawn(
+        async move {
+            let block_interval = 5000; // 100 seconds
+            let notifier = notifier.clone();
+            let is_inital = AtomicBool::new(true);
+
+            loop {
+                let args: ReadStreamArgs<D, R, P> =
+                    (event_mode, block_interval, &emitter, metrics.clone());
+                process_queue_events(args, &store).await?;
+
+                if metrics.is_idle()
+                    && !is_inital.load(Ordering::Acquire)
+                    && !pause_workers
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .unwrap_or(true)
+                {
+                    println!("send pause signal ");
+                } else {
+                    resume_helper(&metrics, &pause_workers, &notifier);
+                }
+                is_inital.compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed);
+            }
+
+            Ok(())
+        }
+        .boxed(),
+    );
+    Ok(task)
 }
