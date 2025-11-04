@@ -28,6 +28,10 @@ num_cpus = "1.17.0"
 redis = { version = "0.32.3", features = ["tokio-comp", "streams", "json"] }
 serde = { version = "1.0.219", features = ["derive"] }
 simd-json = { version = "*", features = ["serde", "known-key"] }
+rocksdb = { version = "*", default-features = false, features = [
+  "snappy",
+  "multi-threaded-cf",
+], optional = true }
 thiserror = "2.0.12"
 tokio = { version = "1.46.1", features = [
   "macros",
@@ -39,10 +43,13 @@ tokio = { version = "1.46.1", features = [
 tokio-util = "0.7.15"
 typed-emitter = { git = "https://github.com/spencerjibz/typed-emitter.git", rev = "eafde7a6223f2acd63cc438ef6f3cbf300b3ce59" }
 uuid = { version = "1.18.1", features = ["serde", "v4"] }
+tempfile = "3.23.0"
 [dev-dependencies]
 tracing-subscriber = "0.3.20"
-ffmpeg-sidecar = { version = "*" }
+ffmpeg-sidecar = { version = "*", features = ["download_ffmpeg"] }
 rand = "*"
 [dev-dependencies.console-subscriber]
-version = "0.4"
+version = "0.5"
 features = ["env-filter"]
+[features]
+rocksdb-store = ["dep:rocksdb"]
