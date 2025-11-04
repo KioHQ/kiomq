@@ -51,5 +51,8 @@ rand = "*"
 [dev-dependencies.console-subscriber]
 version = "0.5"
 features = ["env-filter"]
+[[example]]
+name = "rocksdb-store"
+test = false
 [features]
 rocksdb-store = ["dep:rocksdb"]
