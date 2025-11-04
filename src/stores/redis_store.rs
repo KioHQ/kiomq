@@ -1,7 +1,7 @@
 use super::*;
 use crate::utils::{
-    prepare_for_insert, process_each_event, process_queue_events, query_all_batched, resume_helper,
-    update_job_opts, ReadStreamArgs,
+    create_listener_handle, prepare_for_insert, process_each_event, process_queue_events,
+    query_all_batched, resume_helper, update_job_opts, ReadStreamArgs,
 };
 use crate::{FailedDetails, JobError};
 use chrono::Utc;
@@ -21,7 +21,7 @@ use std::sync::Arc;
 use tokio::sync::{AcquireError, Notify};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
-/// a counter for adding b/ulk jobs,
+/// a counter for adding bulk jobs,
 static START: AtomicU64 = AtomicU64::new(0);
 static PC_COUNTER: AtomicU64 = AtomicU64::new(0);
 use tokio::sync::Mutex;
@@ -180,7 +180,7 @@ where
         let mut conn = self.get_connection().await.ok()?;
         conn.rpoplpush(src_key, dst_key).await.ok()
     }
-    async fn listener_to_events(
+    async fn listen_to_events(
         &self,
         event_mode: QueueEventMode,
         block_interval: Option<u64>,
@@ -233,37 +233,7 @@ where
         pause_workers: Arc<AtomicBool>,
         event_mode: QueueEventMode,
     ) -> KioResult<JoinHandle<KioResult<()>>> {
-        let store = self.clone();
-
-        let task: JoinHandle<KioResult<()>> = tokio::spawn(
-            async move {
-                let block_interval = 5000; // 100 seconds
-                let notifier = notifier.clone();
-                let is_inital = AtomicBool::new(true);
-
-                loop {
-                    let args: ReadStreamArgs<D, R, P> =
-                        (event_mode, block_interval, &emitter, metrics.clone());
-                    process_queue_events(args, &store).await?;
-
-                    if metrics.is_idle()
-                        && !is_inital.load(Ordering::Acquire)
-                        && !pause_workers
-                            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                            .unwrap_or(true)
-                    {
-                        println!("send pause signal ");
-                    } else {
-                        resume_helper(&metrics, &pause_workers, &notifier);
-                    }
-                    is_inital.compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed);
-                }
-
-                Ok(())
-            }
-            .boxed(),
-        );
-        Ok(task)
+        create_listener_handle(self, emitter, notifier, metrics, pause_workers, event_mode).await
     }
     async fn add_bulk_only(
         &self,
@@ -521,19 +491,18 @@ where
         key: CollectionSuffix,
         delta: i64,
         hash_key: Option<&str>,
-    ) -> KioResult<()> {
+    ) -> KioResult<u64> {
         let mut conn = self.get_connection().await?;
         let key_string = key.to_collection_name(&self.prefix, &self.name);
         let pipeline = redis::pipe();
 
         if let Some(field_key) = hash_key {
-            // we getting the processing counter;
-            let _: () = conn.hincr(key_string, field_key, delta).await?;
-            return Ok(());
+            let val = conn.hincr(key_string, field_key, delta).await?;
+            return Ok(val);
         }
 
-        let _: () = conn.incr(key_string, delta).await?;
-        Ok(())
+        let value: u64 = conn.incr(key_string, delta).await?;
+        Ok(value)
     }
     async fn get_counter(&self, key: CollectionSuffix, hash_key: Option<&str>) -> Option<u64> {
         let mut conn = self.get_connection().await.ok()?;
