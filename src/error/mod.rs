@@ -49,6 +49,9 @@ pub enum KioError {
     JobError(#[from] JobError),
     #[error(transparent)]
     CronerError(#[from] CronError),
+    #[cfg(feature = "rocksdb-store")]
+    #[error(transparent)]
+    InMemoryError(#[from] rocksdb::Error),
 }
 
 #[derive(Debug, Display, Error)]

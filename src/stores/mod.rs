@@ -6,17 +6,21 @@ use crate::{
     RemoveOnCompletionOrFailure, Trace, WorkerOpts,
 };
 mod redis_store;
+#[cfg(feature = "rocksdb-store")]
+mod rocksdb_store;
 use async_trait::async_trait;
 pub use redis_store::RedisStore;
+#[cfg(feature = "rocksdb-store")]
+pub use rocksdb_store::{ivec_to_number, temporary_rocks_db, RocksDbStore};
 use tokio::{sync::Notify, task::JoinHandle};
 #[allow(clippy::too_many_arguments)]
-#[async_trait]
+#[async_trait::async_trait]
 pub trait Store<D, R, P> {
     fn queue_name(&self) -> &str;
     fn queue_prefix(&self) -> &str;
     async fn metadata_field_exists(&self, field: &str) -> KioResult<bool>;
     async fn set_event_mode(&self, event_mode: QueueEventMode) -> KioResult<()>;
-    async fn listener_to_events(
+    async fn listen_to_events(
         &self,
         event_mode: QueueEventMode,
         block_interval: Option<u64>,
@@ -85,7 +89,7 @@ pub trait Store<D, R, P> {
         key: CollectionSuffix,
         delta: i64,
         hash_key: Option<&str>,
-    ) -> KioResult<()>;
+    ) -> KioResult<u64>;
     async fn get_counter(&self, key: CollectionSuffix, hash_key: Option<&str>) -> Option<u64>;
     async fn publish_event(
         &self,
