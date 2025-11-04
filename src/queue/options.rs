@@ -22,7 +22,7 @@ pub enum ProcessedResult<R> {
 }
 
 use derive_more::{Debug, Display};
-#[derive(Display, Serialize)]
+#[derive(Display, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
 pub enum CollectionSuffix {
     Active,    // (list)
     Completed, //Sorted Set
@@ -51,6 +51,81 @@ pub enum CollectionSuffix {
 impl CollectionSuffix {
     pub fn to_collection_name(&self, prefix: &str, name: &str) -> String {
         format!("{}:{}:{}", prefix, name, &self).to_lowercase()
+    }
+    /// create an identifier for this enum
+    fn discriminant(&self) -> u8 {
+        match self {
+            Self::Active => 1,
+            Self::Completed => 2,
+            Self::Delayed => 3,
+            Self::Stalled => 4,
+            Self::Prioritized => 5,
+            Self::PriorityCounter => 6,
+            Self::Id => 7,
+            Self::Meta => 8,
+            Self::Events => 9,
+            Self::Wait => 10,
+            Self::Paused => 11,
+            Self::Failed => 12,
+            Self::Marker => 13,
+            Self::Job(_) => 14,
+            Self::Prefix => 15,
+            Self::Lock(_) => 16,
+            Self::StalledCheck => 17,
+        }
+    }
+    pub fn tag(&self) -> u64 {
+        let top = (self.discriminant() as u64) << 56; // high 8 bits for variant id
+        match self {
+            // Fieldless variants → just top bits
+            Self::Active
+            | Self::Completed
+            | Self::Delayed
+            | Self::Stalled
+            | Self::Prioritized
+            | Self::PriorityCounter
+            | Self::Id
+            | Self::Meta
+            | Self::Events
+            | Self::Wait
+            | Self::Paused
+            | Self::Failed
+            | Self::Marker
+            | Self::Prefix
+            | Self::StalledCheck => top,
+
+            // Tagged variants → combine variant id + payload in lower 56 bits
+            Self::Job(id) | Self::Lock(id) => top | (id & 0x00FF_FFFF_FFFF_FFFF),
+        }
+    }
+    pub fn to_bytes(&self) -> [u8; 8] {
+        self.tag().to_be_bytes()
+    }
+    /// Decodes a tag back into its enum variant.
+    pub fn from_tag(tag: u64) -> Option<Self> {
+        let disc = (tag >> 56) as u8;
+        let payload = tag & 0x00FF_FFFF_FFFF_FFFF;
+
+        Some(match disc {
+            1 => Self::Active,
+            2 => Self::Completed,
+            3 => Self::Delayed,
+            4 => Self::Stalled,
+            5 => Self::Prioritized,
+            6 => Self::PriorityCounter,
+            7 => Self::Id,
+            8 => Self::Meta,
+            9 => Self::Events,
+            10 => Self::Wait,
+            11 => Self::Paused,
+            12 => Self::Failed,
+            13 => Self::Marker,
+            14 => Self::Job(payload),
+            15 => Self::Prefix,
+            16 => Self::Lock(payload),
+            17 => Self::StalledCheck,
+            _ => return None,
+        })
     }
 }
 impl From<JobState> for CollectionSuffix {

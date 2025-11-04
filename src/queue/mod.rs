@@ -84,6 +84,7 @@ impl<
         let current_metrics = Arc::new(metrics);
         let pause_workers: Arc<AtomicBool> = Arc::default();
         let is_paused = current_metrics.paused.load(Ordering::Relaxed);
+        let store = Arc::new(store);
         let task = store
             .create_stream_listener(
                 emitter.clone(),
@@ -94,10 +95,8 @@ impl<
             )
             .await?;
         let stream_listener = Arc::new(task);
-        //
-
         Ok(Self {
-            store: Arc::new(store),
+            store,
             event_mode,
             pause_workers,
             worker_notifier,
@@ -341,6 +340,7 @@ impl<
         .await;
 
         //remove element from stalled set too;
+
         let job = self
             .store
             .get_job(job_id)
@@ -405,6 +405,7 @@ impl<
             .store
             .pop_set(CollectionSuffix::Prioritized, true)
             .await?;
+
         if let Some((job_id, score)) = min_priority_job.pop() {
             let _: () = self
                 .store
