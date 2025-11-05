@@ -195,6 +195,48 @@ impl<D, R, P> RocksDbStore<D, R, P> {
         self.db.write_opt(job_batch, &opts)?;
         Ok(())
     }
+    async fn submit_changes(
+        &self,
+        is_paused: bool,
+        (mut list, mut priorized, mut delayed): (
+            VecDeque<u64>,
+            BTreeMap<u64, u64>,
+            BTreeMap<u64, u64>,
+        ),
+    ) -> KioResult<()> {
+        let next_list = if is_paused {
+            CollectionSuffix::Paused
+        } else {
+            CollectionSuffix::Wait
+        };
+        let delayed_col = CollectionSuffix::Delayed;
+        let priorized_col = CollectionSuffix::Prioritized;
+        let mut queue = self.fetch::<VecDeque<u64>>(next_list).unwrap_or_default();
+        let mut current_delayed = self
+            .fetch::<BTreeMap<u64, u64>>(CollectionSuffix::Delayed)
+            .unwrap_or_default();
+        let mut current_priorized = self
+            .fetch::<BTreeMap<u64, u64>>(CollectionSuffix::Prioritized)
+            .unwrap_or_default();
+        current_priorized.extend(priorized);
+        current_delayed.extend(delayed);
+        list.append(&mut queue);
+        let cf = self
+            .db
+            .cf_handle(&self.main_tree)
+            .ok_or(std::io::Error::other("failed here"))?;
+        let tx = self.db.transaction();
+        let list = simd_json::to_vec(&list)?;
+        let delayed = simd_json::to_vec(&current_delayed)?;
+        let priorized = simd_json::to_vec(&current_priorized)?;
+        tx.put_cf(&cf, next_list.to_bytes(), list);
+        tx.put_cf(&cf, delayed_col.to_bytes(), delayed);
+        tx.put_cf(&cf, priorized_col.to_bytes(), priorized);
+        self.commit().await?;
+        tx.commit()?;
+
+        Ok(())
+    }
 }
 impl<D, R, P> RocksDbStore<D, R, P>
 where
@@ -365,38 +407,8 @@ where
             )
             .await?;
         }
-        let next_list = if is_paused {
-            CollectionSuffix::Paused
-        } else {
-            CollectionSuffix::Wait
-        };
-        let delayed_col = CollectionSuffix::Delayed;
-        let priorized_col = CollectionSuffix::Prioritized;
-        let mut queue = self.fetch::<VecDeque<u64>>(next_list).unwrap_or_default();
-        let mut current_delayed = self
-            .fetch::<BTreeMap<u64, u64>>(CollectionSuffix::Delayed)
-            .unwrap_or_default();
-        let mut current_priorized = self
-            .fetch::<BTreeMap<u64, u64>>(CollectionSuffix::Prioritized)
-            .unwrap_or_default();
-        current_priorized.extend(priorized);
-        current_delayed.extend(delayed);
-        list.append(&mut queue);
-        let cf = self
-            .db
-            .cf_handle(&self.main_tree)
-            .ok_or(std::io::Error::other("failed here"))?;
-        let tx = self.db.transaction();
-        let list = simd_json::to_vec(&list)?;
-        let delayed = simd_json::to_vec(&current_delayed)?;
-        let priorized = simd_json::to_vec(&current_priorized)?;
-        tx.put_cf(&cf, next_list.to_bytes(), list);
-        tx.put_cf(&cf, delayed_col.to_bytes(), delayed);
-        tx.put_cf(&cf, priorized_col.to_bytes(), priorized);
-        self.commit().await?;
-        tx.commit()?;
-
-        Ok(())
+        self.submit_changes(is_paused, (list, priorized, delayed))
+            .await
     }
     async fn add_bulk(
         &self,
@@ -430,7 +442,8 @@ where
             .await?;
             jobs.push(job);
         }
-        self.commit().await?;
+        self.submit_changes(is_paused, (list, priorized, delayed))
+            .await?;
         Ok(jobs)
     }
     async fn get_delayed_at(&self, start: i64, stop: i64) -> KioResult<(Vec<u64>, Vec<u64>)> {
