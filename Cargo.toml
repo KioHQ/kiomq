@@ -2,7 +2,8 @@
 name = "kio-mq"
 version = "0.1.0"
 edition = "2021"
-
+[package.metadata.cargo-commands]
+exclude-examples = true
 [dependencies]
 async-backtrace = "0.2.7"
 async-trait = "0.1.89"
@@ -51,8 +52,5 @@ rand = "*"
 [dev-dependencies.console-subscriber]
 version = "0.5"
 features = ["env-filter"]
-[[example]]
-name = "rocksdb-store"
-test = false
 [features]
 rocksdb-store = ["dep:rocksdb"]
