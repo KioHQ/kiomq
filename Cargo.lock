@@ -1210,6 +1210,7 @@ dependencies = [
  "simd-json",
  "tempfile",
  "thiserror",
+ "timed-map",
  "tokio",
  "tokio-util",
  "tracing-subscriber",
@@ -2037,6 +2038,12 @@ checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
 dependencies = [
  "cfg-if",
 ]
+
+[[package]]
+name = "timed-map"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47e29dadb55913b13f482a3d61e45762f71cb7b145a012d8a48b8f05561eaa11"
 
 [[package]]
 name = "tinystr"
