@@ -793,7 +793,7 @@ where
                 if delta.is_negative() {
                     meta.processing = meta.processing.saturating_sub(delta.unsigned_abs());
                 } else {
-                    meta.processing += (delta) as u64;
+                    meta.processing += delta.unsigned_abs();
                 }
                 let next = meta.processing;
                 let updated = simd_json::to_vec(&meta)?;
@@ -805,9 +805,9 @@ where
         // counter should start at one
         let mut next = current;
         if delta.is_negative() {
-            next -= (delta) as u64;
+            next -= delta.unsigned_abs()
         } else {
-            next += (delta) as u64;
+            next += delta.unsigned_abs();
         }
         let updated = next.to_be_bytes();
 
@@ -935,9 +935,9 @@ where
             // move all active jobs to stalled
             let active: VecDeque<u64> = self.fetch(CollectionSuffix::Active).unwrap_or_default();
             for id in active {
-                self.add_item(CollectionSuffix::Stalled, id, None, true)
-                    .await?;
-                self.remove_item(CollectionSuffix::Active, id).await;
+                //self.add_item(CollectionSuffix::Stalled, id, None, true)
+                //    .await?;
+                //self.remove_item(CollectionSuffix::Active, id).await;
             }
         }
 

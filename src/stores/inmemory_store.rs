@@ -641,10 +641,10 @@ where
     ) -> KioResult<u64> {
         let handle_counter = |counter: &Counter| {
             if delta.is_positive() {
-                counter.fetch_add(delta as u64, Ordering::AcqRel);
+                counter.fetch_add(delta.unsigned_abs(), Ordering::AcqRel);
                 return counter.load(Ordering::Acquire);
             }
-            counter.fetch_sub(delta as u64, Ordering::AcqRel);
+            counter.fetch_sub(delta.unsigned_abs(), Ordering::AcqRel);
             counter.load(Ordering::Acquire)
         };
         let next = match key {
