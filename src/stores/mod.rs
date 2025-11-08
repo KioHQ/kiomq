@@ -15,6 +15,10 @@ pub use redis_store::RedisStore;
 #[cfg(feature = "rocksdb-store")]
 pub use rocksdb_store::{ivec_to_number, temporary_rocks_db, RocksDbStore};
 use tokio::{sync::Notify, task::JoinHandle};
+enum Lock {
+    Token(JobToken),
+    StallCheck,
+}
 #[allow(clippy::too_many_arguments)]
 #[async_trait::async_trait]
 pub trait Store<D, R, P> {

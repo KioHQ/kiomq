@@ -10,6 +10,7 @@ use crate::{
     QueueEventMode,
 };
 use chrono::Utc;
+use crossbeam_queue::SegQueue;
 use crossbeam_skiplist::map::Entry;
 use crossbeam_skiplist::SkipMap;
 use derive_more::Debug;
@@ -26,6 +27,7 @@ use std::future::IntoFuture;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use timed_map::TimedMap;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::Mutex;
 #[track_caller]
@@ -62,8 +64,9 @@ pub struct RocksDbStore<D, R, P> {
     #[debug(skip)]
     pub jobs: String,
     #[debug(skip)]
-    events_rx: Arc<Mutex<UnboundedReceiver<QueueStreamEvent<R, P>>>>,
-    events_sender: Arc<UnboundedSender<QueueStreamEvent<R, P>>>,
+    locks: Arc<Mutex<TimedMap<u64, Lock>>>,
+    #[debug(skip)]
+    events: Arc<SegQueue<QueueStreamEvent<R, P>>>,
     #[debug(skip)]
     job_batch: Arc<Mutex<WriteBatchWithTransaction<true>>>,
     /// A mode for publishing events, this store only supports PubSub using an channel,
@@ -98,13 +101,12 @@ impl<D, R, P> RocksDbStore<D, R, P> {
         let queue_name = format!("{prefix}:{name}");
         let jobs_collection = format!("{queue_name}:jobs");
         let event_mode = QueueEventMode::PubSub;
-        let (sender, rx) = unbounded_channel();
-        let events_rx = Arc::new(Mutex::new(rx));
-        let events_sender = Arc::new(sender);
+        let events = Arc::default();
+        let locks = Arc::default();
 
         let store = Self {
-            events_sender,
-            events_rx,
+            locks,
+            events,
             job_batch: Arc::default(),
             jobs: jobs_collection,
             main_tree: queue_name,
@@ -362,8 +364,10 @@ where
     ) -> KioResult<()> {
         use std::time::Duration;
         let interval = Duration::from_millis(block_interval.unwrap());
-        if let Some(stream_event) = self.events_rx.lock().await.recv().await {
-            process_each_event(stream_event, emitter, self, metrics).await?
+        if !self.events.is_empty() {
+            if let Some(stream_event) = self.events.pop() {
+                process_each_event(stream_event, emitter, self, metrics).await?
+            }
         }
         Ok(())
     }
@@ -726,10 +730,13 @@ where
         Ok(())
     }
     async fn set_lock(&self, job_id: u64, token: JobToken, lock_duration: u64) -> KioResult<()> {
-        // add expiration later;
-        let key = CollectionSuffix::Lock(job_id);
-        let value = simd_json::to_vec(&token)?;
-        self.put(key, value).await?;
+        use std::time::Duration;
+        let duration = Duration::from_millis(lock_duration);
+        let key = CollectionSuffix::Lock(job_id).tag();
+        self.locks
+            .lock()
+            .await
+            .insert_expirable(key, Lock::Token(token), duration);
         Ok(())
     }
     async fn set_fields(&self, job_id: u64, fields: &[(&str, String)]) -> KioResult<()> {
@@ -838,7 +845,7 @@ where
         event: QueueStreamEvent<R, P>,
     ) -> KioResult<()> {
         let key = event.id;
-        self.events_sender.send(event);
+        self.events.push(event);
         Ok(())
     }
     async fn move_stalled_jobs(
@@ -847,6 +854,7 @@ where
         (is_paused, target): (bool, JobState),
         event_mode: QueueEventMode,
     ) -> KioResult<(Vec<u64>, Vec<u64>)> {
+        use std::time::Duration;
         let mut failed = vec![];
         let mut stall = vec![];
         let ts = Utc::now().timestamp_micros();
@@ -860,6 +868,13 @@ where
         if check_key_exists {
             return Ok((vec![], vec![]));
         }
+        let stalled_check_key = CollectionSuffix::StalledCheck;
+        let duration = Duration::from_millis(opts.stalled_interval);
+        self.locks.lock().await.insert_expirable(
+            stalled_check_key.tag(),
+            Lock::StallCheck,
+            duration,
+        );
 
         let mut stalled = self
             .fetch::<BTreeSet<u64>>(CollectionSuffix::Stalled)
@@ -867,8 +882,10 @@ where
         if !stalled.is_empty() {
             for id in stalled {
                 let lock_exists = self
-                    .db
-                    .key_may_exist_cf(&cf, CollectionSuffix::Lock(id).to_bytes());
+                    .locks
+                    .lock()
+                    .await
+                    .contains_key(&CollectionSuffix::Lock(id).tag());
                 if lock_exists {
                     self.incr(CollectionSuffix::Job(id), 1, Some("stalledCounter"))
                         .await?;
@@ -988,6 +1005,7 @@ where
             .cf_handle(&self.main_tree)
             .expect("failed to get cf here");
         self.db.compact_range_cf(&cf, None::<&[u8]>, None::<&[u8]>);
+        self.locks.lock().await.clear();
         Ok(())
     }
     async fn clear_jobs(&self, last_id: u64) -> KioResult<()> {
