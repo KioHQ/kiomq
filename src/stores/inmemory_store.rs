@@ -18,10 +18,6 @@ use tokio::sync::RwLock;
 type StoredMap = SkipMap<u64, u64>;
 use crate::JobError;
 use std::sync::atomic::Ordering;
-enum Lock {
-    Token(JobToken),
-    StallCheck,
-}
 type TimedJobMap<D, R, P> = TimedMap<u64, Job<D, R, P>>;
 type ListQueue = SkipMap<Dt, u64>;
 #[derive(Clone, Debug)]
@@ -731,6 +727,15 @@ where
         if check_key_exists {
             return Ok((vec![], vec![]));
         }
+
+        // add stall checked lock
+        //self.locks.lock().await
+        let duration = Duration::from_millis(opts.stalled_interval);
+        self.locks.lock().await.insert_expirable(
+            stalled_check_key.tag(),
+            Lock::StallCheck,
+            duration,
+        );
 
         if !self.stalled.is_empty() {
             for entry in self.stalled.iter() {
