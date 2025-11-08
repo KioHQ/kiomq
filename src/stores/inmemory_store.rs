@@ -8,27 +8,26 @@ use chrono::{TimeDelta, Utc};
 use crossbeam_queue::SegQueue;
 use crossbeam_skiplist::{SkipMap, SkipSet};
 use derive_more::Debug;
+use parking_lot::RwLock;
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::VecDeque;
 use std::default;
 use std::time::Duration;
 use timed_map::TimedMap;
-use tokio::sync::Mutex;
-use tokio::sync::RwLock;
 type StoredMap = SkipMap<u64, u64>;
 use crate::JobError;
 use std::sync::atomic::Ordering;
 type TimedJobMap<D, R, P> = TimedMap<u64, Job<D, R, P>>;
-type ListQueue = SkipMap<Dt, u64>;
+type ListQueue = SkipMap<i64, u64>;
 #[derive(Clone, Debug)]
 pub struct InMemoryStore<D, R, P> {
     pub name: String,
     pub prefix: String,
     processing: Counter,
     is_paused: Arc<AtomicBool>,
-    jobs: Arc<Mutex<TimedJobMap<D, R, P>>>,
+    jobs: Arc<RwLock<TimedJobMap<D, R, P>>>,
     #[debug(skip)]
-    locks: Arc<Mutex<TimedMap<u64, Lock>>>, // locks that expired
+    locks: Arc<RwLock<TimedMap<u64, Lock>>>, // locks that expires
     #[debug(skip)]
     events: Arc<SegQueue<QueueStreamEvent<R, P>>>,
     id_counter: Counter,
@@ -85,11 +84,9 @@ impl<D: Clone, R: Clone, P: Clone> InMemoryStore<D, R, P> {
             }
             CollectionSuffix::Delayed => self.delayed.iter().any(|entry| *entry.value() == item),
             CollectionSuffix::Stalled => self.stalled.contains(&item),
-            CollectionSuffix::Job(id) => {
-                id == item && self.jobs.lock().await.contains_key(&col.tag())
-            }
+            CollectionSuffix::Job(id) => self.jobs.read().contains_key(&col.tag()),
             CollectionSuffix::Lock(_) | CollectionSuffix::StalledCheck => {
-                self.locks.lock().await.contains_key(&col.tag())
+                self.locks.read().contains_key(&col.tag())
             }
 
             _ => false,
@@ -156,7 +153,6 @@ where
             }
         } else if to_priorize {
             let score = calculate_next_priority_score(priority, pc) as i64;
-            //priorized.insert(score as u64, id);
             job.state = JobState::Priorized;
             self.add_item(CollectionSuffix::Prioritized, id, Some(score), true)
                 .await?;
@@ -167,8 +163,7 @@ where
         job.id = Some(id);
         let job_key = CollectionSuffix::Job(id).tag();
         self.jobs
-            .lock()
-            .await
+            .write()
             .insert_constant_unchecked(job_key, job.clone());
         let mut event = QueueStreamEvent::<R, P> {
             job_id: id,
@@ -218,7 +213,6 @@ where
         metrics: &JobMetrics,
     ) -> KioResult<()> {
         if let Some(stream_event) = self.events.pop() {
-            //dbg!(&stream_event);
             process_each_event(stream_event, emitter, self, metrics).await?
         }
         Ok(())
@@ -368,15 +362,13 @@ where
         match col {
             CollectionSuffix::Lock(_) | CollectionSuffix::StalledCheck => {
                 self.locks
-                    .lock()
-                    .await
+                    .write()
                     .update_expiration_status(key, duration)
                     .map_err(std::io::Error::other)?;
             }
             CollectionSuffix::Job(id) => {
                 self.jobs
-                    .lock()
-                    .await
+                    .write()
                     .update_expiration_status(key, duration)
                     .map_err(std::io::Error::other)?;
             }
@@ -402,14 +394,13 @@ where
 
     async fn get_job(&self, id: u64) -> Option<Job<D, R, P>> {
         let job_key = CollectionSuffix::Job(id).tag();
-        self.jobs.lock().await.get(&job_key).cloned()
+        self.jobs.read().get(&job_key).cloned()
     }
 
     async fn get_token(&self, id: u64) -> Option<JobToken> {
         let lock_key = CollectionSuffix::Lock(id).tag();
         self.locks
-            .lock()
-            .await
+            .read()
             .get(&lock_key)
             .and_then(|entry| match entry {
                 Lock::Token(token) => Some(*token),
@@ -419,11 +410,7 @@ where
 
     async fn get_state(&self, id: u64) -> Option<JobState> {
         let job_key = CollectionSuffix::Job(id).tag();
-        self.jobs
-            .lock()
-            .await
-            .get(&job_key)
-            .map(|entry| entry.state)
+        self.jobs.read().get(&job_key).map(|entry| entry.state)
     }
 
     fn update_job_progress(&self, job: &mut Job<D, R, P>, value: P) -> KioResult<()> {
@@ -434,13 +421,9 @@ where
             let job_key = CollectionSuffix::Job(id).tag();
             let jobs = self.jobs.clone();
             let value_clone = value.clone();
-            task::block_in_place(move || {
-                Handle::current().block_on(async {
-                    if let Some(entry) = jobs.lock().await.get_mut(&job_key) {
-                        entry.progress = Some(value_clone);
-                    }
-                });
-            });
+            if let Some(entry) = jobs.write().get_mut(&job_key) {
+                entry.progress = Some(value_clone);
+            }
             job.progress = Some(value);
         }
         Ok(())
@@ -453,37 +436,35 @@ where
         score: Option<i64>,
         append: bool,
     ) -> KioResult<()> {
+        let mut now = Utc::now().timestamp_millis();
         match col {
             CollectionSuffix::Active => {
-                let mut now = Utc::now();
                 let mut changed = false;
                 let before = now;
                 if append {
                     // first itme
                     if let Some(first_entry) = self.active.front() {
                         //dbg!("here", first_entry.value());
-                        now = *first_entry.key() - TimeDelta::milliseconds(10);
+                        now = *first_entry.key() - 1;
                         changed = true;
                     }
                 }
                 self.active.insert(now, item);
             }
             CollectionSuffix::Wait => {
-                let mut now = Utc::now();
                 if append {
                     // first itme
                     if let Some(first_entry) = self.waiting.front() {
-                        now = *first_entry.key() - TimeDelta::milliseconds(10);
+                        now = *first_entry.key() - 1;
                     }
                 }
                 self.waiting.insert(now, item);
             }
             CollectionSuffix::Paused => {
-                let mut now = Utc::now();
                 if append {
                     // first itme
                     if let Some(first_entry) = self.paused.front() {
-                        now = *first_entry.key() - TimeDelta::milliseconds(10);
+                        now = *first_entry.key() - 1;
                     }
                 }
                 self.paused.insert(now, item);
@@ -524,8 +505,8 @@ where
         match (src, dst) {
             (CollectionSuffix::Wait, CollectionSuffix::Active) => {
                 let value = self.waiting.pop_back()?;
-                let now = Utc::now();
-                self.active.insert(now, *value.value());
+                let ts_now = Utc::now().timestamp_millis();
+                self.active.insert(ts_now, *value.value());
                 return Some(*value.value());
             }
             _ => return None,
@@ -569,7 +550,7 @@ where
         }
         // upate the job here;
 
-        if let Some(mut job) = self.jobs.lock().await.get_mut(&job_key.tag()) {
+        if let Some(mut job) = self.jobs.write().get_mut(&job_key.tag()) {
             job.state = to;
             if let Some(backtrace) = backtrace.as_ref() {
                 job.stack_trace.push(backtrace.clone());
@@ -606,8 +587,7 @@ where
         let lock_key = CollectionSuffix::Lock(job_id).tag();
         let duration = Duration::from_millis(lock_duration);
         self.locks
-            .lock()
-            .await
+            .write()
             .insert_expirable(lock_key, Lock::Token(token), duration);
 
         Ok(())
@@ -615,7 +595,7 @@ where
 
     async fn set_fields(&self, job_id: u64, fields: &[(&str, String)]) -> KioResult<()> {
         let key = CollectionSuffix::Job(job_id);
-        if let Some(mut job) = self.jobs.lock().await.get_mut(&key.tag()) {
+        if let Some(mut job) = self.jobs.write().get_mut(&key.tag()) {
             for (key, value) in fields {
                 match *key {
                     "processedOn" | "processed_on" => {
@@ -653,23 +633,28 @@ where
             CollectionSuffix::Meta => handle_counter(&self.processing),
             CollectionSuffix::Job(_) => {
                 if let Some(field) = hash_key {
-                    let update_job = |job: &mut Job<D, R, P>| match field {
-                        "attempts_made" | "attemptsMade" => {
-                            job.attempts_made += ((job.attempts_made) as i64 + delta) as u64;
-                            job.attempts_made
+                    let update_job = |job: &mut Job<D, R, P>| -> u64 {
+                        match field {
+                            "attempts_made" | "attemptsMade" => {
+                                let new = (job.attempts_made as i64 + delta).max(0) as u64;
+                                job.attempts_made = new;
+                                new
+                            }
+                            "stalled_counter" | "stalledCounter" => {
+                                let new = (job.stalled_counter as i64 + delta).max(0) as u64;
+                                job.stalled_counter = new;
+                                new
+                            }
+                            _ => 0,
                         }
-                        "stalled_counter" | "stalledCounter" => {
-                            job.stalled_counter += ((job.attempts_made) as i64 + delta) as u64;
-                            job.stalled_counter
-                        }
-                        _ => 0,
                     };
                     let mut next = 0;
-                    if let Some(job) = self.jobs.lock().await.get_mut(&key.tag()) {
+                    if let Some(job) = self.jobs.write().get_mut(&key.tag()) {
                         next = update_job(job)
                     }
                     return Ok(next);
-                };
+                }
+
                 0
             }
             _ => 0,
@@ -687,7 +672,7 @@ where
             CollectionSuffix::Job(_) => {
                 if let Some(field) = hash_key {
                     let job_key = key.tag();
-                    return self.jobs.lock().await.get(&job_key).and_then(|job| {
+                    return self.jobs.read().get(&job_key).and_then(|job| {
                         match field.to_lowercase().as_str() {
                             "stalled_counter" | "stalledcounter" => Some(job.stalled_counter),
                             "attempts_made" | "attemptsmade" => Some(job.attempts_made),
@@ -731,11 +716,9 @@ where
         // add stall checked lock
         //self.locks.lock().await
         let duration = Duration::from_millis(opts.stalled_interval);
-        self.locks.lock().await.insert_expirable(
-            stalled_check_key.tag(),
-            Lock::StallCheck,
-            duration,
-        );
+        self.locks
+            .write()
+            .insert_expirable(stalled_check_key.tag(), Lock::StallCheck, duration);
 
         if !self.stalled.is_empty() {
             for entry in self.stalled.iter() {
@@ -791,15 +774,16 @@ where
         } else {
             // move all active jobs to stalled
             for entry in self.active.iter() {
-                let dt = entry.key();
-                let id = *entry.value();
-                let now = Utc::now();
-                let diff = (now - dt).num_milliseconds();
-                let lock = CollectionSuffix::Lock(id);
-                if !self.exists_in(id, lock).await && diff as u64 > opts.stalled_interval {
-                    self.add_item(CollectionSuffix::Stalled, id, None, true)
-                        .await?;
-                    entry.remove();
+                if let Some(dt) = Dt::from_timestamp_millis(*entry.key()) {
+                    let id = *entry.value();
+                    let now = Utc::now();
+                    let diff = (now - dt).num_milliseconds();
+                    let lock = CollectionSuffix::Lock(id);
+                    if !self.exists_in(id, lock).await && diff as u64 > opts.stalled_interval {
+                        self.add_item(CollectionSuffix::Stalled, id, None, true)
+                            .await?;
+                        entry.remove();
+                    }
                 }
             }
         }
@@ -892,10 +876,10 @@ where
                 self.stalled.remove(&item);
             }
             CollectionSuffix::Job(id) => {
-                self.jobs.lock().await.remove(&col.tag());
+                self.jobs.write().remove(&col.tag());
             }
             CollectionSuffix::Lock(id) => {
-                self.locks.lock().await.remove(&col.tag());
+                self.locks.write().remove(&col.tag());
             }
 
             _ => {}
@@ -922,7 +906,7 @@ where
     }
 
     async fn clear_jobs(&self, last_id: u64) -> KioResult<()> {
-        self.jobs.lock().await.clear();
+        self.jobs.write().clear();
         Ok(())
     }
 

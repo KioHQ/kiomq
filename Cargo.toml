@@ -46,6 +46,7 @@ typed-emitter = { git = "https://github.com/spencerjibz/typed-emitter.git", rev 
 uuid = { version = "1.18.1", features = ["serde", "v4"] }
 tempfile = "3.23.0"
 timed-map = "1.5.0"
+parking_lot = "0.12.5"
 [dev-dependencies]
 tracing-subscriber = "0.3.20"
 ffmpeg-sidecar = { version = "*", features = ["download_ffmpeg"] }
