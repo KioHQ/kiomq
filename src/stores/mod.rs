@@ -5,10 +5,12 @@ use crate::{
     JobOptions, JobState, JobToken, KioResult, ProcessedResult, QueueEventMode, QueueOpts,
     RemoveOnCompletionOrFailure, Trace, WorkerOpts,
 };
+mod inmemory_store;
 mod redis_store;
 #[cfg(feature = "rocksdb-store")]
 mod rocksdb_store;
 use async_trait::async_trait;
+pub use inmemory_store::InMemoryStore;
 pub use redis_store::RedisStore;
 #[cfg(feature = "rocksdb-store")]
 pub use rocksdb_store::{ivec_to_number, temporary_rocks_db, RocksDbStore};

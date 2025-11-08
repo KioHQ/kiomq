@@ -35,8 +35,9 @@ use crate::stores::Store;
 use crate::{EventEmitter, EventParameters};
 use atomig::Atomic;
 use derive_more::Debug;
-pub(crate) use options::ProcessedResult;
 pub use options::{CollectionSuffix, JobMetrics, QueueEventMode, QueueOpts, RetryOptions};
+pub(crate) use options::{Counter, ProcessedResult};
+
 use redis::{
     self, pipe, AsyncCommands, FromRedisValue, JsonAsyncCommands, LposOptions, Pipeline,
     RedisResult, ToRedisArgs, Value,
