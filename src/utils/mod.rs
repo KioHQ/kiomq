@@ -375,9 +375,7 @@ where
 
     let now = Instant::now();
     while !cancellation_token.is_cancelled() {
-        while !cancellation_token.is_cancelled()
-            && active_job_count.load(Ordering::Acquire) < opts.concurrency
-        {
+        while !cancellation_token.is_cancelled() && processing.len() < opts.concurrency {
             let token_prefix = active_job_count.load(std::sync::atomic::Ordering::Acquire);
             let next_id = Uuid::new_v4();
             let token = JobToken(id, next_id, token_prefix as u64);
@@ -399,7 +397,6 @@ where
 
                 let state = job.state;
                 let callback = processor.clone();
-                let count = active_job_count.fetch_add(1, Ordering::AcqRel);
                 queue
                     .update_processing_count(true, worker_id, id, state)
                     .await?;
@@ -763,6 +760,7 @@ where
                     resume_helper(&metrics, &pause_workers, &notifier);
                 }
                 is_inital.compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed);
+                tokio::task::yield_now().await;
             }
 
             Ok(())
