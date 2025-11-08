@@ -71,7 +71,7 @@ impl<D: DeserializeOwned, R: DeserializeOwned, P: DeserializeOwned> EventParamet
         let job_id = &event.job_id;
         let fetch_job = store.get_job(*job_id);
         let parameter = match job_state {
-            JobState::Priorized => Self::Prioritized {
+            JobState::Prioritized => Self::Prioritized {
                 job_id: event.job_id,
                 name: event.name,
                 priority: event.priority.unwrap_or_default(),

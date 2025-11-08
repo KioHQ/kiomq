@@ -33,7 +33,7 @@ pub struct InMemoryStore<D, R, P> {
     id_counter: Counter,
     priority_counter: Counter,
     completed: Arc<StoredMap>,
-    pub priorized: Arc<StoredMap>,
+    pub prioritized: Arc<StoredMap>,
     pub delayed: Arc<StoredMap>,
     failed: Arc<StoredMap>,
     stalled: Arc<SkipSet<u64>>,
@@ -58,7 +58,7 @@ impl<D: Clone, R: Clone, P: Clone> InMemoryStore<D, R, P> {
             locks: Arc::default(),
             events,
             completed: Arc::default(),
-            priorized: Arc::default(),
+            prioritized: Arc::default(),
             delayed: Arc::default(),
             failed: Arc::default(),
             stalled: Arc::default(),
@@ -80,7 +80,7 @@ impl<D: Clone, R: Clone, P: Clone> InMemoryStore<D, R, P> {
             }
             CollectionSuffix::Failed => self.failed.iter().any(|entry| *entry.value() == item),
             CollectionSuffix::Prioritized => {
-                self.priorized.iter().any(|entry| *entry.value() == item)
+                self.prioritized.iter().any(|entry| *entry.value() == item)
             }
             CollectionSuffix::Delayed => self.delayed.iter().any(|entry| *entry.value() == item),
             CollectionSuffix::Stalled => self.stalled.contains(&item),
@@ -153,10 +153,10 @@ where
             }
         } else if to_priorize {
             let score = calculate_next_priority_score(priority, pc) as i64;
-            job.state = JobState::Priorized;
+            job.state = JobState::Prioritized;
             self.add_item(CollectionSuffix::Prioritized, id, Some(score), true)
                 .await?;
-            event = JobState::Priorized;
+            event = JobState::Prioritized;
         } else {
             self.add_item(waiting_or_paused, id, None, true).await?;
         }
@@ -339,11 +339,11 @@ where
             }
             CollectionSuffix::Prioritized => {
                 if min {
-                    self.priorized
+                    self.prioritized
                         .pop_front()
                         .map(|entry| (*entry.key(), *entry.value()))
                 } else {
-                    self.priorized
+                    self.prioritized
                         .pop_back()
                         .map(|entry| (*entry.key(), *entry.value()))
                 }
@@ -481,7 +481,7 @@ where
             }
             CollectionSuffix::Prioritized => {
                 if let Some(score) = score {
-                    self.priorized.insert(score as u64, item);
+                    self.prioritized.insert(score as u64, item);
                 }
             }
             CollectionSuffix::Delayed => {
@@ -849,11 +849,11 @@ where
                     });
             }
             CollectionSuffix::Prioritized => {
-                if self.priorized.contains_key(&item) {
-                    let _ = self.priorized.remove(&item);
+                if self.prioritized.contains_key(&item) {
+                    let _ = self.prioritized.remove(&item);
                     return Ok(());
                 }
-                self.priorized
+                self.prioritized
                     .iter()
                     .filter(|entry| *entry.value() == item)
                     .for_each(|entry| {
@@ -889,6 +889,26 @@ where
 
     fn remove(&self, key: CollectionSuffix) -> KioResult<()> {
         // do thing here
+        match key {
+            CollectionSuffix::Active => self.active.clear(),
+            CollectionSuffix::Completed => self.active.clear(),
+            CollectionSuffix::Delayed => self.delayed.clear(),
+            CollectionSuffix::Stalled => self.stalled.clear(),
+            CollectionSuffix::Prioritized => self.prioritized.clear(),
+            CollectionSuffix::Wait => self.waiting.clear(),
+            CollectionSuffix::Paused => self.paused.clear(),
+            CollectionSuffix::Failed => self.failed.clear(),
+            CollectionSuffix::Job(_) => {
+                self.jobs.write().remove(&key.tag());
+            }
+            CollectionSuffix::Lock(_) => {
+                self.locks.write().remove(&key.tag());
+            }
+            CollectionSuffix::StalledCheck => {
+                self.locks.write().remove(&key.tag());
+            }
+            _ => {}
+        }
 
         Ok(())
     }
@@ -897,7 +917,7 @@ where
         self.completed.clear();
         self.failed.clear();
         self.delayed.clear();
-        self.priorized.clear();
+        self.prioritized.clear();
         self.stalled.clear();
         self.waiting.clear();
         self.paused.clear();

@@ -140,7 +140,7 @@ impl From<JobState> for CollectionSuffix {
             JobState::Failed => CollectionSuffix::Failed,
             JobState::Delayed => CollectionSuffix::Delayed,
             JobState::Progress => CollectionSuffix::Prefix,
-            JobState::Priorized => CollectionSuffix::Prioritized,
+            JobState::Prioritized => CollectionSuffix::Prioritized,
             JobState::Processing => CollectionSuffix::Meta,
             JobState::Obliterated => CollectionSuffix::Events,
         }
