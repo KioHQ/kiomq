@@ -568,7 +568,7 @@ pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
             format!("{queue_name}:{}", CollectionSuffix::Prioritized).to_lowercase();
         let score = calculate_next_priority_score(priority, prior_counter);
         pipeline.zadd(&prioritized_key, id, score);
-        job.state = JobState::Priorized;
+        job.state = JobState::Prioritized;
     } else {
         pipeline.lpush(&waiting_key, id.to_string());
     }
@@ -578,7 +578,7 @@ pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
     let event = if to_delay {
         JobState::Delayed
     } else if to_priorize {
-        JobState::Priorized
+        JobState::Prioritized
     } else {
         JobState::Wait
     };
