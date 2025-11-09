@@ -4,14 +4,13 @@ use crate::utils::{
 };
 use crate::worker::MIN_DELAY_MS_LIMIT;
 use crate::{Counter, Dt, FailedDetails, QueueError};
-use chrono::{TimeDelta, Utc};
+use chrono::Utc;
 use crossbeam_queue::SegQueue;
 use crossbeam_skiplist::{SkipMap, SkipSet};
 use derive_more::Debug;
 use parking_lot::RwLock;
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::VecDeque;
-use std::default;
 use std::time::Duration;
 use timed_map::TimedMap;
 type StoredMap = SkipMap<u64, u64>;
@@ -33,8 +32,8 @@ pub struct InMemoryStore<D, R, P> {
     id_counter: Counter,
     priority_counter: Counter,
     completed: Arc<StoredMap>,
-    pub prioritized: Arc<StoredMap>,
-    pub delayed: Arc<StoredMap>,
+    prioritized: Arc<StoredMap>,
+    delayed: Arc<StoredMap>,
     failed: Arc<StoredMap>,
     stalled: Arc<SkipSet<u64>>,
     active: Arc<ListQueue>,
@@ -68,7 +67,7 @@ impl<D: Clone, R: Clone, P: Clone> InMemoryStore<D, R, P> {
             event_mode: QueueEventMode::PubSub,
         }
     }
-    async fn exists_in(&self, item: u64, col: CollectionSuffix) -> bool {
+    async fn exists_in(&self, col: CollectionSuffix, item: u64) -> bool {
         match col {
             CollectionSuffix::Active => self.active.iter().any(|entry| *entry.value() == item),
 
@@ -357,7 +356,7 @@ where
     }
 
     async fn expire(&self, col: CollectionSuffix, secs: i64) -> KioResult<()> {
-        let duration = Duration::from_secs(secs as u64);
+        let duration = Duration::from_secs(secs.unsigned_abs());
         let key = col.tag();
         match col {
             CollectionSuffix::Lock(_) | CollectionSuffix::StalledCheck => {
@@ -414,9 +413,6 @@ where
     }
 
     fn update_job_progress(&self, job: &mut Job<D, R, P>, value: P) -> KioResult<()> {
-        use tokio::runtime::Handle;
-        use tokio::task;
-
         if let Some(id) = job.id {
             let job_key = CollectionSuffix::Job(id).tag();
             let jobs = self.jobs.clone();
@@ -442,9 +438,7 @@ where
                 let mut changed = false;
                 let before = now;
                 if append {
-                    // first itme
                     if let Some(first_entry) = self.active.front() {
-                        //dbg!("here", first_entry.value());
                         now = *first_entry.key() - 1;
                         changed = true;
                     }
@@ -453,7 +447,6 @@ where
             }
             CollectionSuffix::Wait => {
                 if append {
-                    // first itme
                     if let Some(first_entry) = self.waiting.front() {
                         now = *first_entry.key() - 1;
                     }
@@ -462,7 +455,6 @@ where
             }
             CollectionSuffix::Paused => {
                 if append {
-                    // first itme
                     if let Some(first_entry) = self.paused.front() {
                         now = *first_entry.key() - 1;
                     }
@@ -541,7 +533,7 @@ where
             self.add_item(next_state_suffix, job_id, Some(score), false)
                 .await?;
         } else {
-            let exists_in_list = self.exists_in(job_id, next_state_suffix).await;
+            let exists_in_list = self.exists_in(next_state_suffix, job_id).await;
             if !exists_in_list {
                 self.remove_item(previous_suffix, job_id).await?;
                 self.add_item(next_state_suffix, job_id, None, false)
@@ -707,7 +699,7 @@ where
         let ts = Utc::now().timestamp_micros();
         let stalled_check_key = CollectionSuffix::StalledCheck;
         let check_key_exists = self
-            .exists_in(stalled_check_key.tag(), CollectionSuffix::StalledCheck)
+            .exists_in(CollectionSuffix::StalledCheck, stalled_check_key.tag())
             .await;
         if check_key_exists {
             return Ok((vec![], vec![]));
@@ -725,7 +717,7 @@ where
                 let id = *entry.value();
                 let job_key = CollectionSuffix::Job(id);
 
-                let lock_exists = self.exists_in(id, CollectionSuffix::Lock(id)).await;
+                let lock_exists = self.exists_in(CollectionSuffix::Lock(id), id).await;
                 if lock_exists {
                     let stalled_count = self.incr(job_key, 1, Some("stalledCounter")).await?;
                     let attempts_made = self
@@ -779,7 +771,7 @@ where
                     let now = Utc::now();
                     let diff = (now - dt).num_milliseconds();
                     let lock = CollectionSuffix::Lock(id);
-                    if !self.exists_in(id, lock).await && diff as u64 > opts.stalled_interval {
+                    if !self.exists_in(lock, id).await && diff as u64 > opts.stalled_interval {
                         self.add_item(CollectionSuffix::Stalled, id, None, true)
                             .await?;
                         entry.remove();
@@ -793,7 +785,7 @@ where
 
     async fn job_exist(&self, id: u64) -> bool {
         let col_key = CollectionSuffix::Job(id);
-        self.exists_in(id, col_key).await
+        self.exists_in(col_key, id).await
     }
 
     async fn remove_item(&self, col: CollectionSuffix, item: u64) -> KioResult<()> {
@@ -935,10 +927,10 @@ where
         let paused_key = CollectionSuffix::Paused;
         let src = if pause { wait_key } else { paused_key };
         // only move items when the state changes
-        if !self
+        if self
             .is_paused
             .compare_exchange(!pause, pause, Ordering::AcqRel, Ordering::Relaxed)
-            .unwrap_or(true)
+            .is_ok()
         {
             if matches!(src, CollectionSuffix::Wait) {
                 while let Some(entry) = self.waiting.pop_front() {
