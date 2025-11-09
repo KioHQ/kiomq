@@ -751,9 +751,9 @@ where
 
                 if metrics.is_idle()
                     && !is_inital.load(Ordering::Acquire)
-                    && !pause_workers
+                    && pause_workers
                         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                        .unwrap_or(true)
+                        .is_ok()
                 {
                     println!("send pause signal ");
                 } else {
