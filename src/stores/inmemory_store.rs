@@ -506,16 +506,133 @@ where
         }
     }
 
-    async fn set_lock(&self, job_id: u64, token: JobToken, lock_duration: u64) -> KioResult<()> {
-        let lock_key = CollectionSuffix::Lock(job_id).tag();
+    async fn set_lock(
+        &self,
+        col: CollectionSuffix,
+        token: Option<JobToken>,
+        lock_duration: u64,
+    ) -> KioResult<()> {
+        let lock_key = col.tag();
         let duration = Duration::from_millis(lock_duration);
+        let mut lock = Lock::StallCheck;
+        if let Some(token) = token {
+            lock = Lock::Token(token);
+        }
         self.locks
             .write()
-            .insert_expirable(lock_key, Lock::Token(token), duration);
+            .insert_expirable(lock_key, lock, duration);
 
         Ok(())
     }
 
+    async fn get_job_ids_in_state(
+        &self,
+        state: JobState,
+        start: Option<usize>,
+        end: Option<usize>,
+    ) -> KioResult<VecDeque<u64>> {
+        let start = start.unwrap_or_default();
+        match state {
+            JobState::Wait => {
+                let end = end.unwrap_or(self.waiting.len() - 1);
+                let start = self.waiting.iter().nth(start).map(|entry| *entry.key());
+                let end = self.waiting.iter().nth(end).map(|entry| *entry.key());
+                if let (Some(start_element), Some(last_element)) = (start, end) {
+                    return Ok(self
+                        .waiting
+                        .range(start_element..=last_element)
+                        .map(|entry| *entry.value())
+                        .collect());
+                }
+            }
+            JobState::Prioritized => {
+                let end = end.unwrap_or(self.prioritized.len());
+                let start = self.prioritized.iter().nth(start).map(|entry| *entry.key());
+                let end = self.prioritized.iter().nth(end).map(|entry| *entry.key());
+                if let (Some(start_element), Some(last_element)) = (start, end) {
+                    return Ok(self
+                        .prioritized
+                        .range(start_element..=last_element)
+                        .map(|entry| *entry.value())
+                        .collect());
+                }
+            }
+            JobState::Stalled => {
+                let end = end.unwrap_or(self.stalled.len());
+                let start = self.stalled.iter().nth(start).map(|entry| *entry.value());
+                let end = self.stalled.iter().nth(end).map(|entry| *entry.value());
+                if let (Some(start_element), Some(last_element)) = (start, end) {
+                    return Ok(self
+                        .stalled
+                        .range(start_element..=last_element)
+                        .map(|entry| *entry.value())
+                        .collect());
+                }
+            }
+            JobState::Active => {
+                let end = end.unwrap_or(self.active.len());
+                let start = self.active.iter().nth(start).map(|entry| *entry.key());
+                let end = self.active.iter().nth(end).map(|entry| *entry.key());
+                if let (Some(start_element), Some(last_element)) = (start, end) {
+                    return Ok(self
+                        .active
+                        .range(start_element..=last_element)
+                        .map(|entry| *entry.value())
+                        .collect());
+                }
+            }
+            JobState::Paused => {
+                let end = end.unwrap_or(self.paused.len() - 1);
+                let start = self.paused.iter().nth(start).map(|entry| *entry.key());
+                let end = self.paused.iter().nth(end).map(|entry| *entry.key());
+                if let (Some(start_element), Some(last_element)) = (start, end) {
+                    return Ok(self
+                        .paused
+                        .range(start_element..=last_element)
+                        .map(|entry| *entry.value())
+                        .collect());
+                }
+            }
+            JobState::Completed => {
+                let end = end.unwrap_or(self.completed.len() - 1);
+                let start = self.completed.iter().nth(start).map(|entry| *entry.key());
+                let end = self.completed.iter().nth(end).map(|entry| *entry.key());
+                if let (Some(start_element), Some(last_element)) = (start, end) {
+                    return Ok(self
+                        .completed
+                        .range(start_element..=last_element)
+                        .map(|entry| *entry.value())
+                        .collect());
+                }
+            }
+            JobState::Failed => {
+                let end = end.unwrap_or(self.failed.len() - 1);
+                let start = self.failed.iter().nth(start).map(|entry| *entry.key());
+                let end = self.failed.iter().nth(end).map(|entry| *entry.key());
+                if let (Some(start_element), Some(last_element)) = (start, end) {
+                    return Ok(self
+                        .failed
+                        .range(start_element..=last_element)
+                        .map(|entry| *entry.value())
+                        .collect());
+                }
+            }
+            JobState::Delayed => {
+                let end = end.unwrap_or(self.delayed.len() - 1);
+                let start = self.delayed.iter().nth(start).map(|entry| *entry.key());
+                let end = self.delayed.iter().nth(end).map(|entry| *entry.key());
+                if let (Some(start_element), Some(last_element)) = (start, end) {
+                    return Ok(self
+                        .delayed
+                        .range(start_element..=last_element)
+                        .map(|entry| *entry.value())
+                        .collect());
+                }
+            }
+            _ => {}
+        }
+        Ok(VecDeque::new())
+    }
     async fn set_fields(&self, job_id: u64, fields: Vec<JobField<R>>) -> KioResult<()> {
         let key = CollectionSuffix::Job(job_id);
         if let Some(mut job) = self.jobs.write().get_mut(&key.tag()) {
@@ -625,102 +742,7 @@ where
         Ok(())
     }
 
-    async fn move_stalled_jobs(
-        &self,
-        opts: &WorkerOpts,
-        (is_paused, target): (bool, JobState),
-        event_mode: QueueEventMode,
-    ) -> KioResult<(Vec<u64>, Vec<u64>)> {
-        let mut failed = vec![];
-        let mut stall = vec![];
-        let ts = Utc::now().timestamp_micros();
-        let stalled_check_key = CollectionSuffix::StalledCheck;
-        let check_key_exists = self
-            .exists_in(CollectionSuffix::StalledCheck, stalled_check_key.tag())
-            .await?;
-        if check_key_exists {
-            return Ok((vec![], vec![]));
-        }
-
-        // add stall checked lock
-        //self.locks.lock().await
-        let duration = Duration::from_millis(opts.stalled_interval);
-        self.locks
-            .write()
-            .insert_expirable(stalled_check_key.tag(), Lock::StallCheck, duration);
-
-        if !self.stalled.is_empty() {
-            for entry in self.stalled.iter() {
-                let id = *entry.value();
-                let job_key = CollectionSuffix::Job(id);
-
-                let lock_exists = self.exists_in(CollectionSuffix::Lock(id), id).await?;
-                if lock_exists {
-                    let stalled_count = self.incr(job_key, 1, Some("stalledCounter")).await?;
-                    let attempts_made = self
-                        .get_counter(job_key, Some("attempts_made"))
-                        .await
-                        .unwrap_or_default();
-                    let from = self.get_state(id).await.unwrap_or_default();
-
-                    if stalled_count > opts.max_stalled_count {
-                        // Add job removal option logic here
-                        let reason = "job stalled more than allowable limit".to_lowercase();
-                        let to = JobState::Failed;
-                        let failed_reason = FailedDetails {
-                            run: attempts_made + 1,
-                            reason,
-                        };
-                        self.move_job_to_state(
-                            id,
-                            from,
-                            to,
-                            Some(ProcessedResult::Failed(failed_reason)),
-                            None,
-                            None,
-                            event_mode,
-                            is_paused,
-                        )
-                        .await?;
-                        failed.push(id);
-                    } else {
-                        self.move_job_to_state(
-                            id,
-                            JobState::Active,
-                            target,
-                            None,
-                            None,
-                            None,
-                            event_mode,
-                            is_paused,
-                        )
-                        .await?;
-                        // emit  stalled;
-                        stall.push(id);
-                    }
-                }
-            }
-        } else {
-            // move all active jobs to stalled
-            for entry in self.active.iter() {
-                if let Some(dt) = Dt::from_timestamp_millis(*entry.key()) {
-                    let id = *entry.value();
-                    let now = Utc::now();
-                    let diff = (now - dt).num_milliseconds();
-                    let lock = CollectionSuffix::Lock(id);
-                    if !self.exists_in(lock, id).await? && diff as u64 > opts.stalled_interval {
-                        self.add_item(CollectionSuffix::Stalled, id, None, true)
-                            .await?;
-                        entry.remove();
-                    }
-                }
-            }
-        }
-
-        Ok((failed, stall))
-    }
-
-    async fn job_exist(&self, id: u64) -> bool {
+    async fn job_exists(&self, id: u64) -> bool {
         let col_key = CollectionSuffix::Job(id);
         self.exists_in(col_key, id).await.unwrap_or(false)
     }

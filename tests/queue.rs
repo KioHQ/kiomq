@@ -125,7 +125,7 @@ mod queue {
         if let Some(fetched) = fetched_job {
             assert_eq!(job.id, fetched.id);
             assert_eq!(fetched.priority, 2);
-            assert_eq!(fetched.state, JobState::Priorized);
+            assert_eq!(fetched.state, JobState::Prioritized);
             assert_eq!(job.opts.delay, fetched.opts.delay)
         }
         queue.obliterate().await?;

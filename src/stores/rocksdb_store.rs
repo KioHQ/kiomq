@@ -682,13 +682,21 @@ where
         None
     }
 
-    async fn set_lock(&self, job_id: u64, token: JobToken, lock_duration: u64) -> KioResult<()> {
+    async fn set_lock(
+        &self,
+        col: CollectionSuffix,
+        token: Option<JobToken>,
+        lock_duration: u64,
+    ) -> KioResult<()> {
         use std::time::Duration;
+        let lock_key = col.tag();
         let duration = Duration::from_millis(lock_duration);
-        let key = CollectionSuffix::Lock(job_id).tag();
-        self.locks
-            .lock()
-            .insert_expirable(key, Lock::Token(token), duration);
+        let mut lock = Lock::StallCheck;
+        if let Some(token) = token {
+            lock = Lock::Token(token);
+        }
+        self.locks.lock().insert_expirable(lock_key, lock, duration);
+
         Ok(())
     }
     async fn set_fields(&self, job_id: u64, fields: Vec<JobField<R>>) -> KioResult<()> {
@@ -807,100 +815,51 @@ where
         self.events.push(event);
         Ok(())
     }
-    async fn move_stalled_jobs(
+
+    async fn get_job_ids_in_state(
         &self,
-        opts: &WorkerOpts,
-        (is_paused, target): (bool, JobState),
-        event_mode: QueueEventMode,
-    ) -> KioResult<(Vec<u64>, Vec<u64>)> {
-        use std::time::Duration;
-        let mut failed = vec![];
-        let mut stall = vec![];
-        let ts = Utc::now().timestamp_micros();
-        let cf = self
-            .db
-            .cf_handle(&self.main_tree)
-            .expect("failed to get cf here");
-        let check_key_exists = self
-            .db
-            .key_may_exist_cf(&cf, CollectionSuffix::StalledCheck.to_bytes());
-        if check_key_exists {
-            return Ok((vec![], vec![]));
-        }
-        let stalled_check_key = CollectionSuffix::StalledCheck;
-        let duration = Duration::from_millis(opts.stalled_interval);
-        self.locks
-            .lock()
-            .insert_expirable(stalled_check_key.tag(), Lock::StallCheck, duration);
-
-        let mut stalled = self
-            .fetch::<BTreeSet<u64>>(CollectionSuffix::Stalled)
-            .unwrap_or_default();
-        if !stalled.is_empty() {
-            for id in stalled {
-                let lock_exists = self
-                    .locks
-                    .lock()
-                    .contains_key(&CollectionSuffix::Lock(id).tag());
-                if lock_exists {
-                    self.incr(CollectionSuffix::Job(id), 1, Some("stalledCounter"))
-                        .await?;
-                    let mut job = self.get_job(id).await.ok_or(JobError::JobNotFound)?;
-
-                    let (stalled_count, from, attempts_made) =
-                        (job.stalled_counter, job.state, job.attempts_made);
-
-                    if stalled_count > opts.max_stalled_count {
-                        // Add job removal option logic here
-                        let reason = "job stalled more than allowable limit".to_lowercase();
-                        let to = JobState::Failed;
-                        let failed_reason = FailedDetails {
-                            run: attempts_made + 1,
-                            reason,
-                        };
-                        self.move_job_to_state(
-                            id,
-                            from,
-                            to,
-                            Some(ProcessedResult::Failed(failed_reason)),
-                            None,
-                            None,
-                            event_mode,
-                            is_paused,
-                        )
-                        .await?;
-                        failed.push(id);
-                    } else {
-                        self.move_job_to_state(
-                            id,
-                            JobState::Active,
-                            target,
-                            None,
-                            None,
-                            None,
-                            event_mode,
-                            is_paused,
-                        )
-                        .await?;
-                        // emit  stalled;
-                        stall.push(id);
+        state: JobState,
+        start: Option<usize>,
+        end: Option<usize>,
+    ) -> KioResult<VecDeque<u64>> {
+        let start = start.unwrap_or_default();
+        match state {
+            JobState::Prioritized | JobState::Completed | JobState::Failed | JobState::Delayed => {
+                let col = state.into();
+                if let Some(mut map) = self.fetch::<BTreeMap<u64, u64>>(col) {
+                    let end = end.unwrap_or(map.len().saturating_sub(1));
+                    let start = map.iter().nth(start);
+                    let end = map.iter().nth(end);
+                    if let (Some(start_element), Some(last_element)) = (start, end) {
+                        let start = *start_element.0;
+                        let end = *last_element.0;
+                        return Ok(map.range(start..=end).map(|pairs| *pairs.1).collect());
                     }
                 }
             }
-        } else {
-            // move all active jobs to stalled
-            let active: VecDeque<u64> = self.fetch(CollectionSuffix::Active).unwrap_or_default();
-            for id in active {
-                //self.add_item(CollectionSuffix::Stalled, id, None, true)
-                //    .await?;
-                //self.remove_item(CollectionSuffix::Active, id).await;
+            JobState::Stalled => {
+                let col = state.into();
+                if let Some(mut set) = self.fetch::<BTreeSet<u64>>(col) {
+                    let end = end.unwrap_or(set.len().saturating_sub(1));
+                    let start = set.iter().nth(start);
+                    let end = set.iter().nth(end);
+                    if let (Some(start_element), Some(last_element)) = (start, end) {
+                        return Ok(set.range(*start_element..=*last_element).copied().collect());
+                    }
+                }
             }
+            JobState::Active | JobState::Wait | JobState::Paused => {
+                let col = state.into();
+                if let Some(mut queue) = self.fetch::<VecDeque<u64>>(col) {
+                    let end = end.unwrap_or(queue.len().saturating_sub(1));
+                    return Ok(queue.range(start..end).copied().collect());
+                }
+            }
+            _ => {}
         }
-
-        Ok((failed, stall))
+        Ok(VecDeque::new())
     }
-
-    async fn job_exist(&self, id: u64) -> bool {
+    async fn job_exists(&self, id: u64) -> bool {
         let key = CollectionSuffix::Job(id).to_bytes();
         let cf = self
             .db
