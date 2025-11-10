@@ -8,17 +8,46 @@ use std::{
 
 use crate::{
     error::QueueError, BackOffJobOptions, FailedDetails, JobState, JobToken,
-    RemoveOnCompletionOrFailure, Repeat,
+    RemoveOnCompletionOrFailure, Repeat, Trace,
 };
 use atomig::{Atom, Atomic};
 use redis::{FromRedisValue, RedisResult, ToRedisArgs, Value};
 use serde::{Deserialize, Serialize};
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 /// An envelope representing the result of running the worker's callback
 pub enum ProcessedResult<R> {
     Failed(FailedDetails),
     Success(R),
+}
+/// Most frequent set fields on a job
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum JobField<R> {
+    Token(JobToken),
+    Payload(ProcessedResult<R>),
+    ProcessedOn(u64),
+    FinishedOn(u64),
+    State(JobState),
+    BackTrace(Trace),
+}
+impl<R> JobField<R> {
+    pub fn name(&self) -> &'static str {
+        match self {
+            JobField::Token(job_token) => "token",
+            JobField::Payload(processed_result) => {
+                if let ProcessedResult::Success(_) = processed_result {
+                    "returnedValue"
+                } else {
+                    "failedReason"
+                }
+            }
+            JobField::ProcessedOn(_) => "processedOn",
+            JobField::FinishedOn(_) => "FinishedOn",
+            JobField::State(job_state) => "state",
+            JobField::BackTrace(_) => "stackTrace",
+        }
+    }
 }
 
 use derive_more::{Debug, Display};

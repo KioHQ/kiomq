@@ -1,9 +1,9 @@
 use std::sync::{atomic::AtomicBool, Arc};
 
 use crate::{
-    events::QueueStreamEvent, BackOffJobOptions, CollectionSuffix, EventEmitter, Job, JobMetrics,
-    JobOptions, JobState, JobToken, KioResult, ProcessedResult, QueueEventMode, QueueOpts,
-    RemoveOnCompletionOrFailure, Trace, WorkerOpts,
+    events::QueueStreamEvent, BackOffJobOptions, CollectionSuffix, EventEmitter, Job, JobField,
+    JobMetrics, JobOptions, JobState, JobToken, KioResult, ProcessedResult, QueueEventMode,
+    QueueOpts, RemoveOnCompletionOrFailure, Trace, WorkerOpts,
 };
 mod inmemory_store;
 mod redis_store;
@@ -25,6 +25,7 @@ pub trait Store<D, R, P> {
     fn queue_name(&self) -> &str;
     fn queue_prefix(&self) -> &str;
     async fn metadata_field_exists(&self, field: &str) -> KioResult<bool>;
+    async fn exists_in(&self, col: CollectionSuffix, item: u64) -> KioResult<bool>;
     async fn set_event_mode(&self, event_mode: QueueEventMode) -> KioResult<()>;
     async fn listen_to_events(
         &self,
@@ -77,19 +78,8 @@ pub trait Store<D, R, P> {
     ) -> Option<u64>;
 
     //async fn del
-    async fn move_job_to_state(
-        &self,
-        job_id: u64,
-        from: JobState,
-        to: JobState,
-        value: Option<ProcessedResult<R>>,
-        ts: Option<i64>,
-        backtrace: Option<Trace>,
-        event_mode: QueueEventMode,
-        is_paused: bool,
-    ) -> KioResult<()>;
     async fn set_lock(&self, job_id: u64, token: JobToken, lock_duration: u64) -> KioResult<()>;
-    async fn set_fields(&self, job_id: u64, fields: &[(&str, String)]) -> KioResult<()>;
+    async fn set_fields(&self, job_id: u64, fields: Vec<JobField<R>>) -> KioResult<()>;
     async fn incr(
         &self,
         key: CollectionSuffix,

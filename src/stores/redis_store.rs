@@ -101,6 +101,40 @@ where
         let result = conn.hexists(meta_key, field).await?;
         Ok(result)
     }
+    async fn exists_in(&self, col: CollectionSuffix, item: u64) -> KioResult<bool> {
+        let mut conn = self.get_connection().await?;
+        let mut pipeline = redis::pipe();
+        let key = col.to_collection_name(&self.prefix, &self.name);
+        match col {
+            CollectionSuffix::Completed
+            | CollectionSuffix::Delayed
+            | CollectionSuffix::Failed
+            | CollectionSuffix::Prioritized => {
+                pipeline.zscore(key, item);
+            }
+            CollectionSuffix::Stalled => {
+                pipeline.sismember(key, item);
+            }
+
+            CollectionSuffix::Active | CollectionSuffix::Wait | CollectionSuffix::Wait => {
+                let opts = LposOptions::default();
+                pipeline.lpos(key, item, opts);
+            }
+
+            _ => {
+                pipeline.exists(key);
+            }
+        }
+        let result: Option<i64> = pipeline.query_async(&mut conn).await?;
+        let mut expected = false;
+        if let Some(val) = result {
+            if val > 0 {
+                expected = true;
+            }
+        }
+
+        Ok(expected)
+    }
     async fn set_event_mode(&self, event_mode: QueueEventMode) -> KioResult<()> {
         let mut conn = self.get_connection().await?;
         let meta_key = CollectionSuffix::Meta.to_collection_name(&self.prefix, &self.name);
@@ -379,111 +413,34 @@ where
         let _: () = conn.del(key)?;
         Ok(())
     }
-    //async fn del
-    async fn move_job_to_state(
-        &self,
-        job_id: u64,
-        from: JobState,
-        to: JobState,
-        value: Option<ProcessedResult<R>>,
-        ts: Option<i64>,
-        backtrace: Option<Trace>,
-        event_mode: QueueEventMode,
-        is_paused: bool,
-    ) -> KioResult<()> {
-        let move_to_failed_or_completed = matches!(to, JobState::Failed | JobState::Completed);
-        // do nothing if the  queue_is_paused.
-        if is_paused {
-            return Ok(());
-        }
-        use redis::Value;
-        let previous_suffix = from.into();
-        let next_state_suffix = to.into();
-        let [job_key, events_key, prev_state_key, next_state_key] = [
-            CollectionSuffix::Job(job_id),
-            CollectionSuffix::Events,
-            previous_suffix,
-            next_state_suffix,
-        ]
-        .map(|s| s.to_collection_name(&self.prefix, &self.name));
-        let mut conn = self.conn_pool.get().await?;
-        let job_exists: bool = conn.exists(&job_key).await?;
-        if !job_exists {
-            return Err(JobError::JobNotFound.into());
-        }
-        let mut pipeline = redis::pipe();
-        pipeline.atomic();
-        if move_to_failed_or_completed {
-            pipeline.hincr(&job_key, "attemptsMade", 1);
-            pipeline.lrem(prev_state_key, 1, job_id);
-            pipeline.zadd(
-                next_state_key,
-                job_id,
-                ts.unwrap_or_else(|| Utc::now().timestamp_micros()),
-            );
-        } else {
-            // only move the value if it doesn't exist in the target list
-            let job_id_exists_in_target: Option<usize> = conn
-                .lpos(&next_state_key, job_id, LposOptions::default())
-                .await?;
-            if job_id_exists_in_target.is_none() {
-                pipeline.lrem(prev_state_key, 1, job_id);
-                pipeline.rpush(next_state_key, job_id);
-            }
-        }
-        let dst = simd_json::to_string(&to)?;
-        pipeline.hset(&job_key, "state", dst);
-        if let Some(backtrace) = backtrace {
-            // there is an empty vect stored
-            let mut previous: Vec<u8> = conn.hget(&job_key, "stackTrace").await?;
-            let mut previous: Vec<Trace> = simd_json::from_slice(&mut previous)?;
-            previous.push(backtrace);
-            pipeline.hset(
-                &job_key,
-                "stackTrace",
-                simd_json::to_string_pretty(&previous)?,
-            );
-        }
-
-        let payload_key = if matches!(to, JobState::Failed) {
-            "failedReason"
-        } else {
-            "returnedValue"
-        };
-        if let Some(data) = value.as_ref() {
-            let data = simd_json::to_string_pretty(&data)?;
-            pipeline.hset(&job_key, payload_key, &data);
-            pipeline.hset(&job_key, "finishedOn", ts);
-        }
-        // check of retries_exhausion here;
-        let _: redis::Value = pipeline.query_async(&mut conn).await?;
-        let mut event: QueueStreamEvent<R, P> = QueueStreamEvent {
-            event: to,
-            prev: Some(from),
-            job_id,
-            ..Default::default()
-        };
-        if let Some(data) = value {
-            match data {
-                ProcessedResult::Failed(failed_details) => {
-                    event.failed_reason = Some(failed_details)
-                }
-                ProcessedResult::Success(value) => event.returned_value = Some(value),
-            }
-        }
-
-        <RedisStore as Store<D, R, P>>::publish_event(self, event_mode, event).await
-    }
     async fn set_lock(&self, job_id: u64, token: JobToken, lock_duration: u64) -> KioResult<()> {
         let mut conn = self.get_connection().await?;
         let key = CollectionSuffix::Lock(job_id).to_collection_name(&self.prefix, &self.name);
         let _: () = conn.pset_ex(key, token, lock_duration).await?;
         Ok(())
     }
-    async fn set_fields(&self, job_id: u64, fields: &[(&str, String)]) -> KioResult<()> {
+    async fn set_fields(&self, job_id: u64, fields: Vec<JobField<R>>) -> KioResult<()> {
         let mut conn = self.get_connection().await?;
+        let mut blocking_con = self.redis_client.get_connection()?;
         let job_key = CollectionSuffix::Job(job_id).to_collection_name(&self.prefix, &self.name);
-        let _: () = conn.hset_multiple(&job_key, fields).await?;
+        let fields: Vec<_> = fields
+            .into_iter()
+            .flat_map(|field| {
+                let name = field.name();
+                if let JobField::BackTrace(trace) = field {
+                    let mut previous: Vec<u8> = blocking_con.hget(&job_key, "stackTrace").ok()?;
+                    let mut previous: Vec<Trace> = simd_json::from_slice(&mut previous).ok()?;
+                    previous.push(trace);
+                    return simd_json::to_string(&previous)
+                        .ok()
+                        .map(move |result| (name, result));
+                }
+                simd_json::to_string(&field)
+                    .ok()
+                    .map(move |result| (name, result))
+            })
+            .collect();
+        let _: () = conn.hset_multiple(&job_key, &fields).await?;
         Ok(())
     }
     async fn incr(
