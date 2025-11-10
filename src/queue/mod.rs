@@ -36,7 +36,7 @@ use crate::{EventEmitter, EventParameters};
 use atomig::Atomic;
 use derive_more::Debug;
 pub use options::{CollectionSuffix, JobMetrics, QueueEventMode, QueueOpts, RetryOptions};
-pub(crate) use options::{Counter, ProcessedResult};
+pub(crate) use options::{Counter, JobField, ProcessedResult};
 
 use redis::{
     self, pipe, AsyncCommands, FromRedisValue, JsonAsyncCommands, LposOptions, Pipeline,
@@ -170,11 +170,61 @@ impl<
     ) -> KioResult<()> {
         let event_mode = self.event_mode.load(Ordering::Acquire);
         let is_paused = self.is_paused();
-        self.store
-            .move_job_to_state(
-                job_id, from, to, value, ts, backtrace, event_mode, is_paused,
-            )
-            .await
+        let job_key = CollectionSuffix::Job(job_id);
+        let move_to_failed_or_completed = matches!(to, JobState::Failed | JobState::Completed);
+        let previous_suffix = from.into();
+        let next_state_suffix = to.into();
+        if is_paused {
+            return Ok(());
+        }
+        if !self.store.job_exist(job_id).await {
+            return Err(JobError::JobNotFound.into());
+        }
+        if move_to_failed_or_completed {
+            self.store.incr(job_key, 1, Some("attemptsMade")).await?;
+            self.store.remove_item(previous_suffix, job_id).await?;
+            let score = ts.unwrap_or_else(|| Utc::now().timestamp_micros());
+            self.store
+                .add_item(next_state_suffix, job_id, Some(score), false)
+                .await?;
+        } else {
+            let exists_in_list = self.store.exists_in(next_state_suffix, job_id).await?;
+            if !exists_in_list {
+                self.store.remove_item(previous_suffix, job_id).await?;
+                self.store
+                    .add_item(next_state_suffix, job_id, None, false)
+                    .await?;
+            }
+        }
+        let mut fields: Vec<JobField<R>> = vec![JobField::State(to)];
+
+        if let Some(backtrace) = backtrace.as_ref() {
+            //job.stack_trace.push(backtrace.clone());
+            fields.push(JobField::BackTrace(backtrace.clone()));
+        }
+        if let Some(rec) = value.as_ref() {
+            fields.push(JobField::Payload(rec.clone()));
+            if let Some(ts) = ts {
+                fields.push(JobField::FinishedOn(ts.unsigned_abs()));
+            }
+        }
+        self.store.set_fields(job_id, fields).await?;
+        let mut event: QueueStreamEvent<R, P> = QueueStreamEvent {
+            event: to,
+            prev: Some(from),
+            job_id,
+            ..Default::default()
+        };
+        if let Some(data) = value {
+            match data {
+                ProcessedResult::Failed(failed_details) => {
+                    event.failed_reason = Some(failed_details)
+                }
+                ProcessedResult::Success(value) => event.returned_value = Some(value),
+            }
+        }
+        self.store.publish_event(event_mode, event).await?;
+        Ok(())
     }
     /// pauses the queue if not resumed and vice-versa
     pub async fn pause_or_resume(&self) -> Result<(), KioError> {
@@ -290,11 +340,8 @@ impl<
             .await?;
         self.move_job_to_state(job_id, prev_state, JobState::Active, None, None, None)
             .await?;
-        let items = [
-            ("processedOn", simd_json::to_string(&ts)?),
-            ("token", simd_json::to_string(&token)?),
-        ];
-        self.store.set_fields(job_id, &items).await?;
+        let items = vec![JobField::Token(token), JobField::ProcessedOn(ts)];
+        self.store.set_fields(job_id, items).await?;
         let job = self
             .store
             .get_job(job_id)

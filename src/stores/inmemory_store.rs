@@ -67,30 +67,6 @@ impl<D: Clone, R: Clone, P: Clone> InMemoryStore<D, R, P> {
             event_mode: QueueEventMode::PubSub,
         }
     }
-    async fn exists_in(&self, col: CollectionSuffix, item: u64) -> bool {
-        match col {
-            CollectionSuffix::Active => self.active.iter().any(|entry| *entry.value() == item),
-
-            CollectionSuffix::Wait => self.waiting.iter().any(|entry| *entry.value() == item),
-
-            CollectionSuffix::Paused => self.paused.iter().any(|entry| *entry.value() == item),
-            CollectionSuffix::Completed => {
-                self.completed.iter().any(|entry| *entry.value() == item)
-            }
-            CollectionSuffix::Failed => self.failed.iter().any(|entry| *entry.value() == item),
-            CollectionSuffix::Prioritized => {
-                self.prioritized.iter().any(|entry| *entry.value() == item)
-            }
-            CollectionSuffix::Delayed => self.delayed.iter().any(|entry| *entry.value() == item),
-            CollectionSuffix::Stalled => self.stalled.contains(&item),
-            CollectionSuffix::Job(id) => self.jobs.read().contains_key(&col.tag()),
-            CollectionSuffix::Lock(_) | CollectionSuffix::StalledCheck => {
-                self.locks.read().contains_key(&col.tag())
-            }
-
-            _ => false,
-        }
-    }
 }
 impl<D, R, P> InMemoryStore<D, R, P>
 where
@@ -195,6 +171,31 @@ where
         &self.prefix
     }
 
+    async fn exists_in(&self, col: CollectionSuffix, item: u64) -> KioResult<bool> {
+        let result = match col {
+            CollectionSuffix::Active => self.active.iter().any(|entry| *entry.value() == item),
+
+            CollectionSuffix::Wait => self.waiting.iter().any(|entry| *entry.value() == item),
+
+            CollectionSuffix::Paused => self.paused.iter().any(|entry| *entry.value() == item),
+            CollectionSuffix::Completed => {
+                self.completed.iter().any(|entry| *entry.value() == item)
+            }
+            CollectionSuffix::Failed => self.failed.iter().any(|entry| *entry.value() == item),
+            CollectionSuffix::Prioritized => {
+                self.prioritized.iter().any(|entry| *entry.value() == item)
+            }
+            CollectionSuffix::Delayed => self.delayed.iter().any(|entry| *entry.value() == item),
+            CollectionSuffix::Stalled => self.stalled.contains(&item),
+            CollectionSuffix::Job(id) => self.jobs.read().contains_key(&col.tag()),
+            CollectionSuffix::Lock(_) | CollectionSuffix::StalledCheck => {
+                self.locks.read().contains_key(&col.tag())
+            }
+
+            _ => false,
+        };
+        Ok(result)
+    }
     async fn metadata_field_exists(&self, field: &str) -> KioResult<bool> {
         Ok(true)
     }
@@ -505,76 +506,6 @@ where
         }
     }
 
-    async fn move_job_to_state(
-        &self,
-        job_id: u64,
-        from: JobState,
-        to: JobState,
-        value: Option<ProcessedResult<R>>,
-        ts: Option<i64>,
-        backtrace: Option<Trace>,
-        event_mode: QueueEventMode,
-        is_paused: bool,
-    ) -> KioResult<()> {
-        let job_key = CollectionSuffix::Job(job_id);
-        let move_to_failed_or_completed = matches!(to, JobState::Failed | JobState::Completed);
-        let previous_suffix = from.into();
-        let next_state_suffix = to.into();
-        if is_paused {
-            return Ok(());
-        }
-        if !self.job_exist(job_id).await {
-            return Err(JobError::JobNotFound.into());
-        }
-        if move_to_failed_or_completed {
-            self.incr(job_key, 1, Some("attemptsMade")).await?;
-            self.remove_item(previous_suffix, job_id).await?;
-            let score = ts.unwrap_or_else(|| Utc::now().timestamp_micros());
-            self.add_item(next_state_suffix, job_id, Some(score), false)
-                .await?;
-        } else {
-            let exists_in_list = self.exists_in(next_state_suffix, job_id).await;
-            if !exists_in_list {
-                self.remove_item(previous_suffix, job_id).await?;
-                self.add_item(next_state_suffix, job_id, None, false)
-                    .await?;
-            }
-        }
-        // upate the job here;
-
-        if let Some(mut job) = self.jobs.write().get_mut(&job_key.tag()) {
-            job.state = to;
-            if let Some(backtrace) = backtrace.as_ref() {
-                job.stack_trace.push(backtrace.clone());
-            }
-            if let Some(value) = value.as_ref() {
-                match value {
-                    ProcessedResult::Failed(failed_details) => {
-                        job.failed_reason = Some(failed_details.clone())
-                    }
-                    ProcessedResult::Success(done) => job.returned_value = Some(done.clone()),
-                };
-                job.finished_on = ts.and_then(Dt::from_timestamp_micros);
-            }
-        }
-        let mut event: QueueStreamEvent<R, P> = QueueStreamEvent {
-            event: to,
-            prev: Some(from),
-            job_id,
-            ..Default::default()
-        };
-        if let Some(data) = value {
-            match data {
-                ProcessedResult::Failed(failed_details) => {
-                    event.failed_reason = Some(failed_details)
-                }
-                ProcessedResult::Success(value) => event.returned_value = Some(value),
-            }
-        }
-        self.publish_event(event_mode, event).await?;
-        Ok(())
-    }
-
     async fn set_lock(&self, job_id: u64, token: JobToken, lock_duration: u64) -> KioResult<()> {
         let lock_key = CollectionSuffix::Lock(job_id).tag();
         let duration = Duration::from_millis(lock_duration);
@@ -585,20 +516,26 @@ where
         Ok(())
     }
 
-    async fn set_fields(&self, job_id: u64, fields: &[(&str, String)]) -> KioResult<()> {
+    async fn set_fields(&self, job_id: u64, fields: Vec<JobField<R>>) -> KioResult<()> {
         let key = CollectionSuffix::Job(job_id);
         if let Some(mut job) = self.jobs.write().get_mut(&key.tag()) {
-            for (key, value) in fields {
-                match *key {
-                    "processedOn" | "processed_on" => {
-                        job.processed_on =
-                            simd_json::from_reader::<_, Option<u64>>(value.as_bytes())
-                                .ok()
-                                .flatten()
-                                .and_then(|t| Dt::from_timestamp_micros(t as i64))
+            for field in fields {
+                match field {
+                    JobField::BackTrace(trace) => job.stack_trace.push(trace),
+                    JobField::State(state) => job.state = state,
+                    JobField::ProcessedOn(ts) => {
+                        job.processed_on = Dt::from_timestamp_micros(ts as i64);
                     }
-                    "token" => job.token = simd_json::from_reader(value.as_bytes()).ok(),
-                    _ => {}
+                    JobField::FinishedOn(ts) => {
+                        job.finished_on = Dt::from_timestamp_micros(ts as i64);
+                    }
+                    JobField::Token(token) => job.token = Some(token),
+                    JobField::Payload(processed_result) => match processed_result {
+                        ProcessedResult::Failed(failed_details) => {
+                            job.failed_reason = Some(failed_details)
+                        }
+                        ProcessedResult::Success(result) => job.returned_value = Some(result),
+                    },
                 }
             }
         }
@@ -700,7 +637,7 @@ where
         let stalled_check_key = CollectionSuffix::StalledCheck;
         let check_key_exists = self
             .exists_in(CollectionSuffix::StalledCheck, stalled_check_key.tag())
-            .await;
+            .await?;
         if check_key_exists {
             return Ok((vec![], vec![]));
         }
@@ -717,7 +654,7 @@ where
                 let id = *entry.value();
                 let job_key = CollectionSuffix::Job(id);
 
-                let lock_exists = self.exists_in(CollectionSuffix::Lock(id), id).await;
+                let lock_exists = self.exists_in(CollectionSuffix::Lock(id), id).await?;
                 if lock_exists {
                     let stalled_count = self.incr(job_key, 1, Some("stalledCounter")).await?;
                     let attempts_made = self
@@ -771,7 +708,7 @@ where
                     let now = Utc::now();
                     let diff = (now - dt).num_milliseconds();
                     let lock = CollectionSuffix::Lock(id);
-                    if !self.exists_in(lock, id).await && diff as u64 > opts.stalled_interval {
+                    if !self.exists_in(lock, id).await? && diff as u64 > opts.stalled_interval {
                         self.add_item(CollectionSuffix::Stalled, id, None, true)
                             .await?;
                         entry.remove();
@@ -785,7 +722,7 @@ where
 
     async fn job_exist(&self, id: u64) -> bool {
         let col_key = CollectionSuffix::Job(id);
-        self.exists_in(col_key, id).await
+        self.exists_in(col_key, id).await.unwrap_or(false)
     }
 
     async fn remove_item(&self, col: CollectionSuffix, item: u64) -> KioResult<()> {

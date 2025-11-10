@@ -15,6 +15,7 @@ use crossbeam_skiplist::map::Entry;
 use crossbeam_skiplist::SkipMap;
 use derive_more::Debug;
 use futures::FutureExt;
+use parking_lot::Mutex;
 use rocksdb::{
     BoundColumnFamily, ColumnFamily, DBWithThreadMode, MultiThreaded, OptimisticTransactionDB,
     Options, ReadOptions, WriteBatch, WriteBatchWithTransaction, WriteOptions,
@@ -29,7 +30,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use timed_map::TimedMap;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
-use tokio::sync::Mutex;
 #[track_caller]
 pub fn ivec_to_number<T: AsRef<[u8]>>(mut src: T) -> i64 {
     let array: [u8; 8] = src.as_ref().try_into().ok().unwrap_or_default();
@@ -193,7 +193,7 @@ impl<D, R, P> RocksDbStore<D, R, P> {
         let mut opts = WriteOptions::default();
         opts.set_sync(false);
         opts.disable_wal(true);
-        let job_batch = std::mem::take(&mut *self.job_batch.lock().await);
+        let job_batch = std::mem::take(&mut *self.job_batch.lock());
         self.db.write_opt(job_batch, &opts)?;
         Ok(())
     }
@@ -301,14 +301,14 @@ where
         } else if to_priorize {
             let score = calculate_next_priority_score(priority, pc) as i64;
             priorized.insert(score as u64, id);
-            job.state = JobState::Priorized;
-            event = JobState::Priorized;
+            job.state = JobState::Prioritized;
+            event = JobState::Prioritized;
         } else {
             list.push_front(id);
         }
         job.id = Some(id);
         let jobs_cf = self.db.cf_handle(&self.jobs).ok_or(JobError::JobNotFound)?;
-        self.job_batch.lock().await.put_cf(
+        self.job_batch.lock().put_cf(
             &jobs_cf,
             CollectionSuffix::Job(id).to_bytes(),
             simd_json::to_vec(job)?,
@@ -341,6 +341,32 @@ where
     }
     fn queue_prefix(&self) -> &str {
         &self.prefix
+    }
+    async fn exists_in(&self, col: CollectionSuffix, item: u64) -> KioResult<bool> {
+        let result = match col {
+            CollectionSuffix::Active | CollectionSuffix::Wait | CollectionSuffix::Paused => {
+                let mut queue = self.fetch::<VecDeque<u64>>(col).unwrap_or_default();
+                queue.contains(&item)
+            }
+            CollectionSuffix::Completed
+            | CollectionSuffix::Delayed
+            | CollectionSuffix::Failed
+            | CollectionSuffix::Prioritized => {
+                let mut map = self.fetch::<BTreeMap<u64, u64>>(col).unwrap_or_default();
+                map.values().any(|val| *val == item)
+            }
+            CollectionSuffix::Stalled => {
+                let mut map = self.fetch::<BTreeSet<u64>>(col).unwrap_or_default();
+                map.contains(&item)
+            }
+            CollectionSuffix::Job(id) => self.job_exist(id).await,
+            CollectionSuffix::Lock(_) | CollectionSuffix::StalledCheck => {
+                self.locks.lock().contains_key(&col.tag())
+            }
+
+            _ => false,
+        };
+        Ok(result)
     }
     async fn metadata_field_exists(&self, field: &str) -> KioResult<bool> {
         let key = CollectionSuffix::Meta.to_bytes();
@@ -656,103 +682,36 @@ where
         None
     }
 
-    async fn move_job_to_state(
-        &self,
-        job_id: u64,
-        from: JobState,
-        to: JobState,
-        value: Option<ProcessedResult<R>>,
-        ts: Option<i64>,
-        backtrace: Option<Trace>,
-        event_mode: QueueEventMode,
-        is_paused: bool,
-    ) -> KioResult<()> {
-        let job_key = CollectionSuffix::Job(job_id);
-        let move_to_failed_or_completed = matches!(to, JobState::Failed | JobState::Completed);
-        let previous_suffix = from.into();
-        let next_state_suffix = to.into();
-        if is_paused {
-            return Ok(());
-        }
-        if !self.job_exist(job_id).await {
-            return Err(JobError::JobNotFound.into());
-        }
-        if move_to_failed_or_completed {
-            self.incr(job_key, 1, Some("attemptsMade")).await?;
-            self.remove_item(previous_suffix, job_id).await?;
-            let score = ts.unwrap_or_else(|| Utc::now().timestamp_micros());
-            self.add_item(next_state_suffix, job_id, Some(score), false)
-                .await?;
-        } else {
-            let exists_in_list = self
-                .item_exists_in_list(next_state_suffix, job_id)
-                .unwrap_or_default();
-            if !exists_in_list {
-                self.remove_item(previous_suffix, job_id).await?;
-                self.add_item(next_state_suffix, job_id, None, false)
-                    .await?;
-            }
-        }
-        // upate the job here;
-
-        if let Some(mut job) = self.fetch::<Job<D, R, P>>(job_key) {
-            job.state = to;
-            if let Some(backtrace) = backtrace.as_ref() {
-                job.stack_trace.push(backtrace.clone());
-            }
-            if let Some(value) = value.as_ref() {
-                match value {
-                    ProcessedResult::Failed(failed_details) => {
-                        job.failed_reason = Some(failed_details.clone())
-                    }
-                    ProcessedResult::Success(done) => job.returned_value = Some(done.clone()),
-                };
-                job.finished_on = ts.and_then(Dt::from_timestamp_micros);
-            }
-            let next = simd_json::to_vec(&job).expect("failed to Serialize");
-            self.put(job_key, next).await?;
-        }
-        let mut event: QueueStreamEvent<R, P> = QueueStreamEvent {
-            event: to,
-            prev: Some(from),
-            job_id,
-            ..Default::default()
-        };
-        if let Some(data) = value {
-            match data {
-                ProcessedResult::Failed(failed_details) => {
-                    event.failed_reason = Some(failed_details)
-                }
-                ProcessedResult::Success(value) => event.returned_value = Some(value),
-            }
-        }
-        self.publish_event(event_mode, event).await?;
-        Ok(())
-    }
     async fn set_lock(&self, job_id: u64, token: JobToken, lock_duration: u64) -> KioResult<()> {
         use std::time::Duration;
         let duration = Duration::from_millis(lock_duration);
         let key = CollectionSuffix::Lock(job_id).tag();
         self.locks
             .lock()
-            .await
             .insert_expirable(key, Lock::Token(token), duration);
         Ok(())
     }
-    async fn set_fields(&self, job_id: u64, fields: &[(&str, String)]) -> KioResult<()> {
+    async fn set_fields(&self, job_id: u64, fields: Vec<JobField<R>>) -> KioResult<()> {
         let key = CollectionSuffix::Job(job_id);
         if let Some(mut job) = self.fetch::<Job<D, R, P>>(key) {
-            for (key, value) in fields {
-                match *key {
-                    "processedOn" | "processed_on" => {
-                        job.processed_on =
-                            simd_json::from_reader::<_, Option<u64>>(value.as_bytes())
-                                .ok()
-                                .flatten()
-                                .and_then(|t| Dt::from_timestamp_micros(t as i64))
+            for field in fields {
+                match field {
+                    JobField::BackTrace(trace) => job.stack_trace.push(trace),
+                    JobField::State(state) => job.state = state,
+                    JobField::ProcessedOn(ts) => {
+                        job.processed_on = Dt::from_timestamp_micros(ts as i64);
                     }
-                    "token" => job.token = simd_json::from_reader(value.as_bytes()).ok(),
-                    _ => {}
+                    JobField::FinishedOn(ts) => {
+                        job.finished_on = Dt::from_timestamp_micros(ts as i64);
+                    }
+                    JobField::Token(token) => job.token = Some(token),
+
+                    JobField::Payload(processed_result) => match processed_result {
+                        ProcessedResult::Failed(failed_details) => {
+                            job.failed_reason = Some(failed_details)
+                        }
+                        ProcessedResult::Success(result) => job.returned_value = Some(result),
+                    },
                 }
             }
             self.put(key, simd_json::to_vec(&job)?).await?;
@@ -870,11 +829,9 @@ where
         }
         let stalled_check_key = CollectionSuffix::StalledCheck;
         let duration = Duration::from_millis(opts.stalled_interval);
-        self.locks.lock().await.insert_expirable(
-            stalled_check_key.tag(),
-            Lock::StallCheck,
-            duration,
-        );
+        self.locks
+            .lock()
+            .insert_expirable(stalled_check_key.tag(), Lock::StallCheck, duration);
 
         let mut stalled = self
             .fetch::<BTreeSet<u64>>(CollectionSuffix::Stalled)
@@ -884,7 +841,6 @@ where
                 let lock_exists = self
                     .locks
                     .lock()
-                    .await
                     .contains_key(&CollectionSuffix::Lock(id).tag());
                 if lock_exists {
                     self.incr(CollectionSuffix::Job(id), 1, Some("stalledCounter"))
@@ -1005,7 +961,7 @@ where
             .cf_handle(&self.main_tree)
             .expect("failed to get cf here");
         self.db.compact_range_cf(&cf, None::<&[u8]>, None::<&[u8]>);
-        self.locks.lock().await.clear();
+        self.locks.lock().clear();
         Ok(())
     }
     async fn clear_jobs(&self, last_id: u64) -> KioResult<()> {
