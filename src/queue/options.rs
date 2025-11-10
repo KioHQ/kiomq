@@ -43,7 +43,7 @@ impl<R> JobField<R> {
                 }
             }
             JobField::ProcessedOn(_) => "processedOn",
-            JobField::FinishedOn(_) => "FinishedOn",
+            JobField::FinishedOn(_) => "finishedOn",
             JobField::State(job_state) => "state",
             JobField::BackTrace(_) => "stackTrace",
         }

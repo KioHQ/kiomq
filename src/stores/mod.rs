@@ -1,10 +1,14 @@
-use std::sync::{atomic::AtomicBool, Arc};
+use std::{
+    ops::RangeBounds,
+    sync::{atomic::AtomicBool, Arc},
+};
 
 use crate::{
     events::QueueStreamEvent, BackOffJobOptions, CollectionSuffix, EventEmitter, Job, JobField,
     JobMetrics, JobOptions, JobState, JobToken, KioResult, ProcessedResult, QueueEventMode,
     QueueOpts, RemoveOnCompletionOrFailure, Trace, WorkerOpts,
 };
+use std::collections::VecDeque;
 mod inmemory_store;
 mod redis_store;
 #[cfg(feature = "rocksdb-store")]
@@ -27,6 +31,12 @@ pub trait Store<D, R, P> {
     async fn metadata_field_exists(&self, field: &str) -> KioResult<bool>;
     async fn exists_in(&self, col: CollectionSuffix, item: u64) -> KioResult<bool>;
     async fn set_event_mode(&self, event_mode: QueueEventMode) -> KioResult<()>;
+    async fn get_job_ids_in_state(
+        &self,
+        state: JobState,
+        start: Option<usize>,
+        end: Option<usize>,
+    ) -> KioResult<VecDeque<u64>>;
     async fn listen_to_events(
         &self,
         event_mode: QueueEventMode,
@@ -78,7 +88,12 @@ pub trait Store<D, R, P> {
     ) -> Option<u64>;
 
     //async fn del
-    async fn set_lock(&self, job_id: u64, token: JobToken, lock_duration: u64) -> KioResult<()>;
+    async fn set_lock(
+        &self,
+        col: CollectionSuffix,
+        token: Option<JobToken>,
+        lock_duration: u64,
+    ) -> KioResult<()>;
     async fn set_fields(&self, job_id: u64, fields: Vec<JobField<R>>) -> KioResult<()>;
     async fn incr(
         &self,
@@ -92,14 +107,8 @@ pub trait Store<D, R, P> {
         event_mode: QueueEventMode,
         event: QueueStreamEvent<R, P>,
     ) -> KioResult<()>;
-    async fn move_stalled_jobs(
-        &self,
-        opts: &WorkerOpts,
-        (is_paused, target): (bool, JobState),
-        event_mode: QueueEventMode,
-    ) -> KioResult<(Vec<u64>, Vec<u64>)>;
 
-    async fn job_exist(&self, id: u64) -> bool;
+    async fn job_exists(&self, id: u64) -> bool;
     async fn remove_item(&self, col: CollectionSuffix, item: u64) -> KioResult<()>;
     fn remove(&self, key: CollectionSuffix) -> KioResult<()>;
     async fn clear_collections(&self) -> KioResult<()>;

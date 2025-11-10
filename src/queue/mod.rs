@@ -177,7 +177,7 @@ impl<
         if is_paused {
             return Ok(());
         }
-        if !self.store.job_exist(job_id).await {
+        if !self.store.job_exists(job_id).await {
             return Err(JobError::JobNotFound.into());
         }
         if move_to_failed_or_completed {
@@ -256,7 +256,9 @@ impl<
         let previous: Option<JobToken> = self.store.get_token(job_id).await;
         if let Some(prev_token) = previous {
             if prev_token == token {
-                self.store.set_lock(job_id, token, lock_duration).await?;
+                self.store
+                    .set_lock(CollectionSuffix::Lock(job_id), Some(token), lock_duration)
+                    .await?;
                 self.store
                     .remove_item(CollectionSuffix::Stalled, job_id)
                     .await?;
@@ -271,9 +273,82 @@ impl<
         opts: &WorkerOpts,
     ) -> KioResult<(Vec<u64>, Vec<u64>)> {
         let event_mode = self.event_mode.load(Ordering::Acquire);
+        let (is_paused, target) = self.get_target_list();
+        let mut failed = vec![];
+        let mut stall = vec![];
+        let ts = Utc::now().timestamp_micros();
+        let stalled_check_key = CollectionSuffix::StalledCheck;
+        let check_key_exists = self
+            .store
+            .exists_in(CollectionSuffix::StalledCheck, stalled_check_key.tag())
+            .await?;
+        if check_key_exists {
+            return Ok((vec![], vec![]));
+        }
         self.store
-            .move_stalled_jobs(opts, self.get_target_list(), event_mode)
-            .await
+            .set_lock(stalled_check_key, None, opts.stalled_interval)
+            .await?;
+        let stalled = self
+            .store
+            .get_job_ids_in_state(JobState::Stalled, None, None)
+            .await?;
+        if stalled.is_empty() {
+            for id in stalled {
+                let job_key = CollectionSuffix::Job(id);
+
+                let lock_exists = self.store.exists_in(CollectionSuffix::Lock(id), id).await?;
+                if lock_exists {
+                    let stalled_count = self.store.incr(job_key, 1, Some("stalledCounter")).await?;
+                    let attempts_made = self
+                        .store
+                        .get_counter(job_key, Some("attempts_made"))
+                        .await
+                        .unwrap_or_default();
+                    let from = self.store.get_state(id).await.unwrap_or_default();
+
+                    if stalled_count > opts.max_stalled_count {
+                        // Add job removal option logic here
+                        let reason = "job stalled more than allowable limit".to_lowercase();
+                        let to = JobState::Failed;
+                        let failed_reason = FailedDetails {
+                            run: attempts_made + 1,
+                            reason,
+                        };
+                        self.move_job_to_state(
+                            id,
+                            from,
+                            to,
+                            Some(ProcessedResult::Failed(failed_reason)),
+                            None,
+                            None,
+                        )
+                        .await?;
+                        failed.push(id);
+                    } else {
+                        self.move_job_to_state(id, JobState::Active, target, None, None, None)
+                            .await?;
+                        stall.push(id);
+                    }
+                }
+            }
+        } else {
+            // move all active jobs to stalled
+            let active_elements = self
+                .store
+                .get_job_ids_in_state(JobState::Active, None, None)
+                .await?;
+            for id in active_elements {
+                let lock = CollectionSuffix::Lock(id);
+                if !self.store.exists_in(lock, id).await? {
+                    self.store
+                        .add_item(CollectionSuffix::Stalled, id, None, true)
+                        .await?;
+                    self.store.remove_item(CollectionSuffix::Active, id);
+                }
+            }
+        }
+
+        Ok((failed, stall))
     }
 
     pub fn get_target_list(&self) -> (bool, JobState) {
@@ -336,12 +411,18 @@ impl<
         prev_state: JobState,
     ) -> KioResult<Job<D, R, P>> {
         self.store
-            .set_lock(job_id, token, opts.lock_duration)
+            .set_lock(
+                CollectionSuffix::Lock(job_id),
+                Some(token),
+                opts.lock_duration,
+            )
             .await?;
+
         self.move_job_to_state(job_id, prev_state, JobState::Active, None, None, None)
             .await?;
         let items = vec![JobField::Token(token), JobField::ProcessedOn(ts)];
         self.store.set_fields(job_id, items).await?;
+
         let job = self
             .store
             .get_job(job_id)
@@ -359,7 +440,7 @@ impl<
         processed: ProcessedResult<R>,
         backtrace: Option<Trace>,
     ) -> KioResult<Job<D, R, P>> {
-        let job_exists: bool = self.store.job_exist(job_id).await;
+        let job_exists: bool = self.store.job_exists(job_id).await;
         if !job_exists {
             return Err(JobError::JobNotFound.into());
         }
