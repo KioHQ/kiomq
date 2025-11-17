@@ -757,7 +757,7 @@ where
     );
     Ok(task)
 }
-pub (crate) fn pause_or_resume_workers(
+pub(crate) fn pause_or_resume_workers(
     notifier: &Notify,
     metrics: &JobMetrics,
     pause_workers: &AtomicBool,

@@ -1,6 +1,7 @@
 use super::*;
 use crate::utils::{
-    calculate_next_priority_score, create_listener_handle, process_each_event, update_job_opts,
+    calculate_next_priority_score, create_listener_handle, pause_or_resume_workers,
+    process_each_event, update_job_opts,
 };
 use crate::worker::MIN_DELAY_MS_LIMIT;
 use crate::{Counter, Dt, FailedDetails, QueueError};
@@ -28,8 +29,12 @@ pub struct InMemoryStore<D, R, P> {
     #[debug(skip)]
     locks: Arc<RwLock<TimedMap<u64, Lock>>>, // locks that expires
     #[debug(skip)]
-    events: Arc<SegQueue<QueueStreamEvent<R, P>>>,
+    events: Arc<SharedEmitter<D, R, P>>,
     id_counter: Counter,
+    stored_metrics: Arc<ArcSwapOption<JobMetrics>>,
+    pause_workers: Arc<ArcSwapOption<AtomicBool>>,
+    is_inital: Arc<AtomicBool>,
+    notifier: Arc<ArcSwapOption<Notify>>,
     priority_counter: Counter,
     completed: Arc<StoredMap>,
     prioritized: Arc<StoredMap>,
@@ -46,8 +51,17 @@ impl<D: Clone, R: Clone, P: Clone> InMemoryStore<D, R, P> {
         let prefix = prefix.unwrap_or("kio").to_lowercase();
         let name = name.to_lowercase();
         let events = Arc::default();
+        let stored_metrics = Arc::default();
+        let notifier = Arc::default();
+        let pause_workers = Arc::default();
+        let is_inital = Arc::default();
+
         Self {
+            is_inital,
+            pause_workers,
+            notifier,
             name,
+            stored_metrics,
             prefix,
             processing: Counter::default(),
             priority_counter: Counter::default(),
@@ -225,9 +239,8 @@ where
         emitter: &EventEmitter<D, R, P>,
         metrics: &JobMetrics,
     ) -> KioResult<()> {
-        if let Some(stream_event) = self.events.pop() {
-            process_each_event(stream_event, emitter, self, metrics).await?
-        }
+        // we dothing here this method is not called for this store
+        // we can directly use the emitter to emit events with a channel
         Ok(())
     }
 
@@ -239,7 +252,11 @@ where
         pause_workers: Arc<AtomicBool>,
         event_mode: QueueEventMode,
     ) -> KioResult<JoinHandle<KioResult<()>>> {
-        create_listener_handle(self, emitter, notifier, metrics, pause_workers, event_mode).await
+        self.events.store(Some(emitter.clone()));
+        self.notifier.store(Some(notifier.clone()));
+        self.pause_workers.store(Some(pause_workers.clone()));
+        let task = tokio::spawn(async move { Ok(()) });
+        Ok(task)
     }
 
     async fn add_bulk_only(
@@ -402,6 +419,7 @@ where
             self.is_paused.load(Ordering::Acquire),
             self.event_mode,
         );
+        self.stored_metrics.swap(Some(Arc::new(metrics.clone())));
         Ok(metrics)
     }
 
@@ -751,7 +769,17 @@ where
         event: QueueStreamEvent<R, P>,
     ) -> KioResult<()> {
         let key = event.id;
-        self.events.push(event);
+        if let Some(emitter) = self.events.load().as_ref() {
+            let metrics = self.get_metrics();
+            if let (Some(stored), Some(notifier), Some(pause_workers)) = (
+                self.stored_metrics.load().as_ref(),
+                self.notifier.load().as_ref(),
+                self.pause_workers.load().as_ref(),
+            ) {
+                process_each_event(event, emitter, self, stored).await?;
+                pause_or_resume_workers(notifier, stored, pause_workers, &self.is_inital);
+            }
+        }
         Ok(())
     }
 

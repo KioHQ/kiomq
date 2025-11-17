@@ -1,8 +1,8 @@
 use super::*;
 use crate::events::StreamEventId;
 use crate::utils::{
-    calculate_next_priority_score, create_listener_handle, process_each_event, resume_helper,
-    update_job_opts,
+    calculate_next_priority_score, create_listener_handle, pause_or_resume_workers,
+    process_each_event, resume_helper, update_job_opts,
 };
 use crate::worker::MIN_DELAY_MS_LIMIT;
 use crate::{
@@ -66,7 +66,10 @@ pub struct RocksDbStore<D, R, P> {
     #[debug(skip)]
     locks: Arc<Mutex<TimedMap<u64, Lock>>>,
     #[debug(skip)]
-    events: Arc<SegQueue<QueueStreamEvent<R, P>>>,
+    events: Arc<SharedEmitter<D, R, P>>,
+    pause_workers: Arc<ArcSwapOption<AtomicBool>>,
+    is_inital: Arc<AtomicBool>,
+    notifier: Arc<ArcSwapOption<Notify>>,
     #[debug(skip)]
     job_batch: Arc<Mutex<WriteBatchWithTransaction<true>>>,
     /// A mode for publishing events, this store only supports PubSub using an channel,
@@ -101,10 +104,16 @@ impl<D, R, P> RocksDbStore<D, R, P> {
         let queue_name = format!("{prefix}:{name}");
         let jobs_collection = format!("{queue_name}:jobs");
         let event_mode = QueueEventMode::PubSub;
-        let events = Arc::default();
         let locks = Arc::default();
+        let events = Arc::default();
+        let notifier = Arc::default();
+        let pause_workers = Arc::default();
+        let is_inital = Arc::default();
 
         let store = Self {
+            pause_workers,
+            notifier,
+            is_inital,
             locks,
             events,
             job_batch: Arc::default(),
@@ -388,13 +397,8 @@ where
         emitter: &EventEmitter<D, R, P>,
         metrics: &JobMetrics,
     ) -> KioResult<()> {
-        use std::time::Duration;
-        let interval = Duration::from_millis(block_interval.unwrap());
-        if !self.events.is_empty() {
-            if let Some(stream_event) = self.events.pop() {
-                process_each_event(stream_event, emitter, self, metrics).await?
-            }
-        }
+        // we dothing here this method is not called for this store
+        // we can directly use the emitter to emit events with a channel
         Ok(())
     }
     async fn create_stream_listener(
@@ -405,7 +409,11 @@ where
         pause_workers: Arc<AtomicBool>,
         event_mode: QueueEventMode,
     ) -> KioResult<JoinHandle<KioResult<()>>> {
-        create_listener_handle(self, emitter, notifier, metrics, pause_workers, event_mode).await
+        self.events.store(Some(emitter.clone()));
+        self.notifier.store(Some(notifier.clone()));
+        self.pause_workers.store(Some(pause_workers.clone()));
+        let task = tokio::spawn(async move { Ok(()) });
+        Ok(task)
     }
     async fn add_bulk_only(
         &self,
@@ -812,7 +820,16 @@ where
         event: QueueStreamEvent<R, P>,
     ) -> KioResult<()> {
         let key = event.id;
-        self.events.push(event);
+        if let Some(emitter) = self.events.load().as_ref() {
+            let metrics = self.get_metrics().await?;
+            if let (Some(notifier), Some(pause_workers)) = (
+                self.notifier.load().as_ref(),
+                self.pause_workers.load().as_ref(),
+            ) {
+                process_each_event(event, emitter, self, &metrics).await?;
+                pause_or_resume_workers(notifier, &metrics, pause_workers, &self.is_inital);
+            }
+        }
         Ok(())
     }
 
