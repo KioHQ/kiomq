@@ -1,7 +1,6 @@
 use std::{
-    collections::BTreeMap,
     sync::{atomic::AtomicUsize, Arc},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use kio_mq::{

@@ -735,7 +735,6 @@ where
     S: Clone + Store<D, R, P> + Send + 'static + Sync,
     P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
 {
-    use std::sync::atomic::Ordering;
     let store = store.clone();
 
     let task: JoinHandle<KioResult<()>> = tokio::spawn(
@@ -748,18 +747,7 @@ where
                 let args: ReadStreamArgs<D, R, P> =
                     (event_mode, block_interval, &emitter, metrics.clone());
                 process_queue_events(args, &store).await?;
-
-                if metrics.is_idle()
-                    && !is_inital.load(Ordering::Acquire)
-                    && pause_workers
-                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                        .is_ok()
-                {
-                    println!("send pause signal ");
-                } else {
-                    resume_helper(&metrics, &pause_workers, &notifier);
-                }
-                is_inital.compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed);
+                pause_or_resume_workers(&notifier, &metrics, &pause_workers, &is_inital);
                 tokio::task::yield_now().await;
             }
 
@@ -768,4 +756,23 @@ where
         .boxed(),
     );
     Ok(task)
+}
+pub (crate) fn pause_or_resume_workers(
+    notifier: &Notify,
+    metrics: &JobMetrics,
+    pause_workers: &AtomicBool,
+    is_inital: &AtomicBool,
+) {
+    use std::sync::atomic::Ordering;
+    if metrics.is_idle()
+        && !is_inital.load(Ordering::Acquire)
+        && pause_workers
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    {
+        println!("send pause signal ");
+    } else {
+        resume_helper(&metrics, &pause_workers, &notifier);
+    }
+    is_inital.compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed);
 }
