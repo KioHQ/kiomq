@@ -2,6 +2,7 @@ use crossbeam_queue::SegQueue;
 use futures::future::Future;
 use futures::stream::{FuturesOrdered, FuturesUnordered};
 use futures::{FutureExt, StreamExt};
+use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
@@ -579,6 +580,17 @@ impl<
             }
         }
         Ok(())
+    }
+    pub fn fetch_jobs(&self, ids: &[u64]) -> KioResult<VecDeque<Job<D, R, P>>> {
+        self.store.fetch_jobs(ids)
+    }
+    pub fn get_job_ids_in_state(
+        &self,
+        state: JobState,
+        start: Option<usize>,
+        end: Option<usize>,
+    ) -> KioResult<VecDeque<u64>> {
+        self.store.get_job_ids_in_state(state, start, end)
     }
 }
 
