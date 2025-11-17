@@ -57,7 +57,8 @@ pub type Events = JobState;
 use crate::stores::Store;
 use serde::de::DeserializeOwned;
 use typed_emitter::TypedEmitter;
-pub(crate) type EventEmitter<D, R, P> = Arc<TypedEmitter<JobState, EventParameters<D, R, P>>>;
+pub(crate) type Emitter<D, R, P> = TypedEmitter<JobState, EventParameters<D, R, P>>;
+pub(crate) type EventEmitter<D, R, P> = Arc<Emitter<D, R, P>>;
 mod redis_events;
 pub use redis_events::{QueueStreamEvent, StreamEventId};
 
