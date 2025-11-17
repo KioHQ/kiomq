@@ -359,7 +359,7 @@ where
                 let mut map = self.fetch::<BTreeSet<u64>>(col).unwrap_or_default();
                 map.contains(&item)
             }
-            CollectionSuffix::Job(id) => self.job_exist(id).await,
+            CollectionSuffix::Job(id) => self.job_exists(id).await,
             CollectionSuffix::Lock(_) | CollectionSuffix::StalledCheck => {
                 self.locks.lock().contains_key(&col.tag())
             }
@@ -816,7 +816,7 @@ where
         Ok(())
     }
 
-    async fn get_job_ids_in_state(
+    fn get_job_ids_in_state(
         &self,
         state: JobState,
         start: Option<usize>,
@@ -955,6 +955,27 @@ where
         }
 
         Ok(())
+    }
+    fn fetch_jobs(&self, ids: &[u64]) -> KioResult<VecDeque<Job<D, R, P>>> {
+        if ids.is_empty() {
+            return Ok(VecDeque::new());
+        }
+        let jobs_cf = self
+            .db
+            .cf_handle(&self.jobs)
+            .ok_or(std::io::Error::other("failed to get cf"))?;
+        let keys = ids
+            .iter()
+            .map(|id| (&jobs_cf, CollectionSuffix::Job(*id).to_bytes()));
+
+        let result = self
+            .db
+            .multi_get_cf(keys)
+            .into_iter()
+            .flatten()
+            .flat_map(|i| i.and_then(|ref mut bytes| simd_json::from_slice(bytes).ok()))
+            .collect();
+        Ok(result)
     }
 }
 // util;

@@ -290,8 +290,7 @@ impl<
             .await?;
         let stalled = self
             .store
-            .get_job_ids_in_state(JobState::Stalled, None, None)
-            .await?;
+            .get_job_ids_in_state(JobState::Stalled, None, None)?;
         if stalled.is_empty() {
             for id in stalled {
                 let job_key = CollectionSuffix::Job(id);
@@ -335,8 +334,7 @@ impl<
             // move all active jobs to stalled
             let active_elements = self
                 .store
-                .get_job_ids_in_state(JobState::Active, None, None)
-                .await?;
+                .get_job_ids_in_state(JobState::Active, None, None)?;
             for id in active_elements {
                 let lock = CollectionSuffix::Lock(id);
                 if !self.store.exists_in(lock, id).await? {

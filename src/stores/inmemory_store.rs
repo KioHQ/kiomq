@@ -170,6 +170,19 @@ where
     fn queue_prefix(&self) -> &str {
         &self.prefix
     }
+    fn fetch_jobs(&self, ids: &[u64]) -> KioResult<VecDeque<Job<D, R, P>>> {
+        if ids.is_empty() {
+            return Ok(VecDeque::new());
+        }
+        let mut results = VecDeque::with_capacity(ids.len());
+        for id in ids {
+            let key = CollectionSuffix::Job(*id).tag();
+            if let Some(job) = self.jobs.read().get(&key) {
+                results.push_back(job.clone());
+            }
+        }
+        Ok(results)
+    }
 
     async fn exists_in(&self, col: CollectionSuffix, item: u64) -> KioResult<bool> {
         let result = match col {
@@ -525,7 +538,7 @@ where
         Ok(())
     }
 
-    async fn get_job_ids_in_state(
+    fn get_job_ids_in_state(
         &self,
         state: JobState,
         start: Option<usize>,

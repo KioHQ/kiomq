@@ -28,10 +28,12 @@ enum Lock {
 pub trait Store<D, R, P> {
     fn queue_name(&self) -> &str;
     fn queue_prefix(&self) -> &str;
+    fn fetch_jobs(&self, ids: &[u64]) -> KioResult<VecDeque<Job<D, R, P>>>;
+
     async fn metadata_field_exists(&self, field: &str) -> KioResult<bool>;
     async fn exists_in(&self, col: CollectionSuffix, item: u64) -> KioResult<bool>;
     async fn set_event_mode(&self, event_mode: QueueEventMode) -> KioResult<()>;
-    async fn get_job_ids_in_state(
+    fn get_job_ids_in_state(
         &self,
         state: JobState,
         start: Option<usize>,

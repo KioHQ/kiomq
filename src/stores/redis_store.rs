@@ -499,29 +499,29 @@ where
         let done: () = pipeline.query_async(&mut conn).await?;
         Ok(())
     }
-    async fn get_job_ids_in_state(
+    fn get_job_ids_in_state(
         &self,
         state: JobState,
         start: Option<usize>,
         end: Option<usize>,
     ) -> KioResult<VecDeque<u64>> {
-        let mut conn = self.get_connection().await?;
+        let mut conn = self.get_blocking_connection()?;
         let mut start = start.unwrap_or_default();
         let col: CollectionSuffix = state.into();
         let key = col.to_collection_name(&self.prefix, &self.name);
         match state {
             JobState::Prioritized | JobState::Completed | JobState::Failed | JobState::Delayed => {
-                let list_len: usize = conn.zcard(&key).await?;
+                let list_len: usize = conn.zcard(&key)?;
                 if list_len > 0 {
                     let end = end.map(|value| value + 1).unwrap_or(list_len);
                     start += 1;
 
-                    let items: Vec<u64> = conn.zrange(key, start as isize, end as isize).await?;
+                    let items: Vec<u64> = conn.zrange(key, start as isize, end as isize)?;
                     return Ok(VecDeque::from_iter(items));
                 }
             }
             JobState::Stalled => {
-                let set: Vec<u64> = conn.smembers(key).await?;
+                let set: Vec<u64> = conn.smembers(key)?;
                 if !set.is_empty() {
                     let set = VecDeque::from(set);
                     let end = end.unwrap_or(set.len());
@@ -531,11 +531,11 @@ where
             }
 
             JobState::Active | JobState::Wait | JobState::Paused => {
-                let list_len: usize = conn.llen(&key).await?;
+                let list_len: usize = conn.llen(&key)?;
                 if list_len > 0 {
                     let end = end.map(|value| value + 1).unwrap_or(list_len);
                     start += 1;
-                    let items: Vec<u64> = conn.lrange(key, start as isize, end as isize).await?;
+                    let items: Vec<u64> = conn.lrange(key, start as isize, end as isize)?;
                     return Ok(VecDeque::from_iter(items));
                 }
             }
@@ -692,5 +692,22 @@ where
         };
         let _: redis::Value = pipeline.query_async(&mut conn).await?;
         Ok(())
+    }
+
+    fn fetch_jobs(&self, ids: &[u64]) -> KioResult<VecDeque<Job<D, R, P>>> {
+        if ids.is_empty() {
+            return Ok(VecDeque::new());
+        }
+        let mut conn = self.get_blocking_connection()?;
+        let mut pipeline = redis::pipe();
+        pipeline.atomic();
+        for id in ids {
+            let key = CollectionSuffix::Job(*id).to_collection_name(&self.prefix, &self.name);
+            pipeline.hgetall(key);
+        }
+
+        let list: Vec<Job<D, R, P>> = pipeline.query(&mut conn)?;
+
+        Ok(VecDeque::from_iter(list))
     }
 }
