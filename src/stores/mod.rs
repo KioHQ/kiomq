@@ -23,6 +23,9 @@ enum Lock {
     Token(JobToken),
     StallCheck,
 }
+use crate::events::Emitter;
+use arc_swap::ArcSwapOption;
+type SharedEmitter<D, R, P> = ArcSwapOption<Emitter<D, R, P>>;
 #[allow(clippy::too_many_arguments)]
 #[async_trait::async_trait]
 pub trait Store<D, R, P> {
