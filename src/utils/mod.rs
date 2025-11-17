@@ -772,7 +772,7 @@ pub(crate) fn pause_or_resume_workers(
     {
         println!("send pause signal ");
     } else {
-        resume_helper(&metrics, &pause_workers, &notifier);
+        resume_helper(metrics, pause_workers, notifier);
     }
     is_inital.compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed);
 }
