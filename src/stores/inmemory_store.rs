@@ -239,8 +239,8 @@ where
         emitter: &EventEmitter<D, R, P>,
         metrics: &JobMetrics,
     ) -> KioResult<()> {
-        // we dothing here this method is not called for this store
-        // we can directly use the emitter to emit events with a channel
+        // we do nothing  here as  this method isn't called for this store
+        // we can directly use the emitter to emit events without need for a channel
         Ok(())
     }
 
@@ -565,7 +565,7 @@ where
         let start = start.unwrap_or_default();
         match state {
             JobState::Wait => {
-                let end = end.unwrap_or(self.waiting.len() - 1);
+                let end = end.unwrap_or(self.waiting.len().saturating_sub(1));
                 let start = self.waiting.iter().nth(start).map(|entry| *entry.key());
                 let end = self.waiting.iter().nth(end).map(|entry| *entry.key());
                 if let (Some(start_element), Some(last_element)) = (start, end) {
@@ -577,7 +577,7 @@ where
                 }
             }
             JobState::Prioritized => {
-                let end = end.unwrap_or(self.prioritized.len());
+                let end = end.unwrap_or(self.prioritized.len().saturating_sub(1));
                 let start = self.prioritized.iter().nth(start).map(|entry| *entry.key());
                 let end = self.prioritized.iter().nth(end).map(|entry| *entry.key());
                 if let (Some(start_element), Some(last_element)) = (start, end) {
@@ -589,7 +589,7 @@ where
                 }
             }
             JobState::Stalled => {
-                let end = end.unwrap_or(self.stalled.len());
+                let end = end.unwrap_or(self.stalled.len().saturating_sub(1));
                 let start = self.stalled.iter().nth(start).map(|entry| *entry.value());
                 let end = self.stalled.iter().nth(end).map(|entry| *entry.value());
                 if let (Some(start_element), Some(last_element)) = (start, end) {
@@ -601,7 +601,7 @@ where
                 }
             }
             JobState::Active => {
-                let end = end.unwrap_or(self.active.len());
+                let end = end.unwrap_or(self.active.len().saturating_sub(1));
                 let start = self.active.iter().nth(start).map(|entry| *entry.key());
                 let end = self.active.iter().nth(end).map(|entry| *entry.key());
                 if let (Some(start_element), Some(last_element)) = (start, end) {
@@ -613,7 +613,7 @@ where
                 }
             }
             JobState::Paused => {
-                let end = end.unwrap_or(self.paused.len() - 1);
+                let end = end.unwrap_or(self.paused.len().saturating_sub(1));
                 let start = self.paused.iter().nth(start).map(|entry| *entry.key());
                 let end = self.paused.iter().nth(end).map(|entry| *entry.key());
                 if let (Some(start_element), Some(last_element)) = (start, end) {
@@ -625,7 +625,7 @@ where
                 }
             }
             JobState::Completed => {
-                let end = end.unwrap_or(self.completed.len() - 1);
+                let end = end.unwrap_or(self.completed.len().saturating_sub(1));
                 let start = self.completed.iter().nth(start).map(|entry| *entry.key());
                 let end = self.completed.iter().nth(end).map(|entry| *entry.key());
                 if let (Some(start_element), Some(last_element)) = (start, end) {
@@ -637,7 +637,7 @@ where
                 }
             }
             JobState::Failed => {
-                let end = end.unwrap_or(self.failed.len() - 1);
+                let end = end.unwrap_or(self.failed.len().saturating_sub(1));
                 let start = self.failed.iter().nth(start).map(|entry| *entry.key());
                 let end = self.failed.iter().nth(end).map(|entry| *entry.key());
                 if let (Some(start_element), Some(last_element)) = (start, end) {
@@ -649,7 +649,7 @@ where
                 }
             }
             JobState::Delayed => {
-                let end = end.unwrap_or(self.delayed.len() - 1);
+                let end = end.unwrap_or(self.delayed.len().saturating_sub(1));
                 let start = self.delayed.iter().nth(start).map(|entry| *entry.key());
                 let end = self.delayed.iter().nth(end).map(|entry| *entry.key());
                 if let (Some(start_element), Some(last_element)) = (start, end) {
