@@ -397,8 +397,8 @@ where
         emitter: &EventEmitter<D, R, P>,
         metrics: &JobMetrics,
     ) -> KioResult<()> {
-        // we dothing here this method is not called for this store
-        // we can directly use the emitter to emit events with a channel
+        // we do nothing  here as  this method isn't called for this store
+        // we can directly use the emitter to emit events without need for a channel
         Ok(())
     }
     async fn create_stream_listener(
@@ -661,7 +661,6 @@ where
 
             _ => {}
         };
-        // this always run in single mode;
         Ok(())
     }
     async fn pop_back_push_front(

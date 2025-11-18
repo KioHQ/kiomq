@@ -514,7 +514,6 @@ where
                 let list_len: usize = conn.zcard(&key)?;
                 if list_len > 0 {
                     let end = end.map(|value| value + 1).unwrap_or(list_len);
-                    start += 1;
 
                     let items: Vec<u64> = conn.zrange(key, start as isize, end as isize)?;
                     return Ok(VecDeque::from_iter(items));
@@ -534,7 +533,6 @@ where
                 let list_len: usize = conn.llen(&key)?;
                 if list_len > 0 {
                     let end = end.map(|value| value + 1).unwrap_or(list_len);
-                    start += 1;
                     let items: Vec<u64> = conn.lrange(key, start as isize, end as isize)?;
                     return Ok(VecDeque::from_iter(items));
                 }

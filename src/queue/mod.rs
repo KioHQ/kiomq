@@ -592,6 +592,12 @@ impl<
     ) -> KioResult<VecDeque<u64>> {
         self.store.get_job_ids_in_state(state, start, end)
     }
+    pub fn name(&self) -> &str {
+        self.store.queue_name()
+    }
+    pub fn prefix(&self) -> &str {
+        self.store.queue_prefix()
+    }
 }
 
 #[derive(derive_more::Debug)]
