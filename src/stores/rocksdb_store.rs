@@ -557,6 +557,9 @@ where
             CollectionSuffix::Delayed,
             CollectionSuffix::Wait,
             CollectionSuffix::Meta,
+            CollectionSuffix::Prioritized,
+            CollectionSuffix::Paused,
+            CollectionSuffix::Failed,
         ]
         .map(|key| self.db.get_cf(&cf, key.to_bytes()).ok().flatten());
 
@@ -590,9 +593,23 @@ where
 
             metrics.processing.store(col.processing, Ordering::Relaxed);
 
-            metrics.paused.store(col.paused, Ordering::Relaxed);
+            metrics.is_paused.store(col.paused, Ordering::Relaxed);
+        }
+        if let Some(ref mut priorized) = &mut result[7] {
+            let col: BTreeMap<u64, u64> = simd_json::from_slice(priorized)?;
+            metrics
+                .prioritized
+                .store(col.len() as u64, Ordering::Relaxed);
+        }
+        if let Some(ref mut failed) = &mut result[9] {
+            let col: BTreeMap<u64, u64> = simd_json::from_slice(failed)?;
+            metrics.failed.store(col.len() as u64, Ordering::Relaxed);
         }
 
+        if let Some(ref mut paused) = &mut result[8] {
+            let col: VecDeque<u64> = simd_json::from_slice(paused)?;
+            metrics.paused.store(col.len() as u64, Ordering::Relaxed);
+        }
         Ok(metrics)
     }
     async fn get_job(&self, id: u64) -> Option<Job<D, R, P>> {

@@ -267,12 +267,15 @@ fn create_counter(count: u64) -> Counter {
 pub struct JobMetrics {
     pub last_id: Counter,
     pub processing: Counter,
+    pub prioritized: Counter,
     pub active: Counter,
     pub stalled: Counter,
     pub delayed: Counter,
     pub completed: Counter,
+    pub failed: Counter,
+    pub paused: Counter,
     pub waiting: Counter,
-    pub paused: Arc<AtomicBool>,
+    pub is_paused: Arc<AtomicBool>,
     pub event_mode: Arc<Atomic<QueueEventMode>>,
 }
 impl JobMetrics {
@@ -291,19 +294,25 @@ impl JobMetrics {
         stalled: u64,
         completed: u64,
         delayed: u64,
+        prioritized: u64,
+        paused: u64,
+        failed: u64,
         waiting: u64,
-        paused: bool,
+        is_paused: bool,
         event_mode: QueueEventMode,
     ) -> Self {
         Self {
             last_id: create_counter(last_id),
+            prioritized: create_counter(prioritized),
             processing: create_counter(processing),
             active: create_counter(active),
             stalled: create_counter(stalled),
             completed: create_counter(completed),
             waiting: create_counter(waiting),
             delayed: create_counter(delayed),
-            paused: Arc::new(paused.into()),
+            paused: create_counter(paused),
+            failed: create_counter(failed),
+            is_paused: Arc::new(is_paused.into()),
             event_mode: Arc::new(Atomic::new(event_mode)),
         }
     }
@@ -333,10 +342,11 @@ impl JobMetrics {
     pub fn queue_has_work(&self) -> bool {
         (self.waiting.load(Ordering::Acquire) > 0
             || self.delayed.load(Ordering::Acquire) > 0
-            || self.stalled.load(Ordering::Acquire) > 0)
+            || self.stalled.load(Ordering::Acquire) > 0
+            || self.prioritized.load(Ordering::Acquire) > 0)
     }
     pub fn queue_is_paused(&self) -> bool {
-        self.paused.load(Ordering::Acquire)
+        self.is_paused.load(Ordering::Acquire)
     }
     pub fn workers_idle(&self) -> bool {
         self.processing.load(Ordering::Acquire) == 0
