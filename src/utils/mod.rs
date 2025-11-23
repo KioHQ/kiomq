@@ -63,7 +63,7 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
     name: &str,
     conn: &mut C,
 ) -> KioResult<JobMetrics> {
-    let [job_id_key, stalled_key, active_key, completed_key, meta_key, delayed_key, priority_counter_key, waiting_key] =
+    let [job_id_key, stalled_key, active_key, completed_key, meta_key, delayed_key, priority_counter_key, waiting_key, paused_key, prioritized_key, failed_key] =
         [
             CollectionSuffix::Id,
             CollectionSuffix::Stalled,
@@ -73,21 +73,43 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
             CollectionSuffix::Delayed,
             CollectionSuffix::PriorityCounter,
             CollectionSuffix::Wait,
+            CollectionSuffix::Paused,
+            CollectionSuffix::Prioritized,
+            CollectionSuffix::Failed,
         ]
         .map(|key| key.to_collection_name(prefix, name));
     let mut pipeline = redis::pipe();
     pipeline.atomic();
     pipeline.zcard(completed_key);
+    pipeline.zcard(failed_key);
+    pipeline.zcard(prioritized_key);
     pipeline.llen(active_key);
     pipeline.scard(stalled_key);
     pipeline.zcard(delayed_key);
     pipeline.llen(waiting_key);
+    pipeline.llen(paused_key);
     pipeline.get(job_id_key);
     pipeline.hget(&meta_key, "processing");
     pipeline.hget(&meta_key, "event_mode");
     pipeline.hexists(&meta_key, JobState::Paused);
     #[allow(clippy::type_complexity)]
-    let (completed, active, stalled, delayed, waiting, last_id, processing, event_mode, paused): (
+    let (
+        completed,
+        failed,
+        prioritized,
+        active,
+        stalled,
+        delayed,
+        waiting,
+        paused,
+        last_id,
+        processing,
+        event_mode,
+        is_paused,
+    ): (
+        Option<u64>,
+        Option<u64>,
+        Option<u64>,
         Option<u64>,
         Option<u64>,
         Option<u64>,
@@ -106,8 +128,11 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
         stalled.unwrap_or_default(),
         completed.unwrap_or_default(),
         delayed.unwrap_or_default(),
+        prioritized.unwrap_or_default(),
+        failed.unwrap_or_default(),
+        paused.unwrap_or_default(),
         waiting.unwrap_or_default(),
-        paused,
+        is_paused,
         event_mode.unwrap_or_default(),
     ))
 }
@@ -770,7 +795,7 @@ pub(crate) fn pause_or_resume_workers(
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
     {
-        println!("send pause signal ");
+        //println!("send pause signal ");
     } else {
         resume_helper(metrics, pause_workers, notifier);
     }

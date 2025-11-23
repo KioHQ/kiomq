@@ -85,7 +85,7 @@ impl<
         let worker_notifier: Arc<Notify> = Arc::default();
         let current_metrics = Arc::new(metrics);
         let pause_workers: Arc<AtomicBool> = Arc::default();
-        let is_paused = current_metrics.paused.load(Ordering::Relaxed);
+        let is_paused = current_metrics.is_paused.load(Ordering::Relaxed);
         let store = Arc::new(store);
         let task = store
             .create_stream_listener(
@@ -242,9 +242,9 @@ impl<
             event: state,
             ..Default::default()
         };
-        self.store.publish_event(event_mode, event).await?;
         self.paused
             .store(pause, std::sync::atomic::Ordering::Relaxed);
+        self.store.publish_event(event_mode, event).await?;
         Ok(())
     }
 
@@ -696,7 +696,7 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
         Ok(())
     }
     pub fn is_paused(&self) -> bool {
-        self.current_metrics.paused.load(Ordering::Acquire)
+        self.current_metrics.queue_is_paused()
     }
     pub fn pause_active_workers(&self) {
         self.pause_workers.store(true, Ordering::Release);
