@@ -884,8 +884,11 @@ where
             JobState::Active | JobState::Wait | JobState::Paused => {
                 let col = state.into();
                 if let Some(mut queue) = self.fetch::<VecDeque<u64>>(col) {
-                    let end = end.unwrap_or(queue.len().saturating_sub(1));
-                    return Ok(queue.range(start..end).copied().collect());
+                    if !queue.is_empty() {
+                        let end = end.unwrap_or(queue.len().saturating_sub(1));
+                        let result = queue.range(start..=end).copied().collect();
+                        return Ok(result);
+                    }
                 }
             }
             _ => {}
@@ -997,18 +1000,15 @@ where
             .db
             .cf_handle(&self.jobs)
             .ok_or(std::io::Error::other("failed to get cf"))?;
-        let keys = ids
-            .iter()
-            .map(|id| (&jobs_cf, CollectionSuffix::Job(*id).to_bytes()));
+        let mut results = VecDeque::with_capacity(ids.len());
+        for id in ids {
+            let key = CollectionSuffix::Job(*id);
+            if let Some(job) = self.fetch(key) {
+                results.push_back(job);
+            }
+        }
 
-        let result = self
-            .db
-            .multi_get_cf(keys)
-            .into_iter()
-            .flatten()
-            .flat_map(|i| i.and_then(|ref mut bytes| simd_json::from_slice(bytes).ok()))
-            .collect();
-        Ok(result)
+        Ok(results)
     }
 }
 // util;
