@@ -2,21 +2,18 @@ use crate::{
     error::{BacktraceCatcher, CaughtError, CaughtPanicInfo},
     job, queue,
     stores::Store,
-    timer::Timer,
+    timers::DelayQueueTimer,
     utils::processor_types::SharedStore,
     worker::processor_types::SyncFn,
-    Job, JobState, JobToken, KioError, KioResult, Queue,
+    Job, JobOptions, JobState, JobToken, KioError, KioResult, Queue,
 };
 
 use crate::utils::{get_next_job, main_loop};
 use chrono::Utc;
-use deadpool_redis::Pool;
 use derive_more::Debug;
 use futures::future::{BoxFuture, Future, FutureExt, Shared, TryFutureExt};
-use redis::aio::ConnectionLike;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
-    fmt::format,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize},
         Arc,
@@ -33,7 +30,7 @@ use tokio::{
     task::{AbortHandle, JoinHandle},
 };
 use tokio_util::sync::CancellationToken;
-type JobMeta<D, R, P> = (Job<D, R, P>, JobToken, AtomicU64);
+pub(crate) type JobMeta<D, R, P> = (Job<D, R, P>, JobToken, AtomicU64);
 pub(crate) type JobMap<D, R, P> = Arc<SkipMap<u64, JobMeta<D, R, P>>>;
 type Task = JoinHandle<KioResult<()>>;
 use tokio::task::Id;
@@ -61,8 +58,7 @@ pub struct Worker<D, R, P, S> {
     cancellation_token: CancellationToken,
     pub state: Arc<Atomic<WorkerState>>,
     processing: ProcessingQueue,
-    stalled_check_timer: Timer,
-    extend_lock_timer: Timer,
+    timers: DelayQueueTimer<D, R, P, S>,
     block_until: Arc<AtomicU64>,
     mini_block_timout: u64,
     active_job_count: Arc<AtomicUsize>,
@@ -142,40 +138,12 @@ impl<
         let now = tokio::time::Instant::now();
         let queue_clone = queue.clone();
 
-        let opts_clone = opts.clone();
-        let extend_lock_timer = Timer::new(opts.lock_duration, move || {
-            let queue = queue_clone.clone();
-            let jobs = jobs.clone();
-            let opts = opts_clone.clone();
-            async move {
-                for pair in jobs.iter() {
-                    let (job, token, handle) = pair.value();
-
-                    if let Some(id) = job.id {
-                        let done = queue.extend_lock(id, opts.lock_duration, *token).await;
-                    }
-                }
-            }
-        });
-        let opts_clone = opts.clone();
-        let queue_clone = queue.clone();
-        let jobs = jobs_in_progress.clone();
-        let stalled_check_timer = Timer::new(opts.stalled_interval, move || {
-            let queue = queue_clone.clone();
-            let jobs = jobs.clone();
-            let opts = opts_clone.clone();
-            async move {
-                if let Ok((failed, stalled)) = queue.make_stalled_jobs_wait(&opts).await {
-                    //dbg!(failed, stalled);
-                }
-            }
-        });
+        let timers = DelayQueueTimer::new(jobs.clone(), opts.clone(), queue.clone());
         let continue_notifier = queue.worker_notifier.clone();
         let worker = Self {
+            timers,
             continue_notifier,
             block_until: Arc::default(),
-            stalled_check_timer,
-            extend_lock_timer,
             opts,
             state: Arc::default(),
             id,
@@ -211,8 +179,6 @@ impl<
         if self.is_running() && !self.is_idle() {
             return Err(WorkerError::WorkerAlreadyRunningWithId(self.id).into());
         }
-        let handle = self.stalled_check_timer.run();
-        self.extend_lock_timer.run();
         let params = (
             self.id,
             self.cancellation_token.clone(),
@@ -225,8 +191,7 @@ impl<
             self.queue.clone(),
             self.state.clone(),
             self.continue_notifier.clone(),
-            self.extend_lock_timer.clone(),
-            self.stalled_check_timer.clone(),
+            self.timers.clone(),
         );
         let main = main_loop(params);
         tokio::spawn(main.boxed());
@@ -248,9 +213,8 @@ impl<
         if !self.is_running() {
             return;
         }
-        self.stalled_check_timer.stop();
-        self.extend_lock_timer.stop();
         self.cancellation_token.cancel();
+        self.timers.close();
 
         self.state
             .store(WorkerState::Closed, std::sync::atomic::Ordering::Release);

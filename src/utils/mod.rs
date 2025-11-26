@@ -1,7 +1,7 @@
 use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo, JobError, QueueError};
 use crate::events::QueueStreamEvent;
 use crate::stores::Store;
-use crate::timer::Timer;
+use crate::timers::DelayQueueTimer;
 use crate::worker::{JobMap, ProcessingQueue, WorkerCallback, WorkerState, MIN_DELAY_MS_LIMIT};
 use crate::{
     utils, EventEmitter, EventParameters, FailedDetails, JobOptions, JobState, JobToken, KioError,
@@ -311,8 +311,7 @@ type MainLoopParams<D, R, P, S> = (
     Arc<Queue<D, R, P, S>>,
     Arc<atomig::Atomic<WorkerState>>,
     Arc<Notify>,
-    Timer,
-    Timer,
+    DelayQueueTimer<D, R, P, S>,
 );
 use tokio::task::{Id, JoinHandle};
 type TaskToRemove = Arc<SegQueue<(u64, u64, JobState)>>;
@@ -338,8 +337,7 @@ where
         queue,
         worker_state,
         paused_here,
-        extend_lock_timer,
-        stall_timer,
+        timers,
     ) = params;
 
     let to_remove = TaskToRemove::default();
@@ -356,9 +354,11 @@ where
     let pause_schedular = to_pause.clone();
     let worker_state_clone = worker_state.clone();
     let current_job_current = active_job_count.clone();
+    timers.start_timers().await;
     tokio::spawn(
         async move {
             while !cancel_token.is_cancelled() {
+                timers.run().await?;
                 // promote jobs here;
                 let date_time = Utc::now();
                 let interval_ms = (MIN_DELAY_MS_LIMIT) as i64;
@@ -382,13 +382,11 @@ where
                 }
                 if pause_schedular.load(Ordering::Acquire) && running.is_empty() {
                     println!("pausing scheduler loop");
-                    extend_lock_timer.pause();
-                    stall_timer.pause();
                     worker_state_clone.store(WorkerState::Idle, Ordering::Release);
+                    timers.pause().await;
                     notifer.notified().await;
-                    extend_lock_timer.resume();
-                    stall_timer.resume();
                     worker_state_clone.store(WorkerState::Active, Ordering::Release);
+                    timers.resume().await;
                 }
                 tokio::task::yield_now().await;
             }

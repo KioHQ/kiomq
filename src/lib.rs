@@ -4,7 +4,7 @@ mod events;
 mod job;
 mod queue;
 mod stores;
-mod timer;
+mod timers;
 mod utils;
 mod worker;
 pub use async_backtrace::{frame, framed};
