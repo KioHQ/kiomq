@@ -53,7 +53,7 @@ mod worker {
         let jobs = queue.bulk_add(job_iterator).await?;
         // wait for metrics to update
         while completed.len() != count as usize {}
-        worker.close(false);
+        worker.close();
         assert!(!worker.is_running());
         let metrics = queue.get_metrics().await?;
         assert_eq!(
@@ -130,7 +130,7 @@ mod worker {
         let _jobs = queue.bulk_add(job_iterator).await?;
         assert!(worker.is_running());
         while completed.len() != count as usize {}
-        worker.close(false);
+        worker.close();
         assert!(!worker.is_running());
         assert_eq!(completed.len(), count as usize);
         let metrics = queue.current_metrics.as_ref();
@@ -318,7 +318,7 @@ mod worker {
         let _jobs = queue.bulk_add(job_iterator).await?;
         // wait for metrics to update
         while completed.len() != count as usize {}
-        worker.close(false);
+        worker.close();
         let last_id = queue
             .current_metrics
             .last_id

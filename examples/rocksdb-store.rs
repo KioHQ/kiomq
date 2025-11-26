@@ -112,7 +112,7 @@ async fn main() -> KioResult<()> {
             //dbg!(&queue.current_metrics);
         }
         dbg!(now.elapsed());
-        worker.close(true);
+        worker.close();
         if worker.closed() {
             queue.obliterate().await?;
         }

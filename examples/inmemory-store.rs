@@ -42,12 +42,15 @@ async fn main() -> KioResult<()> {
                 prev_state: _,
             } = state
             {
-                let diff = (job.processed_on.unwrap_or_default() - job.ts).num_milliseconds();
+                let diff = (job.processed_on.unwrap_or_default() - job.ts)
+                    .to_std()
+                    .unwrap_or_default();
                 let ran_time = (job.finished_on.unwrap_or_default()
                     - job.processed_on.unwrap_or_default())
-                .num_milliseconds();
+                .to_std()
+                .unwrap_or_default();
                 println!(
-                    "finished job  {}  ran for {ran_time} ms with an actual delay of  {} ms and  expected_delay: {}",
+                    "finished job  {}  ran for {ran_time:#?}  with an actual delay of  {:#?} and  expected_delay: {}",
                     job.id.unwrap_or_default(),
                     diff,
                     job.opts.delay,
@@ -58,7 +61,7 @@ async fn main() -> KioResult<()> {
     };
     queue.on_all_events(event_listener);
 
-    let count = 10;
+    let count = 1000000;
     let repeats = 2;
     use croner::Cron;
     let _cron_schedule: Cron = "1/2 * * * * *".parse()?;
@@ -100,7 +103,7 @@ async fn main() -> KioResult<()> {
         //tokio::time::sleep(Duration::from_millis(300)).await;
     }
     dbg!(now.elapsed());
-    worker.close(true);
+    worker.close();
     if worker.closed() {
         queue.obliterate().await?;
     }

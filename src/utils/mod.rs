@@ -370,19 +370,15 @@ where
                 }
 
                 while let Some((key, job_id, state)) = task_queue.pop() {
-                    if let Some(entry) = running.remove(&key) {
-                        let handle = entry.value();
-                        let id = entry.key();
-                        handle.abort();
-                        let count = current_job_current.fetch_sub(1, Ordering::AcqRel);
-                        queue_clone
-                            .update_processing_count(false, worker_id, job_id, state)
-                            .await?;
-                    }
+                    let count = current_job_current.fetch_sub(1, Ordering::AcqRel);
+                    queue_clone
+                        .update_processing_count(false, worker_id, job_id, state)
+                        .await?;
                 }
                 if pause_schedular.load(Ordering::Acquire) && running.is_empty() {
                     println!("pausing scheduler loop");
                     worker_state_clone.store(WorkerState::Idle, Ordering::Release);
+                    // wait for all running jobs to completed
                     timers.pause().await;
                     notifer.notified().await;
                     worker_state_clone.store(WorkerState::Active, Ordering::Release);
@@ -423,7 +419,7 @@ where
                 queue
                     .update_processing_count(true, worker_id, id, state)
                     .await?;
-                let task = tokio::spawn(async_backtrace::frame!(process_job(
+                let task = processing.spawn(async_backtrace::frame!(process_job(
                     to_remove.clone(),
                     job,
                     token,
@@ -433,7 +429,6 @@ where
                 )
                 .boxed()));
                 let task_id: u64 = task.id().to_string().parse()?;
-                let handle = processing.insert(task_id, task);
                 if let Some(mut re) = jobs_in_progress.get(&id) {
                     let (_, _, stored_handle) = re.value();
 
@@ -460,7 +455,11 @@ where
         //dbg!("yield main : ", id);
         tokio::task::yield_now().await;
     }
+
     if cancellation_token.is_cancelled() {
+        // wait for all running jobs to finish
+        processing.wait().await;
+
         worker_state.compare_exchange(
             WorkerState::Active,
             WorkerState::Closed,

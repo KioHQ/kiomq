@@ -106,7 +106,7 @@ async fn main() -> KioResult<()> {
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     dbg!(now.elapsed());
-    worker.close(true);
+    worker.close();
     if worker.closed() {
         queue.obliterate().await?;
     }
