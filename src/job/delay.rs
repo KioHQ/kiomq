@@ -9,19 +9,19 @@ use crate::Dt;
 #[serde(untagged)]
 #[derive(derive_more::Display)]
 pub enum JobDelay {
-    TimeMins(i64),
+    TimeMilis(i64),
     FromCron(Box<Cron>),
 }
 impl Default for JobDelay {
     fn default() -> Self {
-        Self::TimeMins(0)
+        Self::TimeMilis(0)
     }
 }
 impl JobDelay {
     pub fn next_occurrance_timestamp_ms(&self) -> Option<i64> {
         let ts = Utc::now();
         match self {
-            JobDelay::TimeMins(ms) => {
+            JobDelay::TimeMilis(ms) => {
                 if *ms <= 0 {
                     return None;
                 }
@@ -36,7 +36,7 @@ impl JobDelay {
     }
     pub fn as_diff_ms(&self, dt: Dt) -> i64 {
         match self {
-            JobDelay::TimeMins(ms) => *ms,
+            JobDelay::TimeMilis(ms) => *ms,
             JobDelay::FromCron(cron) => {
                 let next_dt = cron.find_next_occurrence(&dt, false).expect("failed");
                 (next_dt - dt).num_milliseconds()
@@ -52,7 +52,7 @@ impl From<Cron> for JobDelay {
 }
 impl From<i64> for JobDelay {
     fn from(value: i64) -> Self {
-        Self::TimeMins(value)
+        Self::TimeMilis(value)
     }
 }
 impl TryFrom<&str> for JobDelay {
