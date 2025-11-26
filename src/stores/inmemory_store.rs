@@ -151,9 +151,7 @@ where
         }
         job.id = Some(id);
         let job_key = CollectionSuffix::Job(id).tag();
-        self.jobs
-            .write()
-            .insert_constant_unchecked(job_key, job.clone());
+        self.jobs.write().insert_constant(job_key, job.clone());
         let mut event = QueueStreamEvent::<R, P> {
             job_id: id,
             event,
