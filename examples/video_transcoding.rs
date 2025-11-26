@@ -103,7 +103,7 @@ async fn main() -> KioResult<()> {
     queue.bulk_add_only(iter).await?;
 
     while !updating_metrics.all_jobs_completed() {}
-    worker.close(true);
+    worker.close();
     if worker.closed() {
         queue.obliterate().await?;
     }

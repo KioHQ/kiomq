@@ -29,12 +29,12 @@ use tokio::{
     sync::Notify,
     task::{AbortHandle, JoinHandle},
 };
-use tokio_util::sync::CancellationToken;
-pub(crate) type JobMeta<D, R, P> = (Job<D, R, P>, JobToken, AtomicU64);
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
+type JobMeta<D, R, P> = (Job<D, R, P>, JobToken, AtomicU64);
 pub(crate) type JobMap<D, R, P> = Arc<SkipMap<u64, JobMeta<D, R, P>>>;
 type Task = JoinHandle<KioResult<()>>;
 use tokio::task::Id;
-pub(crate) type ProcessingQueue = Arc<SkipMap<u64, Task>>;
+pub(crate) type ProcessingQueue = TaskTracker;
 use atomig::{Atom, Atomic};
 use derive_more::IsVariant;
 pub use worker_opts::WorkerOpts;
@@ -46,6 +46,7 @@ pub enum WorkerState {
     Idle,
     Closed,
 }
+
 pub(crate) use worker_opts::MIN_DELAY_MS_LIMIT;
 #[derive(Clone, Debug)]
 pub struct Worker<D, R, P, S> {
@@ -151,7 +152,7 @@ impl<
             jobs_in_progress,
             processor: callback,
             cancellation_token: CancellationToken::new(),
-            processing: Arc::default(),
+            processing: TaskTracker::new(),
             mini_block_timout: 10000, // 10s
             active_job_count: Arc::default(),
         };
@@ -209,28 +210,17 @@ impl<
     }
     /// Stops the worker from running (adding more jobs to run)
     /// If true is passed as an argument, all actively running jobs are stopped too.
-    pub fn close(&self, stop_active_jobs: bool) {
+    pub fn close(&self) {
         if !self.is_running() {
             return;
         }
+
+        self.processing.close();
         self.cancellation_token.cancel();
         self.timers.close();
 
         self.state
             .store(WorkerState::Closed, std::sync::atomic::Ordering::Release);
-        if stop_active_jobs {
-            self.jobs_in_progress.iter().for_each(|pair| {
-                let (job, _, current_handle) = pair.value();
-                if let Some(entry) = self
-                    .processing
-                    .get(&current_handle.load(std::sync::atomic::Ordering::Acquire))
-                {
-                    entry.value().abort();
-                }
-            });
-
-            self.jobs_in_progress.clear();
-        }
     }
 
     pub fn on<F, C>(&self, event: JobState, callback: C) -> Uuid
