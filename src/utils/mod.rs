@@ -360,6 +360,7 @@ where
             while !cancel_token.is_cancelled() {
                 timers.run().await?;
                 // promote jobs here;
+                queue_clone.store.purge_expired().await;
                 let date_time = Utc::now();
                 let interval_ms = (MIN_DELAY_MS_LIMIT) as i64;
                 let metrics = queue_clone.get_metrics().await?;

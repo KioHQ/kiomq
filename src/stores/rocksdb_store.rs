@@ -168,6 +168,11 @@ impl<D, R, P> RocksDbStore<D, R, P> {
         }
         None
     }
+    async fn purge_expired(&self) {
+        if self.locks.lock().len_expired() > 0 {
+            self.locks.lock().drop_expired_entries();
+        }
+    }
     async fn put<V: AsRef<[u8]>>(&self, col: CollectionSuffix, value: V) -> KioResult<()> {
         let collection = col;
         let key = col.to_bytes();

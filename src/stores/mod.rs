@@ -32,6 +32,7 @@ pub trait Store<D, R, P> {
     fn queue_name(&self) -> &str;
     fn queue_prefix(&self) -> &str;
     fn fetch_jobs(&self, ids: &[u64]) -> KioResult<VecDeque<Job<D, R, P>>>;
+    async fn purge_expired(&self) {}
 
     async fn metadata_field_exists(&self, field: &str) -> KioResult<bool>;
     async fn exists_in(&self, col: CollectionSuffix, item: u64) -> KioResult<bool>;
