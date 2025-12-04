@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::{
-    error::QueueError, BackOffJobOptions, FailedDetails, JobState, JobToken,
+    error::QueueError, BackOffJobOptions, FailedDetails, JobMetrics, JobState, JobToken,
     RemoveOnCompletionOrFailure, Repeat, Trace,
 };
 use atomig::{Atom, Atomic};
@@ -15,11 +15,10 @@ use atomig::{Atom, Atomic};
 use redis::{FromRedisValue, RedisResult, ToRedisArgs, Value};
 use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Clone)]
-#[serde(untagged)]
 /// An envelope representing the result of running the worker's callback
 pub enum ProcessedResult<R> {
     Failed(FailedDetails),
-    Success(R),
+    Success(R, JobMetrics),
 }
 /// Most frequent set fields on a job
 #[derive(Serialize, Deserialize, Clone)]
@@ -37,7 +36,7 @@ impl<R> JobField<R> {
         match self {
             JobField::Token(job_token) => "token",
             JobField::Payload(processed_result) => {
-                if let ProcessedResult::Success(_) = processed_result {
+                if let ProcessedResult::Success(_, _) = processed_result {
                     "returnedValue"
                 } else {
                     "failedReason"

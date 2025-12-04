@@ -24,7 +24,16 @@ use crate::{
 };
 pub use backoff::{BackOff, BackOffJobOptions, BackOffOptions, StoredFn};
 pub use repeat::Repeat;
-
+use std::time::Duration;
+// Job Metrics
+#[derive(Debug, Clone, Copy, Hash, Serialize, Deserialize, Display, Default)]
+#[display("job {id}-#{attempt} , ran for {ran_for:?}, delayed for {delayed_for:?}")]
+pub struct JobMetrics {
+    pub ran_for: Duration,
+    pub delayed_for: Duration,
+    pub attempt: u64,
+    pub id: u64,
+}
 
 /// alias for DateTime<Utc>
 pub(crate) type Dt = DateTime<Utc>;
@@ -227,6 +236,21 @@ impl<D, R, P> Job<D, R, P> {
             logs: Vec::new(),
             priority: 0,
         }
+    }
+    pub fn get_metrics(&self) -> Option<JobMetrics> {
+        let processed_on = self.processed_on?;
+        let id = self.id?;
+        let finished_on = self.finished_on?;
+        let attempt = self.attempts_made;
+        let ran_for = (finished_on - processed_on).to_std().ok()?;
+        let delayed_for = (processed_on - self.ts).to_std().ok()?;
+
+        Some(JobMetrics {
+            id,
+            ran_for,
+            delayed_for,
+            attempt,
+        })
     }
 
     pub fn add_opts(&mut self, opts: JobOptions) {

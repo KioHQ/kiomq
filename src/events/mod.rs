@@ -1,4 +1,4 @@
-use crate::{FailedDetails, Job, JobError, JobState};
+use crate::{FailedDetails, Job, JobError, JobMetrics, JobState};
 use derive_more::Debug;
 #[cfg(feature = "redis-store")]
 use redis::AsyncCommands;
@@ -28,6 +28,8 @@ pub enum EventParameters<D, R, P> {
     },
     Completed {
         job_id: u64,
+        job_metrics: JobMetrics,
+        expected_delay: Duration,
         prev_state: Option<JobState>,
         #[debug(skip)]
         result: R,
@@ -96,6 +98,8 @@ impl<D: DeserializeOwned, R: DeserializeOwned, P: DeserializeOwned> EventParamet
             JobState::Completed => Self::Completed {
                 job_id,
                 prev_state: event.prev,
+                expected_delay: Duration::from_millis(event.delay.unwrap_or_default()),
+                job_metrics: event.metrics.unwrap_or_default(),
                 result: event.returned_value.expect("there is no result"),
                 _dt: PhantomData,
             },

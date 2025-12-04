@@ -57,22 +57,16 @@ async fn main() -> KioResult<()> {
         async move {
             // do something with return state
             if let EventParameters::Completed {
-                job: _,
+                job_metrics,
                 result: _,
+                expected_delay,
                 prev_state: _,
+                job_id: _,
+                _dt,
             } = state
             {
                 completed.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                //let diff = (job.processed_on.unwrap_or_default() - job.ts).num_milliseconds();
-                //let ran_time = (job.finished_on.unwrap_or_default()
-                //    - job.processed_on.unwrap_or_default())
-                //.num_milliseconds();
-                //println!(
-                //    "finished job  {}  ran for {ran_time} ms with an actual delay of  {} ms and  expected_delay: {}",
-                //    job.id.unwrap_or_default(),
-                //    diff,
-                //    job.opts.delay,
-                //);
+                println!("{job_metrics}  expected_delay: {expected_delay:?}",);
             }
         }
     };
