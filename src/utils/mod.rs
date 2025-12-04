@@ -674,7 +674,7 @@ where
     P: DeserializeOwned + Clone + Send + Sync + 'static,
 {
     let state = event.event;
-    let param = EventParameters::<D, R, P>::from_queue_event(event, store).await?;
+    let param = EventParameters::<D, R, P>::from_queue_event(event).await?;
     emitter.emit(state, param).await;
     if let Ok(updated) = store.get_metrics().await {
         metrics.update(&updated);
