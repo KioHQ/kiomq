@@ -559,7 +559,7 @@ where
         if let Some(token) = token {
             lock = Lock::Token(token);
         }
-        self.locks.insert_expirable(lock_key, lock, duration);
+        self.locks.insert_expirable(lock_key, lock, duration).await;
 
         Ok(())
     }

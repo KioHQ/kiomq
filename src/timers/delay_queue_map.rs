@@ -63,7 +63,7 @@ impl<K: Ord + Clone, V> TimedMap<K, V> {
         self.expiries.lock().await.peek().is_some()
     }
     pub async fn update_expiration_status(&self, key: &K, duration: Duration) {
-        if let Some(found) = self.inner.lock().get(&key) {
+        if let Some(found) = self.inner.lock().get(key) {
             if let Some(previous_key) = found.key.load() {
                 self.expiries.lock().await.reset(&previous_key, duration);
             } else {
