@@ -3,22 +3,20 @@ use std::{
     time::{Duration, Instant},
 };
 
-use deadpool_redis::Config;
 use kio_mq::{
-    fetch_redis_pass, framed, BackOffJobOptions, EventParameters, Job, JobOptions, KioResult,
-    Queue, QueueEventMode, QueueOpts, RedisStore, RemoveOnCompletionOrFailure, Store, Worker,
-    WorkerOpts,
+    framed, BackOffJobOptions, EventParameters, InMemoryStore, Job, JobOptions, KioResult, Queue,
+    QueueEventMode, QueueOpts, RemoveOnCompletionOrFailure, Store, Worker, WorkerOpts,
 };
+
+#[cfg(all(feature = "redis-store", not(feature = "default")))]
+use kio_mq::{fetch_redis_pass, Config, RedisStore};
+#[cfg(feature = "rocksdb-store")]
+use kio_mq::{temporary_rocks_db, RocksDbStore};
 use uuid::Uuid;
 #[tokio::main]
 #[framed]
 async fn main() -> KioResult<()> {
     console_subscriber::init();
-    let password = fetch_redis_pass();
-    let mut config = Config::default();
-    if let Some(cfg) = config.connection.as_mut() {
-        cfg.redis.password = password;
-    }
     let remove_opts = RemoveOnCompletionOrFailure::Opts(kio_mq::KeepJobs {
         age: Some(60 * 60),
         count: None,
@@ -35,8 +33,23 @@ async fn main() -> KioResult<()> {
         event_mode: Some(QueueEventMode::PubSub),
         ..Default::default()
     };
+
     let counter = Arc::new(AtomicUsize::default());
+    let store: InMemoryStore<i32, i32, i32> = InMemoryStore::new(None, "trial");
+    #[cfg(all(feature = "redis-store", not(feature = "default")))]
+    let password = fetch_redis_pass();
+    #[cfg(all(feature = "redis-store", not(feature = "default")))]
+    let mut config = Config::default();
+    #[cfg(all(feature = "redis-store", not(feature = "default")))]
+    if let Some(cfg) = config.connection.as_mut() {
+        cfg.redis.password = password;
+    }
+    #[cfg(all(feature = "redis-store", not(feature = "default")))]
     let store = RedisStore::new(None, "trial", &config).await?;
+    #[cfg(feature = "rocksdb-store")]
+    let db = Arc::new(temporary_rocks_db());
+    #[cfg(feature = "rocksdb-store")]
+    let store = RocksDbStore::new(None, "test", db.clone())?;
     let events = counter.clone();
     let queue = Queue::new(store, Some(queue_opts)).await?;
     let event_listener = move |state: EventParameters<_, _, _>| {
@@ -50,22 +63,22 @@ async fn main() -> KioResult<()> {
             } = state
             {
                 completed.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                let diff = (job.processed_on.unwrap_or_default() - job.ts).num_milliseconds();
-                let ran_time = (job.finished_on.unwrap_or_default()
-                    - job.processed_on.unwrap_or_default())
-                .num_milliseconds();
-                println!(
-                "finished job  {}  ran for {ran_time} ms with an actual delay of  {} ms and  expected_delay: {}",
-                job.id.unwrap_or_default(),
-                diff,
-                job.opts.delay,
-            );
+                //let diff = (job.processed_on.unwrap_or_default() - job.ts).num_milliseconds();
+                //let ran_time = (job.finished_on.unwrap_or_default()
+                //    - job.processed_on.unwrap_or_default())
+                //.num_milliseconds();
+                //println!(
+                //    "finished job  {}  ran for {ran_time} ms with an actual delay of  {} ms and  expected_delay: {}",
+                //    job.id.unwrap_or_default(),
+                //    diff,
+                //    job.opts.delay,
+                //);
             }
         }
     };
     queue.on_all_events(event_listener);
 
-    let count = 10;
+    let count = 100000;
     let repeats = 2;
     use croner::Cron;
     let _cron_schedule: Cron = "1/2 * * * * *".parse()?;
@@ -89,7 +102,6 @@ async fn main() -> KioResult<()> {
     });
 
     let opts = WorkerOpts {
-        autorun: true,
         //concurrency: 100, // uncomment to use set concurrency
         ..Default::default()
     };
@@ -101,9 +113,10 @@ async fn main() -> KioResult<()> {
     let adding = Instant::now();
     queue.bulk_add_only(iterator).await?;
     println!("adding items took {:?}", adding.elapsed());
+    worker.run()?;
     let now = Instant::now();
     while counter.load(std::sync::atomic::Ordering::Acquire) < count as usize {
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        //tokio::time::sleep(Duration::from_millis(300)).await;
     }
     dbg!(now.elapsed());
     worker.close();
@@ -113,8 +126,8 @@ async fn main() -> KioResult<()> {
     Ok(())
 }
 #[framed]
-async fn process_callback(
-    store: Arc<RedisStore>,
+async fn process_callback<S: Store<i32, i32, i32>>(
+    store: Arc<S>,
     mut job: Job<i32, i32, i32>,
 ) -> Result<i32, std::io::Error> {
     let progress = job.progress.unwrap_or_default();
