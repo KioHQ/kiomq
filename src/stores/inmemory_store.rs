@@ -179,10 +179,10 @@ where
         &self.name
     }
     async fn purge_expired(&self) {
-        if self.locks.len_expired() > 0 {
+        if self.locks.some_expiring_soon() {
             self.locks.purge_expired().await;
         }
-        if self.jobs.len_expired() > 0 {
+        if self.jobs.some_expiring_soon() {
             self.jobs.purge_expired().await;
         }
     }
