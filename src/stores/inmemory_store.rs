@@ -1,4 +1,5 @@
 use super::*;
+use crate::timers::TimedMap;
 use crate::utils::{
     calculate_next_priority_score, create_listener_handle, pause_or_resume_workers,
     process_each_event, update_job_opts,
@@ -13,7 +14,6 @@ use parking_lot::Mutex;
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::VecDeque;
 use std::time::Duration;
-use timed_map::TimedMap;
 type StoredMap = SkipMap<u64, u64>;
 use crate::JobError;
 use std::sync::atomic::Ordering;
@@ -25,9 +25,9 @@ pub struct InMemoryStore<D, R, P> {
     pub prefix: String,
     processing: Counter,
     is_paused: Arc<AtomicBool>,
-    jobs: Arc<Mutex<TimedJobMap<D, R, P>>>,
+    jobs: Arc<TimedJobMap<D, R, P>>,
     #[debug(skip)]
-    locks: Arc<Mutex<TimedMap<u64, Lock>>>, // locks that expires
+    locks: Arc<TimedMap<u64, Lock>>, // locks that expires
     #[debug(skip)]
     events: Arc<SharedEmitter<D, R, P>>,
     id_counter: Counter,
@@ -151,7 +151,7 @@ where
         }
         job.id = Some(id);
         let job_key = CollectionSuffix::Job(id).tag();
-        self.jobs.lock().insert_constant(job_key, job.clone());
+        self.jobs.insert_constant(job_key, job.clone());
         let mut event = QueueStreamEvent::<R, P> {
             job_id: id,
             event,
@@ -179,11 +179,11 @@ where
         &self.name
     }
     async fn purge_expired(&self) {
-        if self.locks.lock().len_expired() > 0 {
-            self.locks.lock().drop_expired_entries();
+        if self.locks.len_expired() > 0 {
+            self.locks.purge_expired().await;
         }
-        if self.jobs.lock().len_expired() > 0 {
-            self.jobs.lock().drop_expired_entries();
+        if self.jobs.len_expired() > 0 {
+            self.jobs.purge_expired().await;
         }
     }
 
@@ -197,8 +197,8 @@ where
         let mut results = VecDeque::with_capacity(ids.len());
         for id in ids {
             let key = CollectionSuffix::Job(*id).tag();
-            if let Some(job) = self.jobs.lock().get(&key) {
-                results.push_back(job.clone());
+            if let Some(found) = self.jobs.inner.lock().get(&key) {
+                results.push_back(found.value.clone());
             }
         }
         Ok(results)
@@ -220,9 +220,9 @@ where
             }
             CollectionSuffix::Delayed => self.delayed.iter().any(|entry| *entry.value() == item),
             CollectionSuffix::Stalled => self.stalled.contains(&item),
-            CollectionSuffix::Job(id) => self.jobs.lock().contains_key(&col.tag()),
+            CollectionSuffix::Job(id) => self.jobs.inner.lock().contains_key(&col.tag()),
             CollectionSuffix::Lock(_) | CollectionSuffix::StalledCheck => {
-                self.locks.lock().contains_key(&col.tag())
+                self.locks.inner.lock().contains_key(&col.tag())
             }
 
             _ => false,
@@ -397,17 +397,9 @@ where
         let key = col.tag();
         match col {
             CollectionSuffix::Lock(_) | CollectionSuffix::StalledCheck => {
-                self.locks
-                    .lock()
-                    .update_expiration_status(key, duration)
-                    .map_err(std::io::Error::other)?;
+                self.locks.update_expiration_status(&key, duration)
             }
-            CollectionSuffix::Job(id) => {
-                self.jobs
-                    .lock()
-                    .update_expiration_status(key, duration)
-                    .map_err(std::io::Error::other)?;
-            }
+            CollectionSuffix::Job(id) => self.jobs.update_expiration_status(&key, duration),
             _ => {}
         }
         Ok(())
@@ -434,23 +426,32 @@ where
 
     async fn get_job(&self, id: u64) -> Option<Job<D, R, P>> {
         let job_key = CollectionSuffix::Job(id).tag();
-        self.jobs.lock().get(&job_key).cloned()
+        self.jobs
+            .inner
+            .lock()
+            .get(&job_key)
+            .map(|pair| pair.value.clone())
     }
 
     async fn get_token(&self, id: u64) -> Option<JobToken> {
         let lock_key = CollectionSuffix::Lock(id).tag();
         self.locks
+            .inner
             .lock()
             .get(&lock_key)
-            .and_then(|entry| match entry {
-                Lock::Token(token) => Some(*token),
+            .and_then(|entry| match entry.value {
+                Lock::Token(token) => Some(token),
                 _ => None,
             })
     }
 
     async fn get_state(&self, id: u64) -> Option<JobState> {
         let job_key = CollectionSuffix::Job(id).tag();
-        self.jobs.lock().get(&job_key).map(|entry| entry.state)
+        self.jobs
+            .inner
+            .lock()
+            .get(&job_key)
+            .map(|entry| entry.value.state)
     }
 
     fn update_job_progress(&self, job: &mut Job<D, R, P>, value: P) -> KioResult<()> {
@@ -458,8 +459,8 @@ where
             let job_key = CollectionSuffix::Job(id).tag();
             let jobs = self.jobs.clone();
             let value_clone = value.clone();
-            if let Some(entry) = jobs.lock().get_mut(&job_key) {
-                entry.progress = Some(value_clone);
+            if let Some(entry) = jobs.inner.lock().get_mut(&job_key) {
+                entry.value.progress = Some(value_clone);
             }
             job.progress = Some(value);
         }
@@ -558,7 +559,7 @@ where
         if let Some(token) = token {
             lock = Lock::Token(token);
         }
-        self.locks.lock().insert_expirable(lock_key, lock, duration);
+        self.locks.insert_expirable(lock_key, lock, duration);
 
         Ok(())
     }
@@ -673,7 +674,8 @@ where
     }
     async fn set_fields(&self, job_id: u64, fields: Vec<JobField<R>>) -> KioResult<()> {
         let key = CollectionSuffix::Job(job_id);
-        if let Some(mut job) = self.jobs.lock().get_mut(&key.tag()) {
+        if let Some(mut pair) = self.jobs.inner.lock().get_mut(&key.tag()) {
+            let job = &mut pair.value;
             for field in fields {
                 match field {
                     JobField::BackTrace(trace) => job.stack_trace.push(trace),
@@ -733,7 +735,8 @@ where
                         }
                     };
                     let mut next = 0;
-                    if let Some(job) = self.jobs.lock().get_mut(&key.tag()) {
+                    if let Some(pair) = self.jobs.inner.lock().get_mut(&key.tag()) {
+                        let job = &mut pair.value;
                         next = update_job(job)
                     }
                     return Ok(next);
@@ -756,7 +759,8 @@ where
             CollectionSuffix::Job(_) => {
                 if let Some(field) = hash_key {
                     let job_key = key.tag();
-                    return self.jobs.lock().get(&job_key).and_then(|job| {
+                    return self.jobs.inner.lock().get(&job_key).and_then(|pair| {
+                        let job = &pair.value;
                         match field.to_lowercase().as_str() {
                             "stalled_counter" | "stalledcounter" => Some(job.stalled_counter),
                             "attempts_made" | "attemptsmade" => Some(job.attempts_made),
@@ -875,10 +879,10 @@ where
                 self.stalled.remove(&item);
             }
             CollectionSuffix::Job(id) => {
-                self.jobs.lock().remove(&col.tag());
+                self.jobs.remove(&col.tag());
             }
             CollectionSuffix::Lock(id) => {
-                self.locks.lock().remove(&col.tag());
+                self.locks.remove(&col.tag());
             }
 
             _ => {}
@@ -898,13 +902,13 @@ where
             CollectionSuffix::Paused => self.paused.clear(),
             CollectionSuffix::Failed => self.failed.clear(),
             CollectionSuffix::Job(_) => {
-                self.jobs.lock().remove(&key.tag());
+                self.jobs.remove(&key.tag());
             }
             CollectionSuffix::Lock(_) => {
-                self.locks.lock().remove(&key.tag());
+                self.locks.remove(&key.tag());
             }
             CollectionSuffix::StalledCheck => {
-                self.locks.lock().remove(&key.tag());
+                self.locks.remove(&key.tag());
             }
             _ => {}
         }
@@ -925,7 +929,7 @@ where
     }
 
     async fn clear_jobs(&self, last_id: u64) -> KioResult<()> {
-        self.jobs.lock().clear();
+        self.jobs.clear();
         Ok(())
     }
 
