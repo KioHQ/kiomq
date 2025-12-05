@@ -1,5 +1,6 @@
 use super::*;
 use crate::events::StreamEventId;
+use crate::timers::TimedMap;
 use crate::utils::{
     calculate_next_priority_score, create_listener_handle, pause_or_resume_workers,
     process_each_event, resume_helper, update_job_opts,
@@ -28,7 +29,6 @@ use std::future::IntoFuture;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use timed_map::TimedMap;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 #[track_caller]
 pub fn ivec_to_number<T: AsRef<[u8]>>(mut src: T) -> i64 {
@@ -64,7 +64,7 @@ pub struct RocksDbStore<D, R, P> {
     #[debug(skip)]
     pub jobs: String,
     #[debug(skip)]
-    locks: Arc<Mutex<TimedMap<u64, Lock>>>,
+    locks: Arc<TimedMap<u64, Lock>>,
     #[debug(skip)]
     events: Arc<SharedEmitter<D, R, P>>,
     pause_workers: Arc<ArcSwapOption<AtomicBool>>,
@@ -169,8 +169,8 @@ impl<D, R, P> RocksDbStore<D, R, P> {
         None
     }
     async fn purge_expired(&self) {
-        if self.locks.lock().len_expired() > 0 {
-            self.locks.lock().drop_expired_entries();
+        if self.locks.some_expiring_soon().await {
+            self.locks.purge_expired().await;
         }
     }
     async fn put<V: AsRef<[u8]>>(&self, col: CollectionSuffix, value: V) -> KioResult<()> {
@@ -375,7 +375,7 @@ where
             }
             CollectionSuffix::Job(id) => self.job_exists(id).await,
             CollectionSuffix::Lock(_) | CollectionSuffix::StalledCheck => {
-                self.locks.lock().contains_key(&col.tag())
+                self.locks.inner.lock().contains_key(&col.tag())
             }
 
             _ => false,
@@ -724,7 +724,7 @@ where
         if let Some(token) = token {
             lock = Lock::Token(token);
         }
-        self.locks.lock().insert_expirable(lock_key, lock, duration);
+        self.locks.insert_expirable(lock_key, lock, duration).await;
 
         Ok(())
     }
@@ -961,7 +961,7 @@ where
             .cf_handle(&self.main_tree)
             .expect("failed to get cf here");
         self.db.compact_range_cf(&cf, None::<&[u8]>, None::<&[u8]>);
-        self.locks.lock().clear();
+        self.locks.clear();
         Ok(())
     }
     async fn clear_jobs(&self, last_id: u64) -> KioResult<()> {
