@@ -11,6 +11,7 @@ use crate::{
     RemoveOnCompletionOrFailure, Repeat, Trace,
 };
 use atomig::{Atom, Atomic};
+#[cfg(feature = "redis-store")]
 use redis::{FromRedisValue, RedisResult, ToRedisArgs, Value};
 use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Clone)]
@@ -176,10 +177,13 @@ impl From<JobState> for CollectionSuffix {
     }
 }
 
+#[cfg(feature = "redis-store")]
+use deadpool_redis::redis::RedisWrite;
+#[cfg(feature = "redis-store")]
 impl ToRedisArgs for CollectionSuffix {
     fn write_redis_args<W>(&self, out: &mut W)
     where
-        W: ?Sized + deadpool_redis::redis::RedisWrite,
+        W: ?Sized + RedisWrite,
     {
         out.write_arg_fmt(self.to_string().to_lowercase());
     }
@@ -202,6 +206,7 @@ impl TryFrom<u8> for QueueEventMode {
         }
     }
 }
+#[cfg(feature = "redis-store")]
 impl FromRedisValue for QueueEventMode {
     fn from_redis_value(v: &Value) -> RedisResult<Self> {
         let value = if let Value::Nil = v {
@@ -213,6 +218,7 @@ impl FromRedisValue for QueueEventMode {
         Ok(mode)
     }
 }
+#[cfg(feature = "redis-store")]
 impl ToRedisArgs for QueueEventMode {
     fn write_redis_args<W>(&self, out: &mut W)
     where

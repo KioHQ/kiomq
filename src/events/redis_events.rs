@@ -57,6 +57,7 @@ pub struct QueueStreamEvent<R, P> {
     pub name: Option<String>,
     pub worker_id: Option<Uuid>,
 }
+#[cfg(feature = "redis-store")]
 impl<R: Serialize, P: Serialize> ToRedisArgs for QueueStreamEvent<R, P> {
     fn write_redis_args<W>(&self, out: &mut W)
     where
@@ -66,6 +67,7 @@ impl<R: Serialize, P: Serialize> ToRedisArgs for QueueStreamEvent<R, P> {
     }
 }
 
+#[cfg(feature = "redis-store")]
 impl<R: DeserializeOwned, P: DeserializeOwned> FromRedisValue for QueueStreamEvent<R, P> {
     fn from_redis_value(v: &redis::Value) -> redis::RedisResult<Self> {
         let mut msg: Vec<u8> = Vec::from_redis_value(v)?;
@@ -90,10 +92,12 @@ impl<R, P> Default for QueueStreamEvent<R, P> {
         }
     }
 }
+#[cfg(feature = "redis-store")]
 use redis::{
     streams::{StreamId, StreamReadReply},
     FromRedisValue, ToRedisArgs,
 };
+#[cfg(feature = "redis-store")]
 impl<R: DeserializeOwned, P: DeserializeOwned> QueueStreamEvent<R, P> {
     pub fn from_stream_read_reply(events_key: &str, mut reply: StreamReadReply) -> Vec<Self> {
         if let Some(keyed_events) = reply.keys.iter_mut().find(|event| event.key == events_key) {
@@ -107,6 +111,7 @@ impl<R: DeserializeOwned, P: DeserializeOwned> QueueStreamEvent<R, P> {
         vec![]
     }
 }
+#[cfg(feature = "redis-store")]
 impl<R: DeserializeOwned, P: DeserializeOwned> TryFrom<&mut StreamId> for QueueStreamEvent<R, P> {
     type Error = KioError;
 

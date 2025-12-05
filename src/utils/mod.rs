@@ -11,7 +11,9 @@ use chrono::Utc;
 use crossbeam_queue::SegQueue;
 use futures::future::OkInto;
 use futures::{FutureExt, StreamExt};
+#[cfg(feature = "redis-store")]
 use redis::aio::PubSubStream;
+#[cfg(feature = "redis-store")]
 use redis::streams::{StreamReadOptions, StreamReadReply};
 use serde::ser;
 use serde::{de::DeserializeOwned, Serialize};
@@ -22,7 +24,6 @@ use tokio::task_local;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-pub(crate) mod connection_types;
 pub(crate) mod processor_types;
 use crate::KioResult;
 use crate::MoveToActiveResult;
@@ -32,6 +33,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 
 use std::sync::Arc;
 
+#[cfg(feature = "redis-store")]
 // ---------------- REDIS FUNCTION here
 pub fn fetch_redis_pass() -> Option<String> {
     use dotenv;
@@ -58,6 +60,7 @@ pub fn calculate_next_priority_score(priority: u64, prio_counter: u64) -> u64 {
 }
 
 use crate::{CollectionSuffix, JobMetrics};
+#[cfg(feature = "redis-store")]
 pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
     prefix: &str,
     name: &str,
@@ -472,7 +475,6 @@ where
 }
 use crate::Dt;
 use chrono::TimeDelta;
-use redis::AsyncCommands;
 use std::time::{Duration, Instant};
 #[allow(clippy::too_many_arguments)]
 pub async fn promote_jobs<D, R, P, S: Store<D, R, P> + Send + 'static + Clone>(
@@ -528,6 +530,7 @@ where
     }
     Ok(())
 }
+#[cfg(feature = "redis-store")]
 #[allow(clippy::too_many_arguments)]
 /// Utilily function for pipelining
 pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
@@ -691,7 +694,9 @@ pub fn resume_helper(
     }
 }
 
+#[cfg(feature = "redis-store")]
 use redis::{Cmd, Pipeline};
+#[cfg(feature = "redis-store")]
 fn split_pipeline(mut p: Pipeline, chunk_size: usize) -> Vec<Pipeline> {
     // Take ownership of the internal command list
     let cmds = unsafe {
@@ -709,6 +714,7 @@ fn split_pipeline(mut p: Pipeline, chunk_size: usize) -> Vec<Pipeline> {
         })
         .collect()
 }
+#[cfg(feature = "redis-store")]
 pub async fn query_all_batched(
     conn: deadpool_redis::Connection,
     mut p: Pipeline,

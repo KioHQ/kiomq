@@ -66,7 +66,6 @@ pub struct Worker<D, R, P, S> {
     continue_notifier: Arc<Notify>,
 }
 use crate::utils::processor_types;
-use deadpool_redis::Connection;
 use processor_types::Callback;
 pub(crate) type WorkerCallback<D, R, P, S> = Callback<D, R, P, S>;
 

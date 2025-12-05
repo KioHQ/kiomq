@@ -1,9 +1,10 @@
 use std::{collections::HashMap, error::Error, fmt::format, str::FromStr};
 
 use chrono::{DateTime, Utc};
-use deadpool_redis::redis::ToRedisArgs;
-use deadpool_redis::Connection;
+#[cfg(feature = "redis-store")]
+use deadpool_redis::{redis::ToRedisArgs, Connection};
 use derive_more::{Display, FromStr};
+#[cfg(feature = "redis-store")]
 use redis::{
     from_redis_value, AsyncCommands, ConnectionLike, FromRedisValue, Pipeline, RedisError,
     RedisResult, Value,
@@ -13,7 +14,7 @@ use serde::{
     Deserialize, Serialize,
 };
 
-use crate::{stores::Store, utils::connection_types::ConnectionTypes};
+use crate::stores::Store;
 mod backoff;
 mod delay;
 mod repeat;
@@ -57,6 +58,7 @@ pub enum JobState {
     Obliterated,
     Processing,
 }
+#[cfg(feature = "redis-store")]
 impl ToRedisArgs for JobState {
     fn write_redis_args<W>(&self, out: &mut W)
     where
@@ -139,6 +141,7 @@ pub struct Job<D, R, P> {
     pub logs: Vec<String>,
     pub priority: u64,
 }
+#[cfg(feature = "redis-store")]
 impl FromRedisValue for JobState {
     fn from_redis_value(v: &Value) -> RedisResult<Self> {
         let mut bytes: Vec<u8> = Vec::from_redis_value(v)?;
@@ -167,6 +170,7 @@ use uuid::Uuid;
 )]
 #[display("{_0}-{_1}-{_2}")]
 pub struct JobToken(pub Uuid, pub Uuid, pub u64);
+#[cfg(feature = "redis-store")]
 impl FromRedisValue for JobToken {
     fn from_redis_value(v: &Value) -> RedisResult<Self> {
         let mut bytes: Vec<u8> = Vec::from_redis_value(v)?;
@@ -184,6 +188,7 @@ impl Default for JobToken {
         Self(Uuid::new_v4(), Uuid::new_v4(), Default::default())
     }
 }
+#[cfg(feature = "redis-store")]
 impl ToRedisArgs for JobToken {
     fn write_redis_args<W>(&self, out: &mut W)
     where
@@ -235,22 +240,8 @@ impl<D, R, P> Job<D, R, P> {
     {
         store.update_job_progress(self, value)
     }
-    /// Append log to existing_logs if there is any
-    pub async fn add_log(&mut self, log: &str, conn: &mut Connection) -> KioResult<()> {
-        if let (Some(queue_name), Some(id)) = (&self.queue_name, &self.id) {
-            let job_key = format!("{queue_name}:{id}");
-            let mut existing_logs: Vec<String> = conn.hget(&job_key, "logs").await?;
-            // append the next log;
-            let date_time = Utc::now();
-            let log_with_dt = format!("{date_time}: {log}");
-            existing_logs.push(log_with_dt.clone());
-            self.logs.push(log_with_dt);
-            let v: redis::Value = conn.hset(job_key, "logs", existing_logs).await?;
-        }
-
-        Ok(())
-    }
 }
+#[cfg(feature = "redis-store")]
 impl<D, R, P> FromRedisValue for Job<D, R, P>
 where
     D: for<'de> Deserialize<'de>, // D, R, P must be deserializable
