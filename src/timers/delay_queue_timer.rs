@@ -1,5 +1,6 @@
 use crate::KioResult;
 use crossbeam_queue::ArrayQueue;
+use crossbeam_utils::atomic::AtomicCell;
 use serde::{de::DeserializeOwned, Serialize};
 use std::time::Duration;
 use std::{
@@ -36,7 +37,7 @@ pub(crate) struct DelayQueueTimer<D, R, P, S> {
     opts: WorkerOpts,
     pause_state: Arc<ArrayQueue<PausedTimerState>>,
     // (extendLock, Stalled)
-    keys: Arc<[ArcSwapOption<Key>; 2]>,
+    keys: Arc<[AtomicCell<Option<Key>>; 2]>,
     close_now: Arc<AtomicBool>,
     _data: PhantomData<S>,
 }
@@ -49,7 +50,7 @@ impl<
     > DelayQueueTimer<D, R, P, S>
 {
     pub fn new(jobs: JobMap<D, R, P>, opts: WorkerOpts, queue: Arc<Queue<D, R, P, S>>) -> Self {
-        let state = [ArcSwapOption::default(), ArcSwapOption::default()];
+        let state = [AtomicCell::default(), AtomicCell::default()];
         let keys = Arc::new(state);
         let pause_state = Arc::new(ArrayQueue::new(2));
         Self {
