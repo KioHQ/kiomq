@@ -1,8 +1,10 @@
-use deadpool_redis::Config;
+#[cfg(all(feature = "redis-store", not(feature = "default")))]
+use kio_mq::{fetch_redis_pass, Config, RedisStore};
 use kio_mq::{
-    fetch_redis_pass, framed, EventParameters, Job, KioResult, Queue, RedisStore, Store, Worker,
-    WorkerOpts,
+    framed, EventParameters, InMemoryStore, Job, KioResult, Queue, Store, Worker, WorkerOpts,
 };
+#[cfg(feature = "rocksdb-store")]
+use kio_mq::{temporary_rocks_db, RocksDbStore};
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
@@ -45,11 +47,22 @@ struct Progress {
 async fn main() -> KioResult<()> {
     console_subscriber::init();
     let input_path = "sampleFHD.mp4";
+    let store: InMemoryStore<ProcessData, ReturnData, Progress> =
+        InMemoryStore::new(None, "video-processing");
+    #[cfg(all(feature = "redis-store", not(feature = "default")))]
+    let password = fetch_redis_pass();
+    #[cfg(all(feature = "redis-store", not(feature = "default")))]
     let mut config = Config::default();
+    #[cfg(all(feature = "redis-store", not(feature = "default")))]
     if let Some(cfg) = config.connection.as_mut() {
-        cfg.redis.password = fetch_redis_pass();
+        cfg.redis.password = password;
     }
+    #[cfg(all(feature = "redis-store", not(feature = "default")))]
     let store = RedisStore::new(None, "video-processing", &config).await?;
+    #[cfg(feature = "rocksdb-store")]
+    let db = Arc::new(temporary_rocks_db());
+    #[cfg(feature = "rocksdb-store")]
+    let store = RocksDbStore::new(None, "video-processing", db.clone())?;
     let queue = Queue::new(store, None).await?;
     let processor = |con: _, job: _| process_callback(con, job);
     // auto download ffmpeg if it's not installed;
@@ -99,9 +112,8 @@ async fn main() -> KioResult<()> {
         }
     });
 
-    worker.run()?;
     queue.bulk_add_only(iter).await?;
-
+    worker.run()?;
     while !updating_metrics.all_jobs_completed() {}
     worker.close();
     if worker.closed() {
@@ -112,16 +124,8 @@ async fn main() -> KioResult<()> {
 }
 
 #[framed]
-fn process_callback(
-    store: Arc<RedisStore>,
-    job: Job<ProcessData, ReturnData, Progress>,
-) -> KioResult<ReturnData> {
-    transcode_video(store, job)
-}
-
-#[framed]
-fn transcode_video(
-    store: Arc<RedisStore>,
+fn process_callback<S: Store<ProcessData, ReturnData, Progress>>(
+    store: Arc<S>,
     mut job: Job<ProcessData, ReturnData, Progress>,
 ) -> KioResult<ReturnData> {
     use uuid::Uuid;
@@ -195,6 +199,7 @@ fn transcode_video(
     }
     Err(std::io::Error::other("failed to process video").into())
 }
+
 /// create a H265 source video from scratch
 fn create_h265_source(path_str: &str) {
     println!("Creating H265 source video: {path_str}");
