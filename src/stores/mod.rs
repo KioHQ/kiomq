@@ -10,11 +10,13 @@ use crate::{
 };
 use std::collections::VecDeque;
 mod inmemory_store;
-mod redis_store;
 #[cfg(feature = "rocksdb-store")]
 mod rocksdb_store;
 use async_trait::async_trait;
 pub use inmemory_store::InMemoryStore;
+#[cfg(feature = "redis-store")]
+mod redis_store;
+#[cfg(feature = "redis-store")]
 pub use redis_store::RedisStore;
 #[cfg(feature = "rocksdb-store")]
 pub use rocksdb_store::{ivec_to_number, temporary_rocks_db, RocksDbStore};

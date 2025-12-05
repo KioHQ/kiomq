@@ -15,18 +15,18 @@ use crate::error::{JobError, KioError, QueueError};
 use crate::events::{QueueStreamEvent, StreamEventId};
 use crate::job::{Job, JobState};
 use crate::utils::{
-    calculate_next_priority_score, prepare_for_insert, process_queue_events, promote_jobs,
-    query_all_batched, resume_helper, serialize_into_pairs, update_job_opts, JobQueue,
-    ReadStreamArgs,
+    calculate_next_priority_score, process_queue_events, promote_jobs, resume_helper,
+    serialize_into_pairs, update_job_opts, JobQueue, ReadStreamArgs,
 };
+
 use crate::worker::{WorkerOpts, MIN_DELAY_MS_LIMIT};
 use crate::{
-    get_job_metrics, queue, BackOff, BackOffJobOptions, BackOffOptions, Dt, FailedDetails,
-    JobOptions, JobToken, KeepJobs, KioResult, RemoveOnCompletionOrFailure, Repeat, StoredFn,
-    Trace,
+    queue, BackOff, BackOffJobOptions, BackOffOptions, Dt, FailedDetails, JobOptions, JobToken,
+    KeepJobs, KioResult, RemoveOnCompletionOrFailure, Repeat, StoredFn, Trace,
 };
 use async_backtrace::backtrace;
 use chrono::{TimeDelta, Utc};
+#[cfg(feature = "redis-store")]
 use deadpool_redis::{Config, Pool, Runtime};
 use serde::de::{value, DeserializeOwned, Error};
 use serde::{ser, Deserialize, Serialize};
@@ -39,6 +39,7 @@ use derive_more::Debug;
 pub use options::{CollectionSuffix, JobMetrics, QueueEventMode, QueueOpts, RetryOptions};
 pub(crate) use options::{Counter, JobField, ProcessedResult};
 
+#[cfg(feature = "redis-store")]
 use redis::{
     self, pipe, AsyncCommands, FromRedisValue, JsonAsyncCommands, LposOptions, Pipeline,
     RedisResult, ToRedisArgs, Value,

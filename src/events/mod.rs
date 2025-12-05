@@ -1,5 +1,6 @@
 use crate::{FailedDetails, Job, JobError, JobState};
 use derive_more::Debug;
+#[cfg(feature = "redis-store")]
 use redis::AsyncCommands;
 use uuid::Uuid;
 #[derive(Clone, Debug)]

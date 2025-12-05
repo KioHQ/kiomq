@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#[cfg(feature = "redis-store")]
 use deadpool_redis::redis;
 use derive_more::Display;
 use std::io;
@@ -10,10 +11,13 @@ pub(crate) use backtrace_utils::{BacktraceCatcher, CaughtError, CaughtPanicInfo}
 use croner::errors::CronError;
 #[derive(Debug, Error)]
 pub enum KioError {
+    #[cfg(feature = "redis-store")]
     #[error(transparent)]
     RedisError(#[from] redis::RedisError),
+    #[cfg(feature = "redis-store")]
     #[error(transparent)]
     DealPoolError(#[from] deadpool_redis::PoolError),
+    #[cfg(feature = "redis-store")]
     #[error(transparent)]
     DealPoolConfig(#[from] deadpool_redis::CreatePoolError),
     #[error(transparent)]

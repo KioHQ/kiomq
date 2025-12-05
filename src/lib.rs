@@ -8,6 +8,7 @@ mod timers;
 mod utils;
 mod worker;
 pub use async_backtrace::{frame, framed};
+#[cfg(feature = "redis-store")]
 pub use deadpool_redis::Config;
 pub use error::*;
 pub(crate) use events::EventEmitter;
@@ -15,6 +16,7 @@ pub use events::EventParameters;
 pub use job::*;
 pub use queue::*;
 pub use stores::*;
+#[cfg(feature = "redis-store")]
 pub use utils::{fetch_redis_pass, get_job_metrics};
 pub use worker::{Worker, WorkerOpts};
 
