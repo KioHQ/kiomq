@@ -71,8 +71,8 @@ impl<
     }
     fn set_key(&self, timer: TimerType, key: Key) {
         match timer {
-            TimerType::StalledCheck => self.keys[1].swap(Some(key.into())),
-            TimerType::ExtendLock => self.keys[0].swap(Some(key.into())),
+            TimerType::StalledCheck => self.keys[1].swap(Some(key)),
+            TimerType::ExtendLock => self.keys[0].swap(Some(key)),
         };
     }
     pub async fn pause(&self) {
