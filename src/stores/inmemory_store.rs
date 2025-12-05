@@ -179,10 +179,10 @@ where
         &self.name
     }
     async fn purge_expired(&self) {
-        if self.locks.some_expiring_soon() {
+        if self.locks.some_expiring_soon().await {
             self.locks.purge_expired().await;
         }
-        if self.jobs.some_expiring_soon() {
+        if self.jobs.some_expiring_soon().await {
             self.jobs.purge_expired().await;
         }
     }
@@ -397,9 +397,9 @@ where
         let key = col.tag();
         match col {
             CollectionSuffix::Lock(_) | CollectionSuffix::StalledCheck => {
-                self.locks.update_expiration_status(&key, duration)
+                self.locks.update_expiration_status(&key, duration).await;
             }
-            CollectionSuffix::Job(id) => self.jobs.update_expiration_status(&key, duration),
+            CollectionSuffix::Job(id) => self.jobs.update_expiration_status(&key, duration).await,
             _ => {}
         }
         Ok(())
