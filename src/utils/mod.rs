@@ -59,9 +59,8 @@ pub fn calculate_next_priority_score(priority: u64, prio_counter: u64) -> u64 {
     (priority << 32) + (prio_counter & 0xffffffffffff)
 }
 
-use crate::{CollectionSuffix, JobMetrics};
-#[cfg(feature = "redis-store")]
 use crate::{CollectionSuffix, QueueMetrics};
+#[cfg(feature = "redis-store")]
 pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
     prefix: &str,
     name: &str,
