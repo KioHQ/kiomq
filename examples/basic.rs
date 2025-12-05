@@ -78,7 +78,7 @@ async fn main() -> KioResult<()> {
     };
     queue.on_all_events(event_listener);
 
-    let count = 100000;
+    let count = 1000;
     let repeats = 2;
     use croner::Cron;
     let _cron_schedule: Cron = "1/2 * * * * *".parse()?;
