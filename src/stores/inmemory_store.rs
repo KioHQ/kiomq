@@ -180,13 +180,13 @@ where
     }
     async fn purge_expired(&self) {
         let purge_locks = async {
-            if self.locks.some_expiring_soon().await {
+            if self.locks.len_expired().await > 0 {
                 self.locks.purge_expired().await;
             }
         };
 
         let purge_jobs = async move {
-            if self.jobs.some_expiring_soon().await {
+            if self.jobs.len_expired().await > 0 {
                 self.jobs.purge_expired().await;
             }
         };

@@ -1,6 +1,6 @@
 use std::{
     sync::{atomic::AtomicUsize, Arc},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use kio_mq::{
@@ -57,7 +57,7 @@ async fn main() -> KioResult<()> {
         async move {
             // do something with return state
             if let EventParameters::Completed {
-                job,
+                job: _,
                 result: _,
                 prev_state: _,
             } = state
