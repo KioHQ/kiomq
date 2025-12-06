@@ -179,12 +179,18 @@ where
         &self.name
     }
     async fn purge_expired(&self) {
-        if self.locks.some_expiring_soon().await {
-            self.locks.purge_expired().await;
-        }
-        if self.jobs.some_expiring_soon().await {
-            self.jobs.purge_expired().await;
-        }
+        let purge_locks = async {
+            if self.locks.some_expiring_soon().await {
+                self.locks.purge_expired().await;
+            }
+        };
+
+        let purge_jobs = async move {
+            if self.jobs.some_expiring_soon().await {
+                self.jobs.purge_expired().await;
+            }
+        };
+        tokio::join!(purge_jobs, purge_locks);
     }
 
     fn queue_prefix(&self) -> &str {
@@ -399,7 +405,9 @@ where
             CollectionSuffix::Lock(_) | CollectionSuffix::StalledCheck => {
                 self.locks.update_expiration_status(&key, duration).await;
             }
-            CollectionSuffix::Job(id) => self.jobs.update_expiration_status(&key, duration).await,
+            CollectionSuffix::Job(id) => {
+                self.jobs.update_expiration_status(&key, duration).await;
+            }
             _ => {}
         }
         Ok(())
