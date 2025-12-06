@@ -61,6 +61,7 @@ pub enum KioError {
 #[derive(Debug, Display, Error)]
 pub enum WorkerError {
     WorkerAlreadyRunningWithId(Uuid),
+    WorkerAlreadyClosed(Uuid),
     FailedToCheckStalledJobs,
 }
 #[derive(Debug, Display, Error)]

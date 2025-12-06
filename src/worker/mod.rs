@@ -163,11 +163,9 @@ impl<
     }
 
     pub fn is_running(&self) -> bool {
-        (self
-            .state
+        self.state
             .load(std::sync::atomic::Ordering::Acquire)
             .is_active()
-            || self.is_idle())
             && !self.cancellation_token.is_cancelled()
     }
     pub fn is_idle(&self) -> bool {
@@ -176,9 +174,22 @@ impl<
             .is_idle()
     }
     pub fn run(&self) -> KioResult<()> {
-        if self.is_running() && !self.is_idle() {
-            return Err(WorkerError::WorkerAlreadyRunningWithId(self.id).into());
+        let prev = self.state.compare_exchange(
+            WorkerState::Idle,
+            WorkerState::Active,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+        if let Err(current) = prev {
+            if current.is_active() && !self.cancellation_token.is_cancelled() {
+                return Err(WorkerError::WorkerAlreadyRunningWithId(self.id).into());
+            }
+            // if closed or canceled, return another error
+            if current.is_closed() || self.cancellation_token.is_cancelled() {
+                return Err(WorkerError::WorkerAlreadyClosed(self.id).into());
+            }
         }
+
         let params = (
             self.id,
             self.cancellation_token.clone(),
@@ -195,9 +206,6 @@ impl<
         );
         let main = main_loop(params);
         tokio::spawn(main.boxed());
-        self.state
-            .store(WorkerState::Active, std::sync::atomic::Ordering::Release);
-
         Ok(())
     }
     pub fn closed(&self) -> bool {
