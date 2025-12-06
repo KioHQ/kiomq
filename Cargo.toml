@@ -49,9 +49,10 @@ tokio-util = { version = "0.7.15", features = ["time", "rt"] }
 typed-emitter = { git = "https://github.com/spencerjibz/typed-emitter.git", rev = "eafde7a6223f2acd63cc438ef6f3cbf300b3ce59" }
 uuid = { version = "1.18.1", features = ["serde", "v4"] }
 tempfile = "3.23.0"
-parking_lot = { version = "0.12.5", features = ["send_guard"] }
 arc-swap = "1.7.1"
 crossbeam-utils = "0.8.21"
+atomic_refcell = "0.1.13"
+xutex = "0.2.0"
 [dev-dependencies]
 tracing-subscriber = "0.3.20"
 ffmpeg-sidecar = { version = "*", features = ["download_ffmpeg"] }
