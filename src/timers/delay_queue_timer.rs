@@ -27,12 +27,13 @@ use arc_swap::ArcSwapOption;
 use tokio_util::time::delay_queue::Key;
 
 use crate::{worker::JobMap, Queue, Store, WorkerOpts};
-use tokio::sync::Mutex;
+use xutex::AsyncMutex;
 /// A Runner for both  the stalled_check and lock_extension timer that requires polling
-#[derive(Clone, Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub(crate) struct DelayQueueTimer<D, R, P, S> {
     queue: Arc<Queue<D, R, P, S>>,
-    delay_queue: Arc<Mutex<DelayQueue<TimerType>>>,
+    #[debug(skip)]
+    delay_queue: Arc<AsyncMutex<DelayQueue<TimerType>>>,
     jobs: JobMap<D, R, P>,
     opts: WorkerOpts,
     pause_state: Arc<ArrayQueue<PausedTimerState>>,
@@ -57,7 +58,7 @@ impl<
             pause_state,
             keys,
             queue,
-            delay_queue: Arc::default(),
+            delay_queue: Arc::new(AsyncMutex::new(DelayQueue::default())),
             close_now: Arc::default(),
             jobs,
             opts,

@@ -16,7 +16,6 @@ use crossbeam_skiplist::map::Entry;
 use crossbeam_skiplist::SkipMap;
 use derive_more::Debug;
 use futures::FutureExt;
-use parking_lot::Mutex;
 use rocksdb::{
     BoundColumnFamily, ColumnFamily, DBWithThreadMode, MultiThreaded, OptimisticTransactionDB,
     Options, ReadOptions, WriteBatch, WriteBatchWithTransaction, WriteOptions,
@@ -30,6 +29,7 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use xutex::Mutex;
 #[track_caller]
 pub fn ivec_to_number<T: AsRef<[u8]>>(mut src: T) -> i64 {
     let array: [u8; 8] = src.as_ref().try_into().ok().unwrap_or_default();
@@ -116,7 +116,7 @@ impl<D, R, P> RocksDbStore<D, R, P> {
             is_inital,
             locks,
             events,
-            job_batch: Arc::default(),
+            job_batch: Arc::new(Mutex::new(WriteBatchWithTransaction::default())),
             jobs: jobs_collection,
             main_tree: queue_name,
             prefix,
@@ -169,7 +169,7 @@ impl<D, R, P> RocksDbStore<D, R, P> {
         None
     }
     async fn purge_expired(&self) {
-        if self.locks.len_expired().await > 0 {
+        if self.locks.len_expired() > 0 {
             self.locks.purge_expired().await;
         }
     }
@@ -375,7 +375,7 @@ where
             }
             CollectionSuffix::Job(id) => self.job_exists(id).await,
             CollectionSuffix::Lock(_) | CollectionSuffix::StalledCheck => {
-                self.locks.inner.lock().contains_key(&col.tag())
+                self.locks.inner.contains_key(&col.tag())
             }
 
             _ => false,
@@ -724,7 +724,7 @@ where
         if let Some(token) = token {
             lock = Lock::Token(token);
         }
-        self.locks.insert_expirable(lock_key, lock, duration).await;
+        self.locks.insert_expirable(lock_key, lock, duration);
 
         Ok(())
     }
