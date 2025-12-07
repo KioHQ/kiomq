@@ -179,13 +179,13 @@ where
     }
     async fn purge_expired(&self) {
         let purge_locks = async {
-            if self.locks.len_expired() > 0 {
+            if self.locks.len_expired().await > 0 {
                 self.locks.purge_expired().await;
             }
         };
 
         let purge_jobs = async move {
-            if self.jobs.len_expired() > 0 {
+            if self.jobs.len_expired().await > 0 {
                 self.jobs.purge_expired().await;
             }
         };
@@ -402,10 +402,10 @@ where
         let key = col.tag();
         match col {
             CollectionSuffix::Lock(_) | CollectionSuffix::StalledCheck => {
-                self.locks.update_expiration_status(&key, duration);
+                self.locks.update_expiration_status(&key, duration).await;
             }
             CollectionSuffix::Job(id) => {
-                self.jobs.update_expiration_status(&key, duration);
+                self.jobs.update_expiration_status(&key, duration).await;
             }
             _ => {}
         }
@@ -563,7 +563,7 @@ where
         if let Some(token) = token {
             lock = Lock::Token(token);
         }
-        self.locks.insert_expirable(lock_key, lock, duration);
+        self.locks.insert_expirable(lock_key, lock, duration).await;
 
         Ok(())
     }
