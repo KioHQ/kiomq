@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     events::QueueStreamEvent, BackOffJobOptions, CollectionSuffix, EventEmitter, Job, JobField,
-    JobMetrics, JobOptions, JobState, JobToken, KioResult, ProcessedResult, QueueEventMode,
+    JobOptions, JobState, JobToken, KioResult, ProcessedResult, QueueEventMode, QueueMetrics,
     QueueOpts, RemoveOnCompletionOrFailure, Trace, WorkerOpts,
 };
 use std::collections::VecDeque;
@@ -50,13 +50,13 @@ pub trait Store<D, R, P> {
         event_mode: QueueEventMode,
         block_interval: Option<u64>,
         emitter: &EventEmitter<D, R, P>,
-        metrics: &JobMetrics,
+        metrics: &QueueMetrics,
     ) -> KioResult<()>;
     async fn create_stream_listener(
         &self,
         emitter: EventEmitter<D, R, P>,
         notifier: Arc<Notify>,
-        metrics: Arc<JobMetrics>,
+        metrics: Arc<QueueMetrics>,
         pause_workers: Arc<AtomicBool>,
         event_mode: QueueEventMode,
     ) -> KioResult<JoinHandle<KioResult<()>>>;
@@ -77,7 +77,7 @@ pub trait Store<D, R, P> {
     async fn get_delayed_at(&self, start: i64, stop: i64) -> KioResult<(Vec<u64>, Vec<u64>)>;
     async fn pop_set(&self, col: CollectionSuffix, min: bool) -> KioResult<Vec<(u64, u64)>>;
     async fn expire(&self, col: CollectionSuffix, secs: i64) -> KioResult<()>;
-    async fn get_metrics(&self) -> KioResult<JobMetrics>;
+    async fn get_metrics(&self) -> KioResult<QueueMetrics>;
     async fn get_job(&self, id: u64) -> Option<Job<D, R, P>>;
     async fn get_token(&self, id: u64) -> Option<JobToken>;
     async fn get_state(&self, id: u64) -> Option<JobState>;

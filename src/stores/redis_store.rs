@@ -208,7 +208,7 @@ where
         event_mode: QueueEventMode,
         block_interval: Option<u64>,
         emitter: &EventEmitter<D, R, P>,
-        metrics: &JobMetrics,
+        metrics: &QueueMetrics,
     ) -> KioResult<()> {
         let store = Arc::new(self.clone());
         if !self.subscribed.load(Ordering::Acquire) {
@@ -252,7 +252,7 @@ where
         &self,
         emitter: EventEmitter<D, R, P>,
         notifier: Arc<Notify>,
-        metrics: Arc<JobMetrics>,
+        metrics: Arc<QueueMetrics>,
         pause_workers: Arc<AtomicBool>,
         event_mode: QueueEventMode,
     ) -> KioResult<JoinHandle<KioResult<()>>> {
@@ -369,9 +369,9 @@ where
         Ok(result)
     }
 
-    async fn get_metrics(&self) -> KioResult<JobMetrics> {
+    async fn get_metrics(&self) -> KioResult<QueueMetrics> {
         let mut conn = self.get_connection().await?;
-        crate::utils::get_job_metrics(&self.prefix, &self.name, &mut conn).await
+        crate::utils::get_queue_metrics(&self.prefix, &self.name, &mut conn).await
     }
     async fn get_job(&self, id: u64) -> Option<Job<D, R, P>> {
         use redis::Value;

@@ -59,13 +59,13 @@ pub fn calculate_next_priority_score(priority: u64, prio_counter: u64) -> u64 {
     (priority << 32) + (prio_counter & 0xffffffffffff)
 }
 
-use crate::{CollectionSuffix, JobMetrics};
+use crate::{CollectionSuffix, QueueMetrics};
 #[cfg(feature = "redis-store")]
-pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
+pub async fn get_queue_metrics<C: redis::aio::ConnectionLike>(
     prefix: &str,
     name: &str,
     conn: &mut C,
-) -> KioResult<JobMetrics> {
+) -> KioResult<QueueMetrics> {
     let [job_id_key, stalled_key, active_key, completed_key, meta_key, delayed_key, priority_counter_key, waiting_key, paused_key, prioritized_key, failed_key] =
         [
             CollectionSuffix::Id,
@@ -124,7 +124,7 @@ pub async fn get_job_metrics<C: redis::aio::ConnectionLike>(
         bool,
     ) = pipeline.query_async(conn).await?;
 
-    Ok(JobMetrics::new(
+    Ok(QueueMetrics::new(
         last_id.unwrap_or_default(),
         processing.unwrap_or_default(),
         active.unwrap_or_default(),
@@ -646,7 +646,7 @@ pub(crate) type ReadStreamArgs<'a, D, R, P> = (
     QueueEventMode,
     usize,
     &'a EventEmitter<D, R, P>,
-    Arc<JobMetrics>,
+    Arc<QueueMetrics>,
 );
 // Helper function to process events from our queue-redis-stream
 pub async fn process_queue_events<'a, D, R, P, S: Store<D, R, P> + Send>(
@@ -666,7 +666,7 @@ pub async fn process_each_event<D, R, P>(
     event: QueueStreamEvent<R, P>,
     emitter: &EventEmitter<D, R, P>,
     store: &(impl Store<D, R, P> + Send),
-    metrics: &JobMetrics,
+    metrics: &QueueMetrics,
 ) -> KioResult<()>
 where
     D: DeserializeOwned + Clone + Send + 'static,
@@ -682,7 +682,7 @@ where
     Ok(())
 }
 pub fn resume_helper(
-    current_metrics: &JobMetrics,
+    current_metrics: &QueueMetrics,
     pause_workers: &AtomicBool,
     worker_notifier: &Notify,
 ) {
@@ -754,7 +754,7 @@ pub async fn create_listener_handle<D, R, P, S>(
     store: &S,
     emitter: EventEmitter<D, R, P>,
     notifier: Arc<Notify>,
-    metrics: Arc<JobMetrics>,
+    metrics: Arc<QueueMetrics>,
     pause_workers: Arc<AtomicBool>,
     event_mode: QueueEventMode,
 ) -> KioResult<JoinHandle<KioResult<()>>>
@@ -788,7 +788,7 @@ where
 }
 pub(crate) fn pause_or_resume_workers(
     notifier: &Notify,
-    metrics: &JobMetrics,
+    metrics: &QueueMetrics,
     pause_workers: &AtomicBool,
     is_inital: &AtomicBool,
 ) {

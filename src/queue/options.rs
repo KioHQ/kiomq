@@ -270,7 +270,7 @@ fn create_counter(count: u64) -> Counter {
     Counter::new(count.into())
 }
 #[derive(Debug, Clone, Default)]
-pub struct JobMetrics {
+pub struct QueueMetrics {
     pub last_id: Counter,
     pub processing: Counter,
     pub prioritized: Counter,
@@ -284,7 +284,7 @@ pub struct JobMetrics {
     pub is_paused: Arc<AtomicBool>,
     pub event_mode: Arc<Atomic<QueueEventMode>>,
 }
-impl JobMetrics {
+impl QueueMetrics {
     pub fn all_jobs_completed(&self) -> bool {
         let last_id = self.last_id.load(Ordering::Relaxed);
         last_id > 0

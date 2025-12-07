@@ -36,7 +36,7 @@ use crate::stores::Store;
 use crate::{EventEmitter, EventParameters};
 use atomig::Atomic;
 use derive_more::Debug;
-pub use options::{CollectionSuffix, JobMetrics, QueueEventMode, QueueOpts, RetryOptions};
+pub use options::{CollectionSuffix, QueueEventMode, QueueMetrics, QueueOpts, RetryOptions};
 pub(crate) use options::{Counter, JobField, ProcessedResult};
 
 #[cfg(feature = "redis-store")]
@@ -48,7 +48,7 @@ use redis::{
 pub struct Queue<D, R, P, S> {
     pub paused: Arc<AtomicBool>,
     pub job_count: Arc<AtomicU64>,
-    pub current_metrics: Arc<JobMetrics>,
+    pub current_metrics: Arc<QueueMetrics>,
     pub opts: QueueOpts,
     pub(crate) event_mode: Arc<Atomic<QueueEventMode>>,
     emitter: EventEmitter<D, R, P>,
@@ -71,7 +71,7 @@ impl<
         use typed_emitter::TypedEmitter;
         let opts = queue_opts.unwrap_or_default();
         let emitter = Arc::new(TypedEmitter::new());
-        let mut metrics = JobMetrics::default();
+        let mut metrics = QueueMetrics::default();
         if let Ok(current_metrics) = store.get_metrics().await {
             metrics = current_metrics;
         }
@@ -709,7 +709,7 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
             &self.worker_notifier,
         );
     }
-    pub async fn get_metrics(&self) -> KioResult<JobMetrics> {
+    pub async fn get_metrics(&self) -> KioResult<QueueMetrics> {
         let updated = self.store.get_metrics().await?;
         self.current_metrics.update(&updated);
         Ok(updated)
