@@ -4,7 +4,7 @@ use crossbeam_skiplist::SkipMap;
 use crossbeam_utils::atomic::AtomicCell;
 use tokio::time::Duration;
 use tokio_util::time::{delay_queue::Key, DelayQueue};
-use xutex::Mutex;
+use xutex::AsyncMutex;
 #[derive(Debug)]
 pub struct ValueKeyPair<V> {
     pub value: AtomicRefCell<V>,
@@ -23,13 +23,13 @@ impl<V> ValueKeyPair<V> {
 /// A map with timed value-eviction
 pub struct TimedMap<K: Ord, V> {
     #[debug(skip)]
-    expiries: Mutex<DelayQueue<K>>,
+    expiries: AsyncMutex<DelayQueue<K>>,
     pub inner: SkipMap<K, ValueKeyPair<V>>,
 }
 impl<K: Ord, V> Default for TimedMap<K, V> {
     fn default() -> Self {
         Self {
-            expiries: Mutex::new(DelayQueue::default()),
+            expiries: AsyncMutex::new(DelayQueue::default()),
             inner: Default::default(),
         }
     }
@@ -42,28 +42,25 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
         let pair = ValueKeyPair::new(value);
         let pair = self.inner.insert(key, pair);
     }
-    pub fn insert_expirable(&self, key: K, value: V, timeout: Duration) {
-        let mut expiries = self.expiries.lock();
+    pub async fn insert_expirable(&self, key: K, value: V, timeout: Duration) {
+        let mut expiries = self.expiries.lock().await;
         let pair = ValueKeyPair::new(value);
         let expiry_key = expiries.insert(key.clone(), timeout);
         pair.key.store(Some(expiry_key));
         let pair = self.inner.insert(key, pair);
     }
-    pub fn len_expired(&self) -> usize {
-        self.expiries.lock().len()
+    pub async fn len_expired(&self) -> usize {
+        self.expiries.lock().await.len()
     }
     pub fn remove(&self, key: &K) {
         if let Some(removed) = self.inner.remove(key) {
             if let Some(expiry_key) = removed.value().key.load() {
-                self.expiries.lock().remove(&expiry_key);
+                self.expiries.as_sync().lock().remove(&expiry_key);
             }
         }
     }
-    pub fn some_expiring_soon(&self) -> bool {
-        self.expiries.lock().peek().is_some()
-    }
-    pub fn update_expiration_status(&self, key: &K, duration: Duration) -> Option<Key> {
-        let mut expiries = self.expiries.lock();
+    pub async fn update_expiration_status(&self, key: &K, duration: Duration) -> Option<Key> {
+        let mut expiries = self.expiries.lock().await;
         let found = self.inner.get(key)?;
         if let Some(previous_key) = found.value().key.load() {
             expiries.reset(&previous_key, duration);
@@ -76,22 +73,14 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
 
     pub fn clear(&self) {
         self.inner.clear();
-        self.expiries.lock().clear();
+        self.expiries.as_sync().lock().clear();
     }
     pub async fn purge_expired(&self) {
         use futures::StreamExt;
         use tokio_util::time::FutureExt;
         let timeout = Duration::from_micros(10);
         // clean any queued for deletion;
-        while let Ok(Some(value)) = self
-            .expiries
-            .as_async()
-            .lock()
-            .await
-            .next()
-            .timeout(timeout)
-            .await
-        {
+        while let Ok(Some(value)) = self.expiries.lock().await.next().timeout(timeout).await {
             let key = value.into_inner();
             self.inner.remove(&key);
         }
