@@ -224,14 +224,14 @@ impl<
 
     pub fn on<F, C>(&self, event: JobState, callback: C) -> Uuid
     where
-        C: Fn(EventParameters<D, R, P>) -> F + Send + Sync + 'static,
+        C: Fn(EventParameters<R, P>) -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + Sync + 'static,
     {
         self.queue.on(event, callback)
     }
     pub fn on_all_events<F, C>(&self, callback: C) -> Uuid
     where
-        C: Fn(EventParameters<D, R, P>) -> F + Send + Sync + 'static,
+        C: Fn(EventParameters<R, P>) -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + Sync + 'static,
     {
         self.queue.on_all_events(callback)

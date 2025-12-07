@@ -642,15 +642,15 @@ pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
     Ok(())
 }
 
-pub(crate) type ReadStreamArgs<'a, D, R, P> = (
+pub(crate) type ReadStreamArgs<'a, R, P> = (
     QueueEventMode,
     usize,
-    &'a EventEmitter<D, R, P>,
+    &'a EventEmitter<R, P>,
     Arc<QueueMetrics>,
 );
 // Helper function to process events from our queue-redis-stream
 pub async fn process_queue_events<'a, D, R, P, S: Store<D, R, P> + Send>(
-    (event_mode, block_interval, emitter, metrics): ReadStreamArgs<'a, D, R, P>,
+    (event_mode, block_interval, emitter, metrics): ReadStreamArgs<'a, R, P>,
     store: &S,
 ) -> KioResult<()>
 where
@@ -664,7 +664,7 @@ where
 }
 pub async fn process_each_event<D, R, P>(
     event: QueueStreamEvent<R, P>,
-    emitter: &EventEmitter<D, R, P>,
+    emitter: &EventEmitter<R, P>,
     store: &(impl Store<D, R, P> + Send),
     metrics: &QueueMetrics,
 ) -> KioResult<()>
@@ -674,7 +674,7 @@ where
     P: DeserializeOwned + Clone + Send + Sync + 'static,
 {
     let state = event.event;
-    let param = EventParameters::<D, R, P>::from_queue_event(event, store).await?;
+    let param = EventParameters::<R, P>::from_queue_event(event).await?;
     emitter.emit(state, param).await;
     if let Ok(updated) = store.get_metrics().await {
         metrics.update(&updated);
@@ -752,7 +752,7 @@ pub fn update_job_opts(queue_opts: &QueueOpts, opts: &mut JobOptions) {
 /// utily function to create stream_handles
 pub async fn create_listener_handle<D, R, P, S>(
     store: &S,
-    emitter: EventEmitter<D, R, P>,
+    emitter: EventEmitter<R, P>,
     notifier: Arc<Notify>,
     metrics: Arc<QueueMetrics>,
     pause_workers: Arc<AtomicBool>,
@@ -773,7 +773,7 @@ where
             let is_inital = AtomicBool::new(true);
 
             loop {
-                let args: ReadStreamArgs<D, R, P> =
+                let args: ReadStreamArgs<R, P> =
                     (event_mode, block_interval, &emitter, metrics.clone());
                 process_queue_events(args, &store).await?;
                 pause_or_resume_workers(&notifier, &metrics, &pause_workers, &is_inital);

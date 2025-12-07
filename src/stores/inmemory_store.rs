@@ -28,7 +28,7 @@ pub struct InMemoryStore<D, R, P> {
     #[debug(skip)]
     locks: Arc<TimedMap<u64, Lock>>, // locks that expires
     #[debug(skip)]
-    events: Arc<SharedEmitter<D, R, P>>,
+    events: Arc<SharedEmitter<R, P>>,
     id_counter: Counter,
     stored_metrics: Arc<ArcSwapOption<QueueMetrics>>,
     pause_workers: Arc<ArcSwapOption<AtomicBool>>,
@@ -247,7 +247,7 @@ where
         &self,
         event_mode: QueueEventMode,
         block_interval: Option<u64>,
-        emitter: &EventEmitter<D, R, P>,
+        emitter: &EventEmitter<R, P>,
         metrics: &QueueMetrics,
     ) -> KioResult<()> {
         // we do nothing  here as  this method isn't called for this store
@@ -257,7 +257,7 @@ where
 
     async fn create_stream_listener(
         &self,
-        emitter: EventEmitter<D, R, P>,
+        emitter: EventEmitter<R, P>,
         notifier: Arc<Notify>,
         metrics: Arc<QueueMetrics>,
         pause_workers: Arc<AtomicBool>,

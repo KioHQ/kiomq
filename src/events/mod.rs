@@ -4,7 +4,7 @@ use derive_more::Debug;
 use redis::AsyncCommands;
 use uuid::Uuid;
 #[derive(Clone, Debug)]
-pub enum EventParameters<D, R, P> {
+pub enum EventParameters<R, P> {
     Prioritized {
         job_id: u64,
         name: Option<String>,
@@ -23,11 +23,11 @@ pub enum EventParameters<D, R, P> {
         delay: Duration,
     },
     Active {
-        job: Job<D, R, P>,
+        job_id: u64,
         prev_state: Option<JobState>,
     },
     Completed {
-        job: Job<D, R, P>,
+        job_id: u64,
         prev_state: Option<JobState>,
         #[debug(skip)]
         result: R,
@@ -58,20 +58,16 @@ pub type Events = JobState;
 use crate::stores::Store;
 use serde::de::DeserializeOwned;
 use typed_emitter::TypedEmitter;
-pub(crate) type Emitter<D, R, P> = TypedEmitter<JobState, EventParameters<D, R, P>>;
-pub(crate) type EventEmitter<D, R, P> = Arc<Emitter<D, R, P>>;
+pub(crate) type Emitter<R, P> = TypedEmitter<JobState, EventParameters<R, P>>;
+pub(crate) type EventEmitter<R, P> = Arc<Emitter<R, P>>;
 mod redis_events;
 pub use redis_events::{QueueStreamEvent, StreamEventId};
 
 use crate::KioResult;
-impl<D: DeserializeOwned, R: DeserializeOwned, P: DeserializeOwned> EventParameters<D, R, P> {
-    pub async fn from_queue_event(
-        event: QueueStreamEvent<R, P>,
-        mut store: &(impl Store<D, R, P> + Send),
-    ) -> KioResult<Self> {
+impl<R: DeserializeOwned, P: DeserializeOwned> EventParameters<R, P> {
+    pub async fn from_queue_event(event: QueueStreamEvent<R, P>) -> KioResult<Self> {
         let job_state = event.event;
-        let job_id = &event.job_id;
-        let fetch_job = store.get_job(*job_id);
+        let job_id = event.job_id;
         let parameter = match job_state {
             JobState::Prioritized => Self::Prioritized {
                 job_id: event.job_id,
@@ -90,23 +86,17 @@ impl<D: DeserializeOwned, R: DeserializeOwned, P: DeserializeOwned> EventParamet
                 job_id: event.job_id,
                 prev_state: event.prev.unwrap_or_default(),
             },
-            JobState::Active => {
-                let job = fetch_job.await.ok_or(JobError::JobNotFound)?;
-                Self::Active {
-                    job,
-                    prev_state: event.prev,
-                }
-            }
+            JobState::Active => Self::Active {
+                job_id,
+                prev_state: event.prev,
+            },
             JobState::Paused => Self::Void,
             JobState::Resumed => Self::Void,
-            JobState::Completed => {
-                let job = fetch_job.await.ok_or(JobError::JobNotFound)?;
-                Self::Completed {
-                    job,
-                    prev_state: event.prev,
-                    result: event.returned_value.expect("there is no result"),
-                }
-            }
+            JobState::Completed => Self::Completed {
+                job_id,
+                prev_state: event.prev,
+                result: event.returned_value.expect("there is no result"),
+            },
             JobState::Failed => Self::Failed {
                 reason: event.failed_reason.unwrap_or_default(),
                 job_id: event.job_id,

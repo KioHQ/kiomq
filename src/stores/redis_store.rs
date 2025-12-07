@@ -207,7 +207,7 @@ where
         &self,
         event_mode: QueueEventMode,
         block_interval: Option<u64>,
-        emitter: &EventEmitter<D, R, P>,
+        emitter: &EventEmitter<R, P>,
         metrics: &QueueMetrics,
     ) -> KioResult<()> {
         let store = Arc::new(self.clone());
@@ -223,7 +223,7 @@ where
             QueueEventMode::PubSub => {
                 if let Some(msg) = self.pubsub_source.lock().await.next().await {
                     let event: QueueStreamEvent<R, P> = msg.get_payload()?;
-                    process_each_event(event, emitter, self, metrics).await?;
+                    process_each_event::<D, R, P>(event, emitter, self, metrics).await?;
                 }
             }
             QueueEventMode::Stream => {
@@ -241,7 +241,7 @@ where
                 let events =
                     QueueStreamEvent::<R, P>::from_stream_read_reply(&self.stream_key, reply);
                 for event in events {
-                    process_each_event(event, emitter, self, metrics).await?;
+                    process_each_event::<D, R, P>(event, emitter, self, metrics).await?;
                 }
             }
         };
@@ -250,13 +250,21 @@ where
     }
     async fn create_stream_listener(
         &self,
-        emitter: EventEmitter<D, R, P>,
+        emitter: EventEmitter<R, P>,
         notifier: Arc<Notify>,
         metrics: Arc<QueueMetrics>,
         pause_workers: Arc<AtomicBool>,
         event_mode: QueueEventMode,
     ) -> KioResult<JoinHandle<KioResult<()>>> {
-        create_listener_handle(self, emitter, notifier, metrics, pause_workers, event_mode).await
+        create_listener_handle::<D, R, P, Self>(
+            self,
+            emitter,
+            notifier,
+            metrics,
+            pause_workers,
+            event_mode,
+        )
+        .await
     }
     async fn add_bulk_only(
         &self,

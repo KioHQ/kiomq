@@ -27,7 +27,7 @@ enum Lock {
 }
 use crate::events::Emitter;
 use arc_swap::ArcSwapOption;
-type SharedEmitter<D, R, P> = ArcSwapOption<Emitter<D, R, P>>;
+type SharedEmitter<R, P> = ArcSwapOption<Emitter<R, P>>;
 #[allow(clippy::too_many_arguments)]
 #[async_trait::async_trait]
 pub trait Store<D, R, P> {
@@ -49,12 +49,12 @@ pub trait Store<D, R, P> {
         &self,
         event_mode: QueueEventMode,
         block_interval: Option<u64>,
-        emitter: &EventEmitter<D, R, P>,
+        emitter: &EventEmitter<R, P>,
         metrics: &QueueMetrics,
     ) -> KioResult<()>;
     async fn create_stream_listener(
         &self,
-        emitter: EventEmitter<D, R, P>,
+        emitter: EventEmitter<R, P>,
         notifier: Arc<Notify>,
         metrics: Arc<QueueMetrics>,
         pause_workers: Arc<AtomicBool>,
