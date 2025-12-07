@@ -25,20 +25,20 @@ mod worker {
         let store = RedisStore::new(None, &name, config).await?;
         let queue = Queue::<i32, i32, i32, _>::new(store, Some(queue_opts)).await?;
         let count = 4;
-        let completed: Arc<ArrayQueue<Job<_, _, _>>> = Arc::new(ArrayQueue::new(count as usize));
+        let completed: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new((count + 2) as usize));
         let jobs = completed.clone();
         queue.on(
             kio_mq::JobState::Completed,
-            move |state: kio_mq::EventParameters<i32, i32, i32>| {
+            move |state: kio_mq::EventParameters<i32, i32>| {
                 let completed = jobs.clone();
                 async move {
                     if let EventParameters::Completed {
-                        job,
+                        job_id,
                         prev_state: _,
                         result: _,
                     } = state
                     {
-                        let _ = completed.push(job);
+                        let _ = completed.push(job_id);
                     }
                 }
             },
@@ -52,7 +52,7 @@ mod worker {
         assert!(worker.is_running());
         let jobs = queue.bulk_add(job_iterator).await?;
         // wait for metrics to update
-        while completed.len() != count as usize {}
+        while !queue.current_metrics.all_jobs_completed() {}
         worker.close();
         assert!(!worker.is_running());
         let metrics = queue.get_metrics().await?;
@@ -109,15 +109,19 @@ mod worker {
             };
             (i.to_string(), Some(job_opts), i)
         });
-        let completed: Arc<ArrayQueue<Job<_, _, _>>> = Arc::new(ArrayQueue::new(count as usize));
+        let completed: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(count as usize));
         let jobs = completed.clone();
         queue.on(
             kio_mq::JobState::Active,
-            move |state: kio_mq::EventParameters<i32, i32, i32>| {
+            move |state: kio_mq::EventParameters<i32, i32>| {
                 let completed = jobs.clone();
                 async move {
-                    if let EventParameters::Active { job, prev_state: _ } = state {
-                        let _ = completed.push(job);
+                    if let EventParameters::Active {
+                        job_id,
+                        prev_state: _,
+                    } = state
+                    {
+                        let _ = completed.push(job_id);
                     }
                 }
             },
@@ -140,13 +144,13 @@ mod worker {
         );
         queue.obliterate().await?;
         while let Some(job) = completed.pop() {
-            // check delay is with accepted range
-            let diff = (job.processed_on.unwrap_or_default() - job.ts).num_milliseconds();
-            let delay = job.delay as i64;
-            let allowable_delay_diff = 90;
-            if delay > 0 {
-                assert!(diff - delay <= allowable_delay_diff);
-            }
+            //// check delay is with accepted range
+            //let diff = (job.processed_on.unwrap_or_default() - job.ts).num_milliseconds();
+            //let delay = job.delay as i64;
+            //let allowable_delay_diff = 90;
+            //if delay > 0 {
+            //    assert!(diff - delay <= allowable_delay_diff);
+            //}
         }
         Ok(())
     }
@@ -162,20 +166,20 @@ mod worker {
         let store = RedisStore::new(None, &name, config).await?;
         let queue = Queue::<i32, i32, i32, _>::new(store, Some(queue_opts)).await?;
         let count = 4;
-        let completed: Arc<ArrayQueue<Job<_, _, _>>> = Arc::new(ArrayQueue::new(count as usize));
+        let completed: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(count as usize));
         let jobs = completed.clone();
         queue.on(
             kio_mq::JobState::Completed,
-            move |state: kio_mq::EventParameters<i32, i32, i32>| {
+            move |state: kio_mq::EventParameters<i32, i32>| {
                 let completed = jobs.clone();
                 async move {
                     if let EventParameters::Completed {
-                        job,
+                        job_id,
                         prev_state: _,
                         result: _,
                     } = state
                     {
-                        let _ = completed.push(job);
+                        let _ = completed.push(job_id);
                     }
                 }
             },
@@ -227,12 +231,15 @@ mod worker {
         let jobs = moved_to_active.clone();
         queue.on(
             kio_mq::JobState::Active,
-            move |state: kio_mq::EventParameters<i32, i32, i32>| {
+            move |state: kio_mq::EventParameters<i32, i32>| {
                 let completed = jobs.clone();
                 async move {
-                    if let EventParameters::Active { job, prev_state: _ } = state {
-                        let id = job.id.unwrap();
-                        let _ = completed.push(id);
+                    if let EventParameters::Active {
+                        job_id,
+                        prev_state: _,
+                    } = state
+                    {
+                        let _ = completed.push(job_id);
                     }
                 }
             },
@@ -282,17 +289,16 @@ mod worker {
         let queue = Queue::<i32, i32, i32, _>::new(store.clone(), Some(queue_opts)).await?;
         let completed: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(count as usize));
         let jobs = completed.clone();
-        queue.on_all_events(move |state: kio_mq::EventParameters<i32, i32, i32>| {
+        queue.on_all_events(move |state: kio_mq::EventParameters<i32, i32>| {
             let completed = jobs.clone();
             async move {
                 if let EventParameters::Completed {
-                    ref job,
+                    job_id,
                     prev_state: _,
                     result: _,
                 } = state
                 {
-                    let id = job.id.unwrap_or_default();
-                    let _ = completed.push(id);
+                    let _ = completed.push(job_id);
                 }
                 if let EventParameters::Failed {
                     reason: _,

@@ -3,6 +3,7 @@ use futures::future::Future;
 use futures::stream::{FuturesOrdered, FuturesUnordered};
 use futures::{FutureExt, StreamExt};
 use std::collections::VecDeque;
+use std::marker::{PhantomData, PhantomPinned};
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
@@ -51,13 +52,14 @@ pub struct Queue<D, R, P, S> {
     pub current_metrics: Arc<QueueMetrics>,
     pub opts: QueueOpts,
     pub(crate) event_mode: Arc<Atomic<QueueEventMode>>,
-    emitter: EventEmitter<D, R, P>,
+    emitter: EventEmitter<R, P>,
     pub(crate) store: Arc<S>,
     #[debug(skip)]
     pub stream_listener: Arc<JoinHandle<KioResult<()>>>,
     pub(crate) backoff: BackOff,
     pub(crate) worker_notifier: Arc<Notify>,
     pub pause_workers: Arc<AtomicBool>,
+    _data: PhantomData<D>,
 }
 
 impl<
@@ -110,6 +112,7 @@ impl<
             job_count: Arc::default(),
             emitter,
             paused: Arc::new(AtomicBool::new(is_paused)),
+            _data: PhantomData,
         })
     }
 
@@ -477,19 +480,19 @@ impl<
             .ok_or(JobError::JobNotFound)?;
         Ok(job)
     }
-    pub async fn emit(&self, event: JobState, data: EventParameters<D, R, P>) {
+    pub async fn emit(&self, event: JobState, data: EventParameters<R, P>) {
         self.emitter.emit(event, data).await
     }
     pub fn on<F, C>(&self, event: JobState, callback: C) -> Uuid
     where
-        C: Fn(EventParameters<D, R, P>) -> F + Send + Sync + 'static,
+        C: Fn(EventParameters<R, P>) -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + Sync + 'static,
     {
         self.emitter.on(event, callback)
     }
     pub fn on_all_events<F, C>(&self, callback: C) -> Uuid
     where
-        C: Fn(EventParameters<D, R, P>) -> F + Send + Sync + 'static,
+        C: Fn(EventParameters<R, P>) -> F + Send + Sync + 'static,
         F: Future<Output = ()> + Send + Sync + 'static,
     {
         self.emitter.on_all(callback)

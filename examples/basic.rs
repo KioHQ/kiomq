@@ -52,12 +52,12 @@ async fn main() -> KioResult<()> {
     let store = RocksDbStore::new(None, "test", db.clone())?;
     let events = counter.clone();
     let queue = Queue::new(store, Some(queue_opts)).await?;
-    let event_listener = move |state: EventParameters<_, _, _>| {
+    let event_listener = move |state: EventParameters<_, _>| {
         let completed = events.clone();
         async move {
             // do something with return state
             if let EventParameters::Completed {
-                job: _,
+                job_id,
                 result: _,
                 prev_state: _,
             } = state
@@ -78,7 +78,7 @@ async fn main() -> KioResult<()> {
     };
     queue.on_all_events(event_listener);
 
-    let count = 1000;
+    let count = 10000;
     let repeats = 2;
     use croner::Cron;
     let _cron_schedule: Cron = "1/2 * * * * *".parse()?;
