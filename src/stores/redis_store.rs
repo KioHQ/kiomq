@@ -18,13 +18,14 @@ use serde::Serialize;
 use std::num::ParseIntError;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{AcquireError, Notify};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 /// a counter for adding bulk jobs,
 static START: AtomicU64 = AtomicU64::new(0);
 static PC_COUNTER: AtomicU64 = AtomicU64::new(0);
-use tokio::sync::Mutex;
+use xutex::Mutex;
 #[derive(Clone, Debug)]
 pub struct RedisStore {
     pub prefix: String,
@@ -213,6 +214,7 @@ where
         let store = Arc::new(self.clone());
         if !self.subscribed.load(Ordering::Acquire) {
             self.pubsub_sink
+                .as_async()
                 .lock()
                 .await
                 .subscribe(&self.stream_key)
@@ -221,7 +223,18 @@ where
         }
         match event_mode {
             QueueEventMode::PubSub => {
-                if let Some(msg) = self.pubsub_source.lock().await.next().await {
+                use tokio_util::time::FutureExt;
+                let block_interval = block_interval.unwrap_or(5000);
+                let timeout = Duration::from_millis(block_interval);
+                while let Ok(Some(msg)) = self
+                    .pubsub_source
+                    .as_async()
+                    .lock()
+                    .await
+                    .next()
+                    .timeout(timeout)
+                    .await
+                {
                     let event: QueueStreamEvent<R, P> = msg.get_payload()?;
                     process_each_event::<D, R, P>(event, emitter, self, metrics).await?;
                 }
@@ -445,6 +458,11 @@ where
                     let mut previous: Vec<Trace> = simd_json::from_slice(&mut previous).ok()?;
                     previous.push(trace);
                     return simd_json::to_string(&previous)
+                        .ok()
+                        .map(move |result| (name, result));
+                }
+                if let JobField::Payload(ProcessedResult::Success(result, _)) = field {
+                    return simd_json::to_string(&result)
                         .ok()
                         .map(move |result| (name, result));
                 }
