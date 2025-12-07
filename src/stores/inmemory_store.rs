@@ -30,7 +30,7 @@ pub struct InMemoryStore<D, R, P> {
     #[debug(skip)]
     events: Arc<SharedEmitter<D, R, P>>,
     id_counter: Counter,
-    stored_metrics: Arc<ArcSwapOption<JobMetrics>>,
+    stored_metrics: Arc<ArcSwapOption<QueueMetrics>>,
     pause_workers: Arc<ArcSwapOption<AtomicBool>>,
     is_inital: Arc<AtomicBool>,
     notifier: Arc<ArcSwapOption<Notify>>,
@@ -248,7 +248,7 @@ where
         event_mode: QueueEventMode,
         block_interval: Option<u64>,
         emitter: &EventEmitter<D, R, P>,
-        metrics: &JobMetrics,
+        metrics: &QueueMetrics,
     ) -> KioResult<()> {
         // we do nothing  here as  this method isn't called for this store
         // we can directly use the emitter to emit events without need for a channel
@@ -259,7 +259,7 @@ where
         &self,
         emitter: EventEmitter<D, R, P>,
         notifier: Arc<Notify>,
-        metrics: Arc<JobMetrics>,
+        metrics: Arc<QueueMetrics>,
         pause_workers: Arc<AtomicBool>,
         event_mode: QueueEventMode,
     ) -> KioResult<JoinHandle<KioResult<()>>> {
@@ -412,8 +412,8 @@ where
         Ok(())
     }
 
-    async fn get_metrics(&self) -> KioResult<JobMetrics> {
-        let mut metrics = JobMetrics::new(
+    async fn get_metrics(&self) -> KioResult<QueueMetrics> {
+        let mut metrics = QueueMetrics::new(
             self.id_counter.load(Ordering::Acquire),
             self.processing.load(Ordering::Acquire),
             self.active.len() as u64,

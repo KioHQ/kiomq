@@ -17,7 +17,7 @@ pub use job::*;
 pub use queue::*;
 pub use stores::*;
 #[cfg(feature = "redis-store")]
-pub use utils::{fetch_redis_pass, get_job_metrics};
+pub use utils::{fetch_redis_pass, get_queue_metrics};
 pub use worker::{Worker, WorkerOpts};
 
 pub type KioResult<T> = Result<T, KioError>;
