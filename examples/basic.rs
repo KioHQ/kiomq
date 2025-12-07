@@ -65,7 +65,7 @@ async fn main() -> KioResult<()> {
             } = state
             {
                 completed.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                println!("{job_metrics}  expected_delay: {expected_delay:?}", );
+                println!("{job_metrics}  expected_delay: {expected_delay:?}",);
             }
         }
     };

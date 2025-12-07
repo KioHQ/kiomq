@@ -35,7 +35,6 @@ pub struct JobMetrics {
     pub id: u64,
 }
 
-
 /// alias for DateTime<Utc>
 pub(crate) type Dt = DateTime<Utc>;
 #[derive(
