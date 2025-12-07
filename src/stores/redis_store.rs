@@ -606,6 +606,7 @@ where
             CollectionSuffix::Prioritized,
             CollectionSuffix::PriorityCounter,
             CollectionSuffix::Meta,
+            CollectionSuffix::Paused,
         ]
         .iter()
         .for_each(|name| {

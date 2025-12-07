@@ -432,28 +432,29 @@ where
             )
             .await?
             {
-                let id = job.id.unwrap();
-                jobs_in_progress.insert(id, (job.clone(), token, AtomicU64::default()));
+                if let Some(id) = job.id {
+                    jobs_in_progress.insert(id, (job.clone(), token, AtomicU64::default()));
 
-                let state = job.state;
-                let callback = processor.clone();
-                queue
-                    .update_processing_count(true, worker_id, id, state)
-                    .await?;
-                let task = processing.spawn(async_backtrace::frame!(process_job(
-                    to_remove.clone(),
-                    job,
-                    token,
-                    jobs_in_progress.clone(),
-                    queue.clone(),
-                    callback
-                )
-                .boxed()));
-                let task_id: u64 = task.id().to_string().parse()?;
-                if let Some(mut re) = jobs_in_progress.get(&id) {
-                    let (_, _, stored_handle) = re.value();
+                    let state = job.state;
+                    let callback = processor.clone();
+                    queue
+                        .update_processing_count(true, worker_id, id, state)
+                        .await?;
+                    let task = processing.spawn(async_backtrace::frame!(process_job(
+                        to_remove.clone(),
+                        job,
+                        token,
+                        jobs_in_progress.clone(),
+                        queue.clone(),
+                        callback
+                    )
+                    .boxed()));
+                    let task_id: u64 = task.id().to_string().parse()?;
+                    if let Some(mut re) = jobs_in_progress.get(&id) {
+                        let (_, _, stored_handle) = re.value();
 
-                    stored_handle.swap(task_id, Ordering::AcqRel);
+                        stored_handle.swap(task_id, Ordering::AcqRel);
+                    }
                 }
             }
             if queue.pause_workers.load(Ordering::Acquire)

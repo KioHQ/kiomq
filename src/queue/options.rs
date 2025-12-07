@@ -15,6 +15,7 @@ use atomig::{Atom, Atomic};
 use redis::{FromRedisValue, RedisResult, ToRedisArgs, Value};
 use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(untagged)]
 /// An envelope representing the result of running the worker's callback
 pub enum ProcessedResult<R> {
     Failed(FailedDetails),
