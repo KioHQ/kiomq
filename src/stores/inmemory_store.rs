@@ -695,7 +695,7 @@ where
                         ProcessedResult::Failed(failed_details) => {
                             job.failed_reason = Some(failed_details)
                         }
-                        ProcessedResult::Success(result) => job.returned_value = Some(result),
+                        ProcessedResult::Success(result, _) => job.returned_value = Some(result),
                     },
                 }
             }

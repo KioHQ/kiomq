@@ -99,16 +99,14 @@ async fn main() -> KioResult<()> {
 
     worker.on_all_events(move |event| async move {
         if let EventParameters::Completed {
-            job_id,
+            job_metrics,
+            result: _,
+            expected_delay,
             prev_state: _,
-            result,
+            job_id: _,
         } = event
         {
-            let id = job_id;
-            //let completed_in =
-            //    (job.finished_on.unwrap() - job.processed_on.unwrap()).num_milliseconds();
-            let size = result.processed_size;
-            //println!(" completed job {id}  for {size:?} in {completed_in} mills");
+            println!("{job_metrics}  expected_delay: {expected_delay:?}", );
         }
     });
 

@@ -1,4 +1,4 @@
-use crate::Dt;
+use crate::{Dt, JobMetrics};
 use crate::{FailedDetails, JobState, KioError, KioResult};
 use chrono::Utc;
 use derive_more::Debug;
@@ -56,6 +56,7 @@ pub struct QueueStreamEvent<R, P> {
     pub progress_data: Option<P>,
     pub name: Option<String>,
     pub worker_id: Option<Uuid>,
+    pub metrics: Option<JobMetrics>,
 }
 #[cfg(feature = "redis-store")]
 impl<R: Serialize, P: Serialize> ToRedisArgs for QueueStreamEvent<R, P> {
@@ -78,6 +79,7 @@ impl<R: DeserializeOwned, P: DeserializeOwned> FromRedisValue for QueueStreamEve
 impl<R, P> Default for QueueStreamEvent<R, P> {
     fn default() -> Self {
         Self {
+            metrics: None,
             failed_reason: None,
             priority: None,
             id: Default::default(),
@@ -145,6 +147,7 @@ impl<R: DeserializeOwned, P: DeserializeOwned> TryFrom<&mut StreamId> for QueueS
                         event.event = parsed;
                     }
                     "prev" => event.prev = Option::from_redis_value(val)?,
+                    "metrics" | "Metrics" => event.metrics = simd_json::from_slice(bytes)?,
 
                     _ => { /* Ignore unknown fields if your hash might contain others */ }
                 }

@@ -4,8 +4,8 @@ use crate::stores::Store;
 use crate::timers::DelayQueueTimer;
 use crate::worker::{JobMap, ProcessingQueue, WorkerCallback, WorkerState, MIN_DELAY_MS_LIMIT};
 use crate::{
-    utils, EventEmitter, EventParameters, FailedDetails, JobOptions, JobState, JobToken, KioError,
-    QueueEventMode, QueueOpts, Trace, WorkerOpts,
+    utils, EventEmitter, EventParameters, FailedDetails, JobMetrics, JobOptions, JobState,
+    JobToken, KioError, QueueEventMode, QueueOpts, Trace, WorkerOpts,
 };
 use chrono::Utc;
 use crossbeam_queue::SegQueue;
@@ -160,7 +160,10 @@ where
     use crate::worker::WorkerCallback;
     use crate::JobState;
     let job_id = job.id.unwrap_or_default();
-    let attempts_made = job.attempts_made;
+    let job_added_at = job.ts;
+    let processed_on = job.processed_on;
+    let attempts_made = job.attempts_made + 1;
+
     let returned = match callback {
         WorkerCallback::Sync(cb) => {
             let store = queue.store.clone();
@@ -179,15 +182,29 @@ where
     };
     match returned {
         Ok(result) => {
-            let ts = Utc::now().timestamp_micros();
+            let now = Utc::now();
+            let ts = now.timestamp_micros();
             let move_to_state = JobState::Completed;
+
+            let mut metrics = JobMetrics {
+                id: job_id,
+                attempt: attempts_made,
+                ..Default::default()
+            };
+            if let Some(processed_at) = processed_on {
+                let delayed_for = (processed_at - job_added_at).to_std().unwrap_or_default();
+                let ran_for = (now - processed_at).to_std().unwrap_or_default();
+                metrics.delayed_for = delayed_for;
+                metrics.ran_for = ran_for;
+            }
+
             let completed = queue
                 .move_job_to_finished_or_failed(
                     job_id,
                     ts,
                     token,
                     move_to_state,
-                    crate::ProcessedResult::Success(result),
+                    crate::ProcessedResult::Success(result, metrics),
                     None,
                 )
                 .await?;
