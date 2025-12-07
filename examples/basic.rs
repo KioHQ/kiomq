@@ -35,7 +35,7 @@ async fn main() -> KioResult<()> {
     };
 
     let counter = Arc::new(AtomicUsize::default());
-    let store: InMemoryStore<i32, i32, i32> = InMemoryStore::new(None, "trial");
+    let _store: InMemoryStore<i32, i32, i32> = InMemoryStore::new(None, "trial");
     #[cfg(all(feature = "redis-store", not(feature = "default")))]
     let password = fetch_redis_pass();
     #[cfg(all(feature = "redis-store", not(feature = "default")))]
@@ -45,13 +45,13 @@ async fn main() -> KioResult<()> {
         cfg.redis.password = password;
     }
     #[cfg(all(feature = "redis-store", not(feature = "default")))]
-    let store = RedisStore::new(None, "trial", &config).await?;
+    let _store = RedisStore::new(None, "trial", &config).await?;
     #[cfg(feature = "rocksdb-store")]
     let db = Arc::new(temporary_rocks_db());
     #[cfg(feature = "rocksdb-store")]
-    let store = RocksDbStore::new(None, "test", db.clone())?;
+    let _store = RocksDbStore::new(None, "test", db.clone())?;
     let events = counter.clone();
-    let queue = Queue::new(store, Some(queue_opts)).await?;
+    let queue = Queue::new(_store, Some(queue_opts)).await?;
     let event_listener = move |state: EventParameters<_, _>| {
         let completed = events.clone();
         async move {

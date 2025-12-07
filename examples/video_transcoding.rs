@@ -47,7 +47,7 @@ struct Progress {
 async fn main() -> KioResult<()> {
     console_subscriber::init();
     let input_path = "sampleFHD.mp4";
-    let store: InMemoryStore<ProcessData, ReturnData, Progress> =
+    let _store: InMemoryStore<ProcessData, ReturnData, Progress> =
         InMemoryStore::new(None, "video-processing");
     #[cfg(all(feature = "redis-store", not(feature = "default")))]
     let password = fetch_redis_pass();
@@ -58,12 +58,12 @@ async fn main() -> KioResult<()> {
         cfg.redis.password = password;
     }
     #[cfg(all(feature = "redis-store", not(feature = "default")))]
-    let store = RedisStore::new(None, "video-processing", &config).await?;
+    let _store = RedisStore::new(None, "video-processing", &config).await?;
     #[cfg(feature = "rocksdb-store")]
     let db = Arc::new(temporary_rocks_db());
     #[cfg(feature = "rocksdb-store")]
-    let store = RocksDbStore::new(None, "video-processing", db.clone())?;
-    let queue = Queue::new(store, None).await?;
+    let _store = RocksDbStore::new(None, "video-processing", db.clone())?;
+    let queue = Queue::new(_store, None).await?;
     let processor = |con: _, job: _| process_callback(con, job);
     // auto download ffmpeg if it's not installed;
     tokio::task::spawn_blocking(auto_download)
