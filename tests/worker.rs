@@ -2,7 +2,7 @@
 mod worker {
     use crossbeam_queue::ArrayQueue;
     use kio_mq::{
-        fetch_redis_pass, EventParameters, Job, JobOptions, KioError, QueueEventMode, RedisStore,
+        fetch_redis_pass, EventParameters, JobOptions, KioError, QueueEventMode, RedisStore,
     };
     use kio_mq::{Config, KioResult, Queue, QueueOpts, Worker};
     use std::collections::VecDeque;
@@ -33,9 +33,11 @@ mod worker {
                 let completed = jobs.clone();
                 async move {
                     if let EventParameters::Completed {
-                        job_id,
-                        prev_state: _,
+                        job_metrics: _,
                         result: _,
+                        expected_delay: _,
+                        prev_state: _,
+                        job_id,
                     } = state
                     {
                         let _ = completed.push(job_id);
@@ -174,9 +176,11 @@ mod worker {
                 let completed = jobs.clone();
                 async move {
                     if let EventParameters::Completed {
-                        job_id,
-                        prev_state: _,
+                        job_metrics: _,
                         result: _,
+                        expected_delay: _,
+                        prev_state: _,
+                        job_id,
                     } = state
                     {
                         let _ = completed.push(job_id);
@@ -293,9 +297,12 @@ mod worker {
             let completed = jobs.clone();
             async move {
                 if let EventParameters::Completed {
-                    job_id,
-                    prev_state: _,
+                    job_metrics: _,
                     result: _,
+                    expected_delay: _,
+                    prev_state: _,
+                    job_id,
+                    _dt,
                 } = state
                 {
                     let _ = completed.push(job_id);

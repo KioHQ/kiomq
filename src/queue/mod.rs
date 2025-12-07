@@ -225,7 +225,10 @@ impl<
                 ProcessedResult::Failed(failed_details) => {
                     event.failed_reason = Some(failed_details)
                 }
-                ProcessedResult::Success(value) => event.returned_value = Some(value),
+                ProcessedResult::Success(value, metrics) => {
+                    event.returned_value = Some(value);
+                    event.metrics = Some(metrics);
+                }
             }
         }
         self.store.publish_event(event_mode, event).await?;
