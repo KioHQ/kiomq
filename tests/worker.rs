@@ -145,14 +145,16 @@ mod worker {
             0,
         );
         queue.obliterate().await?;
-        while let Some(job) = completed.pop() {
-            //// check delay is with accepted range
-            //let diff = (job.processed_on.unwrap_or_default() - job.ts).num_milliseconds();
-            //let delay = job.delay as i64;
-            //let allowable_delay_diff = 90;
-            //if delay > 0 {
-            //    assert!(diff - delay <= allowable_delay_diff);
-            //}
+        while let Some(id) = completed.pop() {
+            if let Some(job) = queue.get_job(id).await {
+                // check delay is with accepted range
+                let diff = (job.processed_on.unwrap_or_default() - job.ts).num_milliseconds();
+                let delay = job.delay as i64;
+                let allowable_delay_diff = 90;
+                if delay > 0 {
+                    assert!(diff - delay <= allowable_delay_diff);
+                }
+            }
         }
         Ok(())
     }
@@ -302,7 +304,6 @@ mod worker {
                     expected_delay: _,
                     prev_state: _,
                     job_id,
-                    _dt,
                 } = state
                 {
                     let _ = completed.push(job_id);
