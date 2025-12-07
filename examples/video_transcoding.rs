@@ -106,7 +106,7 @@ async fn main() -> KioResult<()> {
             job_id: _,
         } = event
         {
-            println!("{job_metrics}  expected_delay: {expected_delay:?}", );
+            println!("{job_metrics}  expected_delay: {expected_delay:?}",);
         }
     });
 
