@@ -89,6 +89,7 @@ mod worker {
             let _expected = KioError::WorkerError(WorkerError::WorkerAlreadyRunningWithId(id));
             assert!(matches!(err, _expected))
         }
+        queue.obliterate().await?;
         Ok(())
     }
 
@@ -97,7 +98,6 @@ mod worker {
         use crossbeam_queue::ArrayQueue;
         let config = &CONFIG;
         let queue_opts = QueueOpts {
-            event_mode: Some(QueueEventMode::PubSub),
             ..Default::default()
         };
         let name = Uuid::new_v4().to_string();
@@ -144,7 +144,6 @@ mod worker {
             metrics.delayed.load(std::sync::atomic::Ordering::Acquire),
             0,
         );
-        queue.obliterate().await?;
         while let Some(id) = completed.pop() {
             if let Some(job) = queue.get_job(id).await {
                 // check delay is with accepted range
@@ -156,6 +155,8 @@ mod worker {
                 }
             }
         }
+
+        queue.obliterate().await?;
         Ok(())
     }
     #[tokio::test(flavor = "multi_thread")]
@@ -163,7 +164,6 @@ mod worker {
         use std::time::Duration;
         let config = &CONFIG;
         let queue_opts = QueueOpts {
-            event_mode: Some(QueueEventMode::PubSub),
             ..Default::default()
         };
         let name = Uuid::new_v4().to_string();
@@ -199,7 +199,7 @@ mod worker {
         assert!(worker.is_running());
         queue.bulk_add(job_iterator).await?;
         // wait for all previous to complete
-        while completed.len() != count as usize {}
+        while !queue.current_metrics.all_jobs_completed() {}
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(worker.is_idle());
         queue.add_job("test", 1, None).await?;
@@ -213,6 +213,8 @@ mod worker {
             0,
         );
         assert_eq!(metrics.active.load(std::sync::atomic::Ordering::Acquire), 1);
+        // wait for all jobs to completed before cleanup
+        while !queue.current_metrics.all_jobs_completed() {}
         queue.obliterate().await?;
         Ok(())
     }
@@ -257,7 +259,6 @@ mod worker {
         worker.run()?;
         let jobs = queue.bulk_add(job_iterator).await?;
         // wait for metrics to update
-        //tokio::time::slee
         while moved_to_active.len() < count as usize {}
         assert_eq!(moved_to_active.len(), count as usize);
         let metrics = queue.current_metrics.as_ref();
@@ -265,6 +266,8 @@ mod worker {
             metrics.waiting.load(std::sync::atomic::Ordering::Acquire),
             0,
         );
+        // wait for all jobs to complete
+        while !queue.current_metrics.all_jobs_completed() {}
         let mut expected_ordered: VecDeque<u64> = jobs
             .into_iter()
             .map(|job| job.id.unwrap_or_default())
@@ -331,7 +334,7 @@ mod worker {
         assert!(worker.is_running());
         let _jobs = queue.bulk_add(job_iterator).await?;
         // wait for metrics to update
-        while completed.len() != count as usize {}
+        while completed.len() < count as usize {}
         worker.close();
         let last_id = queue
             .current_metrics
