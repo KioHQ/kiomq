@@ -96,7 +96,8 @@ mod tests {
     #[tokio::test]
     async fn test_purge_removes_expired() {
         let map: Arc<TimedMap<u64, u64>> = Arc::new(TimedMap::new());
-        map.insert_expirable(1, 100, Duration::from_millis(50));
+        map.insert_expirable(1, 100, Duration::from_millis(50))
+            .await;
 
         // wait for it to expire
         sleep(Duration::from_millis(80)).await;
@@ -119,7 +120,7 @@ mod tests {
                 // insert many keys with small expiry
                 for j in 0..10u64 {
                     let k = i * 100 + j;
-                    m.insert_expirable(k, k, Duration::from_millis(30));
+                    m.insert_expirable(k, k, Duration::from_millis(30)).await;
                 }
             }));
         }
@@ -136,6 +137,6 @@ mod tests {
         map.purge_expired().await;
 
         // there should be no scheduled expiries left
-        assert_eq!(map.len_expired(), 0);
+        assert_eq!(map.len_expired().await, 0);
     }
 }
