@@ -80,6 +80,10 @@ impl<D: Clone, R: Clone, P: Clone> InMemoryStore<D, R, P> {
             event_mode: QueueEventMode::PubSub,
         }
     }
+    pub fn toggle_expiration(&self) {
+        self.locks.toggle_expiration();
+        self.jobs.toggle_expiration();
+    }
 }
 impl<D, R, P> InMemoryStore<D, R, P>
 where

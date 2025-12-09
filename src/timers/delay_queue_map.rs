@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use atomic_refcell::AtomicRefCell;
 use crossbeam_queue::SegQueue;
 use crossbeam_skiplist::SkipMap;
@@ -25,13 +27,26 @@ pub struct TimedMap<K: Ord, V> {
     #[debug(skip)]
     expiries: AsyncMutex<DelayQueue<K>>,
     pub inner: SkipMap<K, ValueKeyPair<V>>,
+    disable_expiration: AtomicBool,
 }
 impl<K: Ord, V> Default for TimedMap<K, V> {
     fn default() -> Self {
         Self {
             expiries: AsyncMutex::new(DelayQueue::default()),
             inner: Default::default(),
+            disable_expiration: AtomicBool::default(),
         }
+    }
+}
+impl<K: Ord, V> TimedMap<K, V> {
+    pub fn toggle_expiration(&self) {
+        let previous_state = self.disable_expiration.load(Ordering::Acquire);
+        let _ = self.disable_expiration.compare_exchange(
+            previous_state,
+            !previous_state,
+            Ordering::AcqRel,
+            Ordering::SeqCst,
+        );
     }
 }
 impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
@@ -43,10 +58,12 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
         let pair = self.inner.insert(key, pair);
     }
     pub async fn insert_expirable(&self, key: K, value: V, timeout: Duration) {
-        let mut expiries = self.expiries.lock().await;
         let pair = ValueKeyPair::new(value);
-        let expiry_key = expiries.insert(key.clone(), timeout);
-        pair.key.store(Some(expiry_key));
+        if !self.disable_expiration.load(Ordering::Acquire) {
+            let mut expiries = self.expiries.lock().await;
+            let expiry_key = expiries.insert(key.clone(), timeout);
+            pair.key.store(Some(expiry_key));
+        }
         let pair = self.inner.insert(key, pair);
     }
     pub async fn len_expired(&self) -> usize {
@@ -70,12 +87,18 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
         found.value().key.store(Some(new_key));
         Some(new_key)
     }
+    pub fn expires_entries(&self) -> bool {
+        !self.disable_expiration.load(Ordering::Acquire)
+    }
 
     pub fn clear(&self) {
         self.inner.clear();
         self.expiries.as_sync().lock().clear();
     }
     pub async fn purge_expired(&self) {
+        if !self.expires_entries() {
+            return;
+        }
         use futures::StreamExt;
         use tokio_util::time::FutureExt;
         let timeout = Duration::from_micros(10);
