@@ -19,7 +19,7 @@ use serde::ser;
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::{format, Write};
 use std::num::NonZero;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::task_local;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -150,6 +150,7 @@ pub(crate) async fn process_job<D, R, P, S>(
     jobs_in_progress: JobMap<D, R, P>,
     queue: Arc<Queue<D, R, P, S>>,
     callback: WorkerCallback<D, R, P, S>,
+    permit: OwnedSemaphorePermit,
 ) -> KioResult<()>
 where
     R: Serialize + Send + Clone + DeserializeOwned + 'static + Sync,
@@ -345,6 +346,7 @@ where
     S: Clone + Store<D, R, P> + 'static + Send + Sync,
 {
     use std::sync::atomic::Ordering;
+    use tokio_util::time::FutureExt;
     let (
         id,
         cancellation_token,
@@ -414,8 +416,12 @@ where
     );
 
     let now = Instant::now();
+    let semaphore = Arc::new(Semaphore::new(opts.concurrency));
     while !cancellation_token.is_cancelled() {
-        while !cancellation_token.is_cancelled() && processing.len() < opts.concurrency {
+        while let Some(Ok(permit)) = cancellation_token
+            .run_until_cancelled(semaphore.clone().acquire_owned())
+            .await
+        {
             let token_prefix = active_job_count.load(std::sync::atomic::Ordering::Acquire);
             let next_id = Uuid::new_v4();
             let token = JobToken(id, next_id, token_prefix as u64);
@@ -446,7 +452,8 @@ where
                         token,
                         jobs_in_progress.clone(),
                         queue.clone(),
-                        callback
+                        callback,
+                        permit,
                     )
                     .boxed()));
                     let task_id: u64 = task.id().to_string().parse()?;
