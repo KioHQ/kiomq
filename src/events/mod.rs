@@ -94,13 +94,16 @@ impl<R: DeserializeOwned, P: DeserializeOwned> EventParameters<R, P> {
             },
             JobState::Paused => Self::Void,
             JobState::Resumed => Self::Void,
-            JobState::Completed => Self::Completed {
-                job_id,
-                prev_state: event.prev,
-                expected_delay: Duration::from_millis(event.delay.unwrap_or_default()),
-                job_metrics: event.metrics.unwrap_or_default(),
-                result: event.returned_value.expect("there is no result"),
-            },
+            JobState::Completed => {
+                let job_metrics = event.metrics.unwrap_or_default();
+                Self::Completed {
+                    job_metrics,
+                    job_id,
+                    prev_state: event.prev,
+                    expected_delay: Duration::from_millis(job_metrics.delay),
+                    result: event.returned_value.expect("there is no result"),
+                }
+            }
             JobState::Failed => Self::Failed {
                 reason: event.failed_reason.unwrap_or_default(),
                 job_id: event.job_id,
