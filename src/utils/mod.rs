@@ -164,6 +164,8 @@ where
     let job_added_at = job.ts;
     let processed_on = job.processed_on;
     let attempts_made = job.attempts_made + 1;
+    let mut metrics = job.get_metrics().unwrap_or_default();
+    metrics.attempt = attempts_made;
 
     let returned = match callback {
         WorkerCallback::Sync(cb) => {
@@ -187,12 +189,8 @@ where
             let ts = now.timestamp_micros();
             let move_to_state = JobState::Completed;
 
-            let mut metrics = JobMetrics {
-                id: job_id,
-                attempt: attempts_made,
-                ..Default::default()
-            };
             if let Some(processed_at) = processed_on {
+                metrics.id = job_id;
                 let delayed_for = (processed_at - job_added_at).to_std().unwrap_or_default();
                 let ran_for = (now - processed_at).to_std().unwrap_or_default();
                 metrics.delayed_for = delayed_for;

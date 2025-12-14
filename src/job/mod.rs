@@ -32,6 +32,7 @@ pub struct JobMetrics {
     pub ran_for: Duration,
     pub delayed_for: Duration,
     pub attempt: u64,
+    pub delay: u64,
     pub id: u64,
 }
 
@@ -238,14 +239,15 @@ impl<D, R, P> Job<D, R, P> {
         }
     }
     pub fn get_metrics(&self) -> Option<JobMetrics> {
-        let processed_on = self.processed_on?;
-        let id = self.id?;
-        let finished_on = self.finished_on?;
+        let delay = self.opts.delay.as_diff_ms(self.ts) as u64;
+        let processed_on = self.processed_on.unwrap_or_default();
+        let id = self.id.unwrap_or_default();
+        let finished_on = self.finished_on.unwrap_or_default();
         let attempt = self.attempts_made;
-        let ran_for = (finished_on - processed_on).to_std().ok()?;
-        let delayed_for = (processed_on - self.ts).to_std().ok()?;
-
+        let ran_for = (finished_on - processed_on).to_std().unwrap_or_default();
+        let delayed_for = (processed_on - self.ts).to_std().unwrap_or_default();
         Some(JobMetrics {
+            delay,
             id,
             ran_for,
             delayed_for,
