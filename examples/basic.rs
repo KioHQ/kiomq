@@ -2,6 +2,8 @@ use std::{
     sync::{atomic::AtomicUsize, Arc},
     time::Instant,
 };
+use tracing::info;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use kio_mq::{
     framed, BackOffJobOptions, EventParameters, InMemoryStore, Job, JobOptions, KioResult, Queue,
@@ -17,6 +19,8 @@ use uuid::Uuid;
 #[framed]
 async fn main() -> KioResult<()> {
     console_subscriber::init();
+    //setup_tracing();
+
     let remove_opts = RemoveOnCompletionOrFailure::Opts(kio_mq::KeepJobs {
         age: Some(60 * 60),
         count: None,
@@ -65,13 +69,13 @@ async fn main() -> KioResult<()> {
             } = state
             {
                 completed.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                println!("{job_metrics}  expected_delay: {expected_delay:?}",);
+                info!("{job_metrics}  expected_delay: {expected_delay:?}",);
             }
         }
     };
     queue.on_all_events(event_listener);
 
-    let count = 1000;
+    let count = 100000;
     let repeats = 2;
     use croner::Cron;
     let _cron_schedule: Cron = "1/2 * * * * *".parse()?;
@@ -105,7 +109,7 @@ async fn main() -> KioResult<()> {
     let worker = Worker::new_async(&queue, processor, Some(opts))?;
     let adding = Instant::now();
     queue.bulk_add_only(iterator).await?;
-    println!("adding items took {:?}", adding.elapsed());
+    info!("adding items took {:?}", adding.elapsed());
     worker.run()?;
     let now = Instant::now();
     while counter.load(std::sync::atomic::Ordering::Acquire) < count as usize {
@@ -124,11 +128,31 @@ async fn process_callback<S: Store<i32, i32, i32>>(
     mut job: Job<i32, i32, i32>,
 ) -> Result<i32, std::io::Error> {
     let progress = job.progress.unwrap_or_default();
-    let _ = store.update_job_progress(&mut job, progress + 1);
+    //let _ = store.update_job_progress(&mut job, progress + 1);
     //let id: u64 = job.id.unwrap_or_default().parse().unwrap_or_default();
     //if id % 2 == 0 && job.attempts_made < job.opts.attempts - 1 {
     //    //uncomment the line below to test to catching panics
     //    panic!("panicked here");
     //}
     Ok(job.id.unwrap_or_default() as i32)
+}
+
+fn setup_tracing() {
+    // Create the console layer for tokio-console
+    let console_layer = console_subscriber::spawn();
+
+    // Create a formatting layer for regular logs
+    let fmt_layer = tracing_subscriber::fmt::layer().with_target(true);
+
+    // Create an env filter
+    let filter_layer = tracing_subscriber::EnvFilter::try_from_default_env()
+        .or_else(|_| tracing_subscriber::EnvFilter::try_new("debug"))
+        .unwrap();
+
+    // Combine all layers
+    tracing_subscriber::registry()
+        .with(console_layer)
+        .with(filter_layer)
+        .with(fmt_layer)
+        .init();
 }

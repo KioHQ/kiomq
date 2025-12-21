@@ -11,6 +11,8 @@ use std::{
     sync::Arc,
 };
 use tokio::fs;
+use tracing::info;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 type BoxedError = Box<dyn std::error::Error + Send>;
 use ffmpeg_sidecar::{
     command::FfmpegCommand,
@@ -45,7 +47,8 @@ struct Progress {
 #[tokio::main]
 #[framed]
 async fn main() -> KioResult<()> {
-    console_subscriber::init();
+    //console_subscriber::init();
+    setup_tracing();
     let input_path = "sampleFHD.mp4";
     let _store: InMemoryStore<ProcessData, ReturnData, Progress> =
         InMemoryStore::new(None, "video-processing");
@@ -106,7 +109,7 @@ async fn main() -> KioResult<()> {
             job_id: _,
         } = event
         {
-            println!("{job_metrics}  expected_delay: {expected_delay:?}",);
+            info!("{job_metrics}  expected_delay: {expected_delay:?}",);
         }
     });
 
@@ -200,7 +203,7 @@ fn process_callback<S: Store<ProcessData, ReturnData, Progress>>(
 
 /// create a H265 source video from scratch
 fn create_h265_source(path_str: &str) {
-    println!("Creating H265 source video: {path_str}");
+    info!("Creating H265 source video: {path_str}");
     FfmpegCommand::new()
         .args("-f lavfi -i testsrc=size=1920x1080:rate=30:duration=15 -c:v libx265".split(' '))
         .arg(path_str)
@@ -209,9 +212,28 @@ fn create_h265_source(path_str: &str) {
         .iter()
         .expect("failed to get iter")
         .for_each(|e| match e {
-            FfmpegEvent::Log(LogLevel::Error, e) => println!("Error: {e}"),
-            FfmpegEvent::Progress(p) => println!("Progress: {} / 00:00:15", p.time),
+            FfmpegEvent::Log(LogLevel::Error, e) => info!("Error: {e}"),
+            FfmpegEvent::Progress(p) => info!("Progress: {} / 00:00:15", p.time),
             _ => {}
         });
-    println!("Created H265 source video: {path_str}");
+    info!("Created H265 source video: {path_str}");
+}
+fn setup_tracing() {
+    // Create the console layer for tokio-console
+    let console_layer = console_subscriber::spawn();
+
+    // Create a formatting layer for regular logs
+    let fmt_layer = tracing_subscriber::fmt::layer().with_target(true);
+
+    // Create an env filter
+    let filter_layer = tracing_subscriber::EnvFilter::try_from_default_env()
+        .or_else(|_| tracing_subscriber::EnvFilter::try_new("debug"))
+        .unwrap();
+
+    // Combine all layers
+    tracing_subscriber::registry()
+        .with(console_layer)
+        .with(filter_layer)
+        .with(fmt_layer)
+        .init();
 }
