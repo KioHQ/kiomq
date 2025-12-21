@@ -22,6 +22,8 @@ use std::num::NonZero;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::task_local;
 use tokio_util::sync::CancellationToken;
+use tracing::field::debug;
+use tracing::{info, info_span, Instrument};
 use uuid::Uuid;
 
 pub(crate) mod processor_types;
@@ -319,6 +321,7 @@ where
 }
 
 type MainLoopParams<D, R, P, S> = (
+    tracing::Span,
     Uuid,
     CancellationToken,
     ProcessingQueue,
@@ -346,6 +349,7 @@ where
     use std::sync::atomic::Ordering;
     use tokio_util::time::FutureExt;
     let (
+        resource_span,
         id,
         cancellation_token,
         processing,
@@ -375,6 +379,8 @@ where
     let worker_state_clone = worker_state.clone();
     let current_job_current = active_job_count.clone();
     timers.start_timers().await;
+    let mut yield_notified = async { !cancellation_token.is_cancelled() }.boxed();
+    let sub_span = info_span!(parent: &resource_span, "timer_and_clean_up_task");
     tokio::spawn(
         async move {
             while !cancel_token.is_cancelled() {
@@ -395,13 +401,18 @@ where
                     queue_clone
                         .update_processing_count(false, worker_id, job_id, state)
                         .await?;
+                    info!("processed job {job_id} in task({key}) to state: {state}");
                 }
-                if pause_schedular.load(Ordering::Acquire) && running.is_empty() {
-                    println!("pausing scheduler loop");
+                if pause_schedular.load(Ordering::Acquire)
+                    && running.is_empty()
+                    && !cancel_token.is_cancelled()
+                {
+                    info!("pausing ... ");
                     worker_state_clone.store(WorkerState::Idle, Ordering::Release);
                     // wait for all running jobs to completed
                     timers.pause().await;
                     notifer.notified().await;
+                    info!("resumed");
                     worker_state_clone.store(WorkerState::Active, Ordering::Release);
                     timers.resume().await;
                 }
@@ -410,74 +421,89 @@ where
 
             Ok::<(), KioError>(())
         }
+        .instrument(sub_span)
         .boxed(),
     );
 
     let now = Instant::now();
     let semaphore = Arc::new(Semaphore::new(opts.concurrency));
     while !cancellation_token.is_cancelled() {
-        while let Some(Ok(permit)) = cancellation_token
-            .run_until_cancelled(semaphore.clone().acquire_owned())
-            .await
-        {
-            let token_prefix = active_job_count.load(std::sync::atomic::Ordering::Acquire);
-            let next_id = Uuid::new_v4();
-            let token = JobToken(id, next_id, token_prefix as u64);
-            let worker_id = id;
-            let block_delay = block_until.load(std::sync::atomic::Ordering::Acquire);
-            let passed_id = delayed.pop();
-            if let Some(job) = get_next_job(
-                queue.as_ref(),
-                token,
-                block_delay,
-                cancellation_token.is_cancelled(),
-                &opts,
-                passed_id,
-            )
-            .await?
+        while !cancellation_token.is_cancelled() && semaphore.available_permits() > 0 {
+            if let Some(Ok(permit)) = cancellation_token
+                .run_until_cancelled(semaphore.clone().acquire_owned())
+                .await
             {
-                if let Some(id) = job.id {
-                    jobs_in_progress.insert(id, (job.clone(), token, AtomicU64::default()));
+                let token_prefix = active_job_count.load(std::sync::atomic::Ordering::Acquire);
+                let next_id = Uuid::new_v4();
+                let token = JobToken(id, next_id, token_prefix as u64);
+                let worker_id = id;
+                let block_delay = block_until.load(std::sync::atomic::Ordering::Acquire);
+                let passed_id = delayed.pop();
+                if let Some(job) = get_next_job(
+                    queue.as_ref(),
+                    token,
+                    block_delay,
+                    cancellation_token.is_cancelled(),
+                    &opts,
+                    passed_id,
+                )
+                .await?
+                {
+                    if let Some(id) = job.id {
+                        jobs_in_progress.insert(id, (job.clone(), token, AtomicU64::default()));
 
-                    let state = job.state;
-                    let callback = processor.clone();
-                    queue
-                        .update_processing_count(true, worker_id, id, state)
-                        .await?;
-                    let task = processing.spawn(async_backtrace::frame!(process_job(
-                        to_remove.clone(),
-                        job,
-                        token,
-                        jobs_in_progress.clone(),
-                        queue.clone(),
-                        callback,
-                        permit,
-                    )
-                    .boxed()));
-                    let task_id: u64 = task.id().to_string().parse()?;
-                    if let Some(mut re) = jobs_in_progress.get(&id) {
-                        let (_, _, stored_handle) = re.value();
+                        let state = job.state;
+                        let callback = processor.clone();
+                        queue
+                            .update_processing_count(true, worker_id, id, state)
+                            .await?;
+                        let task = processing.spawn(async_backtrace::frame!(process_job(
+                            to_remove.clone(),
+                            job,
+                            token,
+                            jobs_in_progress.clone(),
+                            queue.clone(),
+                            callback,
+                            permit,
+                        )
+                        .boxed()));
+                        let task_id: u64 = task.id().to_string().parse()?;
+                        if let Some(mut re) = jobs_in_progress.get(&id) {
+                            let (_, _, stored_handle) = re.value();
 
-                        stored_handle.swap(task_id, Ordering::AcqRel);
+                            stored_handle.swap(task_id, Ordering::AcqRel);
+                        }
                     }
+                    // yield here so any for timer to clean_up tasks
+                    tokio::task::yield_now().await;
+                }
+                if queue.pause_workers.load(Ordering::Acquire)
+                    && delayed.is_empty()
+                    && processing.is_empty()
+                    && to_remove.is_empty()
+                    && !cancellation_token.is_cancelled()
+                {
+                    //to_pause.store(true, Ordering::Relaxed);
+                    match cancellation_token
+                        .run_until_cancelled(paused_here.notified())
+                        .await
+                    {
+                        None => break,
+                        Some(_) => {
+                            info!(
+                                "paused job_schedular_loop {delayed}, {processing}, {to_remove}",
+                                delayed = delayed.len(),
+                                processing = processing.len(),
+                                to_remove = to_remove.len(),
+                            );
+                        }
+                    }
+
+                    info!("resumed job_schedular_loop");
+
+                    to_pause.store(false, Ordering::Relaxed);
                 }
             }
-            if queue.pause_workers.load(Ordering::Acquire)
-                && delayed.is_empty()
-                && processing.is_empty()
-                && to_remove.is_empty()
-            {
-                println!(
-                    "pause main loop after processing all jobs, worker_delayed: {} processing:{} task_pending_removal:{}",
-                    delayed.len(),
-                    processing.len(),
-                    to_remove.len()
-                );
-                to_pause.store(true, Ordering::Relaxed);
-                paused_here.notified().await;
-                to_pause.store(false, Ordering::Relaxed);
-            }
-            tokio::task::yield_now().await;
         }
         //dbg!("yield main : ", id);
         tokio::task::yield_now().await;
