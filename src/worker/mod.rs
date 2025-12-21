@@ -9,6 +9,7 @@ use crate::{
 };
 
 use crate::utils::{get_next_job, main_loop};
+use atomic_refcell::AtomicRefCell;
 use chrono::Utc;
 use derive_more::Debug;
 use futures::future::{BoxFuture, Future, FutureExt, Shared, TryFutureExt};
@@ -46,11 +47,13 @@ pub enum WorkerState {
     Idle,
     Closed,
 }
+use tracing::{debug, trace, warn, Instrument, Span};
 
 pub(crate) use worker_opts::MIN_DELAY_MS_LIMIT;
 #[derive(Clone, Debug)]
 pub struct Worker<D, R, P, S> {
     pub id: Uuid,
+    resource_span: Span,
     queue: Arc<Queue<D, R, P, S>>,
     jobs_in_progress: JobMap<D, R, P>,
     #[debug(skip)]
@@ -64,6 +67,7 @@ pub struct Worker<D, R, P, S> {
     mini_block_timout: u64,
     active_job_count: Arc<AtomicUsize>,
     continue_notifier: Arc<Notify>,
+    main_task: Arc<AtomicRefCell<Option<Task>>>,
 }
 use crate::utils::processor_types;
 use processor_types::Callback;
@@ -129,6 +133,10 @@ impl<
         let jobs_in_progress: JobMap<_, _, _> = Arc::new(SkipMap::new());
         let f: F = processor.into();
         let callback = Callback::from(f);
+        let callback_type = match &callback {
+            Callback::Async(_) => "Async",
+            Callback::Sync(_) => "Sync",
+        };
 
         let id = Uuid::new_v4();
         let mut opts = worker_opts.unwrap_or_default();
@@ -140,7 +148,21 @@ impl<
 
         let timers = DelayQueueTimer::new(jobs.clone(), opts.clone(), queue.clone());
         let continue_notifier = queue.worker_notifier.clone();
+
+        let resource_span = {
+            let location = std::panic::Location::caller();
+            let queue_name = queue.name();
+            let worker_type = format!(
+                "{}-Worker({},{queue_name})",
+                callback_type,
+                id.as_u64_pair().0,
+            );
+            tracing::debug_span!(parent:None, "",worker_type)
+        };
+        let main_task = Arc::default();
         let worker = Self {
+            main_task,
+            resource_span,
             timers,
             continue_notifier,
             block_until: Arc::default(),
@@ -191,6 +213,7 @@ impl<
         }
 
         let params = (
+            self.resource_span.clone(),
             self.id,
             self.cancellation_token.clone(),
             self.processing.clone(),
@@ -204,8 +227,9 @@ impl<
             self.continue_notifier.clone(),
             self.timers.clone(),
         );
-        let main = main_loop(params);
-        tokio::spawn(main.boxed());
+        let main = main_loop(params).instrument(self.resource_span.clone());
+        let main_task = tokio::spawn(main.boxed());
+        self.main_task.borrow_mut().replace(main_task);
         Ok(())
     }
     pub fn closed(&self) -> bool {
@@ -216,18 +240,31 @@ impl<
                 .is_closed()
     }
     /// Stops the worker from running (adding more jobs to run)
-    /// If true is passed as an argument, all actively running jobs are stopped too.
     pub fn close(&self) {
         if !self.is_running() {
             return;
         }
-
-        self.processing.close();
-        self.cancellation_token.cancel();
-        self.timers.close();
-
-        self.state
-            .store(WorkerState::Closed, std::sync::atomic::Ordering::Release);
+        self.resource_span.in_scope(|| {
+            debug!(
+                "cancel the worker's engine_loop, current_state: {:#?}",
+                self.state.load(std::sync::atomic::Ordering::Acquire)
+            );
+            self.processing.close();
+            self.cancellation_token.cancel();
+            self.timers.close();
+            // TODO: work on gracefully shutdown later; currently we just cancel the token but
+            // don't check whether the main_task has closed too. Handle this later
+            /*
+                       if let Ok(main_task) = self.main_task.try_borrow() {
+                           if let Some(handle) = main_task.as_ref() {
+                               // wait for handle to finishd
+                               let running_tasks = self.processing.len();
+                               warn!("waiting for all {running_tasks} tasks to complete or abort");
+                               //while !handle.is_finished() {}
+                           }
+                       }
+            */
+        });
     }
 
     pub fn on<F, C>(&self, event: JobState, callback: C) -> Uuid
