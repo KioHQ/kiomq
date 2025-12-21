@@ -53,8 +53,9 @@ arc-swap = "1.7.1"
 crossbeam-utils = "0.8.21"
 atomic_refcell = "0.1.13"
 xutex = "0.2.0"
+tracing = { version = "0.1.44", features = ["async-await"] }
 [dev-dependencies]
-tracing-subscriber = "0.3.20"
+tracing-subscriber = {version = "0.3.20" ,features = ["env-filter"] }
 ffmpeg-sidecar = { version = "*", features = ["download_ffmpeg"] }
 rand = "*"
 [dev-dependencies.console-subscriber]
