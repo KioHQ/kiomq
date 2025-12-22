@@ -8,7 +8,7 @@ use crate::{
     JobToken, KioError, QueueEventMode, QueueOpts, Trace, WorkerOpts,
 };
 use chrono::Utc;
-use crossbeam_queue::SegQueue;
+use crossbeam_queue::{ArrayQueue, SegQueue};
 use futures::future::OkInto;
 use futures::{FutureExt, StreamExt};
 #[cfg(feature = "redis-store")]
@@ -146,13 +146,14 @@ pub async fn get_queue_metrics<C: redis::aio::ConnectionLike>(
 
 #[async_backtrace::framed]
 pub(crate) async fn process_job<D, R, P, S>(
-    task_sender: TaskToRemove,
     job: Job<D, R, P>,
     token: JobToken,
     jobs_in_progress: JobMap<D, R, P>,
     queue: Arc<Queue<D, R, P, S>>,
     callback: WorkerCallback<D, R, P, S>,
     permit: OwnedSemaphorePermit,
+    worker_id: Uuid,
+    current_job_current: Arc<AtomicUsize>,
 ) -> KioResult<()>
 where
     R: Serialize + Send + Clone + DeserializeOwned + 'static + Sync,
@@ -168,6 +169,7 @@ where
     let attempts_made = job.attempts_made + 1;
     let mut metrics = job.get_metrics().unwrap_or_default();
     metrics.attempt = attempts_made;
+    let task_queue = TaskToRemove::new(1);
 
     let returned = match callback {
         WorkerCallback::Sync(cb) => {
@@ -225,7 +227,7 @@ where
                 }
 
                 let handle_id = handle.load(std::sync::atomic::Ordering::Acquire);
-                task_sender.push((handle_id, job_id, move_to_state));
+                task_queue.push((handle_id, job_id, move_to_state));
             }
         }
         Err(err) => {
@@ -280,9 +282,17 @@ where
                 }
                 let handle_id = handle.load(std::sync::atomic::Ordering::Acquire);
 
-                task_sender.push((handle_id, job_id, move_to_state));
+                task_queue.push((handle_id, job_id, move_to_state));
             }
         }
+    }
+
+    while let Some((key, job_id, state)) = task_queue.pop() {
+        let count = current_job_current.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        queue
+            .update_processing_count(false, worker_id, job_id, state)
+            .await?;
+        info!("processed job {job_id} in task({key}) to state: {state}");
     }
     Ok(())
 }
@@ -336,7 +346,7 @@ type MainLoopParams<D, R, P, S> = (
     DelayQueueTimer<D, R, P, S>,
 );
 use tokio::task::{Id, JoinHandle};
-type TaskToRemove = Arc<SegQueue<(u64, u64, JobState)>>;
+type TaskToRemove = ArrayQueue<(u64, u64, JobState)>;
 pub(crate) type JobQueue = Arc<SegQueue<u64>>;
 #[async_backtrace::framed]
 pub(crate) async fn main_loop<D, R, P, S>(params: MainLoopParams<D, R, P, S>) -> KioResult<()>
@@ -368,8 +378,6 @@ where
         "Worker Starting with conncurrency set to {}",
         opts.concurrency
     );
-    let to_remove = TaskToRemove::default();
-    let task_queue = to_remove.clone();
     let delayed = JobQueue::default();
     let running = processing.clone();
     let cancel_token = cancellation_token.clone();
@@ -403,19 +411,12 @@ where
 
                 timers.run(&job_queue).await?;
                 queue_clone.store.purge_expired().await;
-                while let Some((key, job_id, state)) = task_queue.pop() {
-                    let count = current_job_current.fetch_sub(1, Ordering::AcqRel);
-                    queue_clone
-                        .update_processing_count(false, worker_id, job_id, state)
-                        .await?;
-                    info!("processed job {job_id} in task({key}) to state: {state}");
-                }
                 if pause_schedular.load(Ordering::Acquire) && running.is_empty() {
                     info!("pausing ... ");
                     worker_state_clone.store(WorkerState::Idle, Ordering::Release);
                     // wait for all running jobs to completed
                     timers.pause().await;
-                    notifer.notified().await;
+                    cancel_token.run_until_cancelled(notifer.notified()).await;
                     info!("resumed");
                     worker_state_clone.store(WorkerState::Active, Ordering::Release);
                     timers.resume().await;
@@ -432,66 +433,62 @@ where
     let now = Instant::now();
     let semaphore = Arc::new(Semaphore::new(opts.concurrency));
     while !cancellation_token.is_cancelled() {
-        while !cancellation_token.is_cancelled() && semaphore.available_permits() > 0 {
-            if let Some(Ok(permit)) = cancellation_token
-                .run_until_cancelled(semaphore.clone().acquire_owned())
-                .await
+        while let Some(Ok(permit)) = cancellation_token
+            .run_until_cancelled(semaphore.clone().acquire_owned())
+            .await
+        {
+            let token_prefix = active_job_count.load(std::sync::atomic::Ordering::Acquire);
+            let next_id = Uuid::new_v4();
+            let token = JobToken(id, next_id, token_prefix as u64);
+            let worker_id = id;
+            let block_delay = block_until.load(std::sync::atomic::Ordering::Acquire);
+            let passed_id = delayed.pop();
+            if let Some(job) = get_next_job(
+                queue.as_ref(),
+                token,
+                block_delay,
+                cancellation_token.is_cancelled(),
+                &opts,
+                passed_id,
+            )
+            .await?
             {
-                let token_prefix = active_job_count.load(std::sync::atomic::Ordering::Acquire);
-                let next_id = Uuid::new_v4();
-                let token = JobToken(id, next_id, token_prefix as u64);
-                let worker_id = id;
-                let block_delay = block_until.load(std::sync::atomic::Ordering::Acquire);
-                let passed_id = delayed.pop();
-                if let Some(job) = get_next_job(
-                    queue.as_ref(),
-                    token,
-                    block_delay,
-                    cancellation_token.is_cancelled(),
-                    &opts,
-                    passed_id,
-                )
-                .await?
-                {
-                    if let Some(id) = job.id {
-                        jobs_in_progress.insert(id, (job.clone(), token, AtomicU64::default()));
+                if let Some(id) = job.id {
+                    jobs_in_progress.insert(id, (job.clone(), token, AtomicU64::default()));
 
-                        let state = job.state;
-                        let callback = processor.clone();
-                        queue
-                            .update_processing_count(true, worker_id, id, state)
-                            .await?;
-                        let task = processing.spawn(async_backtrace::frame!(process_job(
-                            to_remove.clone(),
-                            job,
-                            token,
-                            jobs_in_progress.clone(),
-                            queue.clone(),
-                            callback,
-                            permit,
-                        )
-                        .boxed()));
-                        let task_id: u64 = task.id().to_string().parse()?;
-                        if let Some(mut re) = jobs_in_progress.get(&id) {
-                            let (_, _, stored_handle) = re.value();
+                    let state = job.state;
+                    let callback = processor.clone();
+                    queue
+                        .update_processing_count(true, worker_id, id, state)
+                        .await?;
+                    let task = processing.spawn(async_backtrace::frame!(process_job(
+                        job,
+                        token,
+                        jobs_in_progress.clone(),
+                        queue.clone(),
+                        callback,
+                        permit,
+                        worker_id,
+                        active_job_count.clone(),
+                    )
+                    .boxed()));
+                    let task_id: u64 = task.id().to_string().parse()?;
+                    if let Some(mut re) = jobs_in_progress.get(&id) {
+                        let (_, _, stored_handle) = re.value();
 
-                            stored_handle.swap(task_id, Ordering::AcqRel);
-                        }
+                        stored_handle.swap(task_id, Ordering::AcqRel);
                     }
-                    // yield here so any for timer to clean_up tasks
-                    tokio::task::yield_now().await;
                 }
                 if queue.pause_workers.load(Ordering::Acquire)
                     && delayed.is_empty()
                     && processing.is_empty()
                 {
                     info!(
-                        "paused job_schedular_loop {delayed}, {processing}, {to_remove}",
+                        "paused job_schedular_loop {delayed}, {processing}",
                         delayed = delayed.len(),
                         processing = processing.len(),
-                        to_remove = to_remove.len(),
                     );
-                    //to_pause.store(true, Ordering::Relaxed);
+                    to_pause.store(true, Ordering::Relaxed);
                     match cancellation_token
                         .run_until_cancelled(paused_here.notified())
                         .await
@@ -504,9 +501,11 @@ where
 
                     to_pause.store(false, Ordering::Relaxed);
                 }
+                // yield here so any for timer to clean_up tasks
+                tokio::task::yield_now().await;
             }
         }
-        //dbg!("yield main : ", id);
+
         tokio::task::yield_now().await;
     }
 
@@ -851,7 +850,7 @@ pub(crate) fn pause_or_resume_workers(
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
     {
-        //println!("send pause signal ");
+        info!("sent pause signal to workers ");
     } else {
         resume_helper(metrics, pause_workers, notifier);
     }
