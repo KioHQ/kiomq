@@ -1,3 +1,11 @@
+use crate::error::{JobError, KioError, QueueError};
+use crate::events::{QueueStreamEvent, StreamEventId};
+use crate::job::{Job, JobState};
+use crate::timers::DelayQueueTimer;
+use crate::utils::{
+    calculate_next_priority_score, process_queue_events, promote_jobs, resume_helper,
+    serialize_into_pairs, update_job_opts, JobQueue, ReadStreamArgs,
+};
 use crossbeam_queue::SegQueue;
 use futures::future::Future;
 use futures::stream::{FuturesOrdered, FuturesUnordered};
@@ -10,16 +18,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
+use tracing::Span;
+use tracing::{debug_span, Instrument};
 use uuid::Uuid;
-
-use crate::error::{JobError, KioError, QueueError};
-use crate::events::{QueueStreamEvent, StreamEventId};
-use crate::job::{Job, JobState};
-use crate::timers::DelayQueueTimer;
-use crate::utils::{
-    calculate_next_priority_score, process_queue_events, promote_jobs, resume_helper,
-    serialize_into_pairs, update_job_opts, JobQueue, ReadStreamArgs,
-};
 
 use crate::worker::{WorkerOpts, MIN_DELAY_MS_LIMIT};
 use crate::{
@@ -48,6 +49,7 @@ use redis::{
 };
 #[derive(Debug, Clone)]
 pub struct Queue<D, R, P, S> {
+    resource_span: Span,
     pub paused: Arc<AtomicBool>,
     pub job_count: Arc<AtomicU64>,
     pub current_metrics: Arc<QueueMetrics>,
@@ -86,6 +88,8 @@ impl<
                 event_mode.swap(passed_mode, Ordering::AcqRel);
             }
         }
+        let queue_name = store.queue_name();
+        let resource_span = debug_span!("Queue", queue_name);
         let worker_notifier: Arc<Notify> = Arc::default();
         let current_metrics = Arc::new(metrics);
         let pause_workers: Arc<AtomicBool> = Arc::default();
@@ -99,9 +103,11 @@ impl<
                 pause_workers.clone(),
                 event_mode.load(Ordering::Acquire),
             )
+            .instrument(resource_span.clone())
             .await?;
         let stream_listener = Arc::new(task);
         Ok(Self {
+            resource_span,
             store,
             event_mode,
             pause_workers,
