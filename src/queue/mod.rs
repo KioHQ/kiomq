@@ -15,6 +15,7 @@ use uuid::Uuid;
 use crate::error::{JobError, KioError, QueueError};
 use crate::events::{QueueStreamEvent, StreamEventId};
 use crate::job::{Job, JobState};
+use crate::timers::DelayQueueTimer;
 use crate::utils::{
     calculate_next_priority_score, process_queue_events, promote_jobs, resume_helper,
     serialize_into_pairs, update_job_opts, JobQueue, ReadStreamArgs,
@@ -530,9 +531,9 @@ impl<
         &self,
         date_time: Dt,
         mut interval_ms: i64,
-        job_queue: JobQueue,
+        timers: &DelayQueueTimer<D, R, P, S>,
     ) -> KioResult<()> {
-        promote_jobs(self, date_time, interval_ms, job_queue).await
+        promote_jobs(self, date_time, interval_ms, timers).await
     }
 
     async fn move_job_from_priorty_to_active(&self) -> KioResult<Option<u64>> {
