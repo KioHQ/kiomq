@@ -1,7 +1,7 @@
 use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo, JobError, QueueError};
 use crate::events::QueueStreamEvent;
 use crate::stores::Store;
-use crate::timers::DelayQueueTimer;
+use crate::timers::{DelayQueueTimer, TimerType};
 use crate::worker::{JobMap, ProcessingQueue, WorkerCallback, WorkerState, MIN_DELAY_MS_LIMIT};
 use crate::{
     utils, EventEmitter, EventParameters, FailedDetails, JobMetrics, JobOptions, JobState,
@@ -364,6 +364,10 @@ where
         timers,
     ) = params;
 
+    info!(
+        "Worker Starting with conncurrency set to {}",
+        opts.concurrency
+    );
     let to_remove = TaskToRemove::default();
     let task_queue = to_remove.clone();
     let delayed = JobQueue::default();
@@ -378,24 +382,27 @@ where
     let pause_schedular = to_pause.clone();
     let worker_state_clone = worker_state.clone();
     let current_job_current = active_job_count.clone();
-    timers.start_timers().await;
+    timers
+        .start_timers()
+        .instrument(resource_span.clone())
+        .await;
     let mut yield_notified = async { !cancellation_token.is_cancelled() }.boxed();
     let sub_span = info_span!(parent: &resource_span, "timer_and_clean_up_task");
     tokio::spawn(
         async move {
             while !cancel_token.is_cancelled() {
-                timers.run().await?;
                 // promote jobs here;
-                queue_clone.store.purge_expired().await;
                 let date_time = Utc::now();
                 let interval_ms = (MIN_DELAY_MS_LIMIT) as i64;
                 let metrics = queue_clone.get_metrics().await?;
                 if queue_clone.current_metrics.has_delayed() {
                     queue_clone
-                        .promote_delayed_jobs(date_time, interval_ms, job_queue.clone())
+                        .promote_delayed_jobs(date_time, interval_ms, &timers)
                         .await?;
                 }
 
+                timers.run(&job_queue).await?;
+                queue_clone.store.purge_expired().await;
                 while let Some((key, job_id, state)) = task_queue.pop() {
                     let count = current_job_current.fetch_sub(1, Ordering::AcqRel);
                     queue_clone
@@ -403,10 +410,7 @@ where
                         .await?;
                     info!("processed job {job_id} in task({key}) to state: {state}");
                 }
-                if pause_schedular.load(Ordering::Acquire)
-                    && running.is_empty()
-                    && !cancel_token.is_cancelled()
-                {
+                if pause_schedular.load(Ordering::Acquire) && running.is_empty() {
                     info!("pausing ... ");
                     worker_state_clone.store(WorkerState::Idle, Ordering::Release);
                     // wait for all running jobs to completed
@@ -480,23 +484,20 @@ where
                 if queue.pause_workers.load(Ordering::Acquire)
                     && delayed.is_empty()
                     && processing.is_empty()
-                    && to_remove.is_empty()
-                    && !cancellation_token.is_cancelled()
                 {
+                    info!(
+                        "paused job_schedular_loop {delayed}, {processing}, {to_remove}",
+                        delayed = delayed.len(),
+                        processing = processing.len(),
+                        to_remove = to_remove.len(),
+                    );
                     //to_pause.store(true, Ordering::Relaxed);
                     match cancellation_token
                         .run_until_cancelled(paused_here.notified())
                         .await
                     {
                         None => break,
-                        Some(_) => {
-                            info!(
-                                "paused job_schedular_loop {delayed}, {processing}, {to_remove}",
-                                delayed = delayed.len(),
-                                processing = processing.len(),
-                                to_remove = to_remove.len(),
-                            );
-                        }
+                        Some(_) => {}
                     }
 
                     info!("resumed job_schedular_loop");
@@ -519,6 +520,7 @@ where
             Ordering::Acquire,
             Ordering::Relaxed,
         );
+        info!("Worker Closed");
     }
     Ok(())
 }
@@ -530,7 +532,7 @@ pub async fn promote_jobs<D, R, P, S: Store<D, R, P> + Send + 'static + Clone>(
     queue: &Queue<D, R, P, S>,
     date_time: Dt,
     mut interval_ms: i64,
-    job_queue: JobQueue,
+    timers: &DelayQueueTimer<D, R, P, S>,
 ) -> KioResult<()>
 where
     D: Clone + Serialize + DeserializeOwned + Send + 'static,
@@ -542,9 +544,10 @@ where
     let (jobs, missed_deadline): (Vec<u64>, Vec<u64>) =
         queue.store.get_delayed_at(start, stop).await?;
     if !jobs.is_empty() {
-        tokio::time::sleep(Duration::from_millis(interval_ms as u64)).await;
+        //tokio::time::sleep(Duration::from_millis(interval_ms as u64)).await;
         for job in jobs {
-            job_queue.push(job);
+            let timer = TimerType::PromotedDelayed(job);
+            timers.insert(timer).await;
         }
     }
     if !missed_deadline.is_empty() {
