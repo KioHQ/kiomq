@@ -11,7 +11,7 @@ use tokio::{
 mod delay_queue_map;
 mod delay_queue_timer;
 pub(crate) use delay_queue_map::TimedMap;
-pub(crate) use delay_queue_timer::DelayQueueTimer;
+pub(crate) use delay_queue_timer::{DelayQueueTimer, TimerType};
 pub type EmptyCb = dyn Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static;
 use tokio_util::sync::CancellationToken;
 #[derive(Clone, Debug)]
