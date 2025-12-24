@@ -394,9 +394,8 @@ where
         .start_timers()
         .instrument(resource_span.clone())
         .await;
-    let mut yield_notified = async { !cancellation_token.is_cancelled() }.boxed();
     let sub_span = info_span!(parent: &resource_span, "timer_and_clean_up_task");
-    tokio::spawn(
+    let timers_and_clean_up_task = tokio::spawn(
         async move {
             while !cancel_token.is_cancelled() {
                 // promote jobs here;
@@ -423,6 +422,7 @@ where
                 }
                 tokio::task::yield_now().await;
             }
+            info!("cancelled");
 
             Ok::<(), KioError>(())
         }
@@ -433,26 +433,24 @@ where
     let now = Instant::now();
     let semaphore = Arc::new(Semaphore::new(opts.concurrency));
     while !cancellation_token.is_cancelled() {
-        while let Some(Ok(permit)) = cancellation_token
-            .run_until_cancelled(semaphore.clone().acquire_owned())
-            .await
-        {
+        while !cancellation_token.is_cancelled() && semaphore.available_permits() > 0 {
             let token_prefix = active_job_count.load(std::sync::atomic::Ordering::Acquire);
             let next_id = Uuid::new_v4();
             let token = JobToken(id, next_id, token_prefix as u64);
             let worker_id = id;
             let block_delay = block_until.load(std::sync::atomic::Ordering::Acquire);
             let passed_id = delayed.pop();
-            if let Some(job) = get_next_job(
-                queue.as_ref(),
-                token,
-                block_delay,
-                cancellation_token.is_cancelled(),
-                &opts,
-                passed_id,
-            )
-            .await?
-            {
+            if let (Some(Ok(permit)), Ok(Some(job))) = tokio::join!(
+                cancellation_token.run_until_cancelled(semaphore.clone().acquire_owned()),
+                get_next_job(
+                    queue.as_ref(),
+                    token,
+                    block_delay,
+                    cancellation_token.is_cancelled(),
+                    &opts,
+                    passed_id,
+                ),
+            ) {
                 if let Some(id) = job.id {
                     jobs_in_progress.insert(id, (job.clone(), token, AtomicU64::default()));
 
@@ -479,31 +477,35 @@ where
                         stored_handle.swap(task_id, Ordering::AcqRel);
                     }
                 }
-                if queue.pause_workers.load(Ordering::Acquire)
-                    && delayed.is_empty()
-                    && processing.is_empty()
-                {
-                    info!(
-                        "paused job_schedular_loop {delayed}, {processing}",
-                        delayed = delayed.len(),
-                        processing = processing.len(),
-                    );
-                    to_pause.store(true, Ordering::Relaxed);
-                    match cancellation_token
-                        .run_until_cancelled(paused_here.notified())
-                        .await
-                    {
-                        None => break,
-                        Some(_) => {}
-                    }
-
-                    info!("resumed job_schedular_loop");
-
-                    to_pause.store(false, Ordering::Relaxed);
-                }
-                // yield here so any for timer to clean_up tasks
-                tokio::task::yield_now().await;
             }
+
+            if queue.pause_workers.load(Ordering::Acquire)
+                && delayed.is_empty()
+                && processing.is_empty()
+            {
+                info!(
+                    "pausing job_schedular_loop with  {delayed} delayed_jobs and {processing} running_jobs",
+                    delayed = delayed.len(),
+                    processing = processing.len(),
+                );
+                to_pause.store(true, Ordering::Relaxed);
+                match cancellation_token
+                    .run_until_cancelled(paused_here.notified())
+                    .await
+                {
+                    None => {
+                        info!("... breaking loop");
+                        break;
+                    }
+                    Some(_) => {}
+                }
+
+                info!("resumed job_schedular_loop");
+
+                to_pause.store(false, Ordering::Relaxed);
+            }
+            // yield here so any for timer to clean_up tasks
+            tokio::task::yield_now().await;
         }
 
         tokio::task::yield_now().await;
@@ -512,6 +514,7 @@ where
     if cancellation_token.is_cancelled() {
         // wait for all running jobs to finish
         processing.wait().await;
+        timers_and_clean_up_task.await?;
 
         worker_state.compare_exchange(
             WorkerState::Active,
