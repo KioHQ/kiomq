@@ -68,6 +68,7 @@ pub struct Worker<D, R, P, S> {
     active_job_count: Arc<AtomicUsize>,
     continue_notifier: Arc<Notify>,
     main_task: Arc<AtomicRefCell<Option<Task>>>,
+    timers_task: Arc<AtomicRefCell<Option<Task>>>,
 }
 use crate::utils::processor_types;
 use processor_types::Callback;
@@ -160,7 +161,9 @@ impl<
             tracing::debug_span!(parent:None, "",worker_type)
         };
         let main_task = Arc::default();
+        let timers_task = Arc::default();
         let worker = Self {
+            timers_task,
             main_task,
             resource_span,
             timers,
@@ -250,20 +253,29 @@ impl<
                 self.state.load(std::sync::atomic::Ordering::Acquire)
             );
             self.processing.close();
+
             self.cancellation_token.cancel();
+
             self.timers.close();
+            //self.queue.resume_workers();
+            self.queue.worker_notifier.notify_waiters();
+            self.queue
+                .pause_workers
+                .store(false, std::sync::atomic::Ordering::Release);
+
             // TODO: work on gracefully shutdown later; currently we just cancel the token but
             // don't check whether the main_task has closed too. Handle this later
-            /*
-                       if let Ok(main_task) = self.main_task.try_borrow() {
-                           if let Some(handle) = main_task.as_ref() {
-                               // wait for handle to finishd
-                               let running_tasks = self.processing.len();
-                               warn!("waiting for all {running_tasks} tasks to complete or abort");
-                               //while !handle.is_finished() {}
-                           }
-                       }
-            */
+            let mut main_task = self.main_task.borrow_mut();
+            let mut timers_task = self.timers_task.borrow_mut();
+            if let (Some(handle), Some(timers)) = (main_task.take(), timers_task.take()) {
+                // wait for handle to finishd
+                let running_tasks = self.processing.len();
+                warn!("waiting for all {running_tasks} tasks to complete or abort");
+                //timers.abort();
+                //handle.abort();
+
+                while !handle.is_finished() {}
+            }
         });
     }
 

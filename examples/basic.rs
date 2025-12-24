@@ -18,8 +18,8 @@ use uuid::Uuid;
 #[tokio::main]
 #[framed]
 async fn main() -> KioResult<()> {
-    console_subscriber::init();
-    //setup_tracing();
+    //console_subscriber::init();
+    setup_tracing();
 
     let remove_opts = RemoveOnCompletionOrFailure::Opts(kio_mq::KeepJobs {
         age: Some(60 * 60),
@@ -34,7 +34,7 @@ async fn main() -> KioResult<()> {
         remove_on_complete: Some(remove_opts),
         attempts: 2,
         default_backoff: Some(backoff_opts.clone()),
-        event_mode: Some(QueueEventMode::PubSub),
+        //event_mode: Some(QueueEventMode::PubS),
         ..Default::default()
     };
 
@@ -66,16 +66,16 @@ async fn main() -> KioResult<()> {
                 expected_delay,
                 prev_state: _,
                 job_id: _,
-            } = state
+            } = dbg!(state)
             {
                 completed.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                info!("{job_metrics}  expected_delay: {expected_delay:?}",);
+                //info!("{job_metrics}  expected_delay: {expected_delay:?}",);
             }
         }
     };
     queue.on_all_events(event_listener);
 
-    let count = 100000;
+    let count = 1;
     let repeats = 2;
     use croner::Cron;
     let _cron_schedule: Cron = "1/2 * * * * *".parse()?;
@@ -109,7 +109,7 @@ async fn main() -> KioResult<()> {
     let worker = Worker::new_async(&queue, processor, Some(opts))?;
     let adding = Instant::now();
     queue.bulk_add_only(iterator).await?;
-    info!("adding items took {:?}", adding.elapsed());
+    println!("adding items took {:#?}", adding.elapsed());
     worker.run()?;
     let now = Instant::now();
     while counter.load(std::sync::atomic::Ordering::Acquire) < count as usize {
@@ -118,7 +118,7 @@ async fn main() -> KioResult<()> {
     dbg!(now.elapsed());
     worker.close();
     if worker.closed() {
-        queue.obliterate().await?;
+        //queue.obliterate().await?;
     }
     Ok(())
 }

@@ -115,10 +115,10 @@ async fn main() -> KioResult<()> {
 
     queue.bulk_add_only(iter).await?;
     worker.run()?;
-    while !updating_metrics.all_jobs_completed() {}
+    while !updating_metrics.all_jobs_completed() && worker.is_running() {}
     worker.close();
     if worker.closed() {
-        queue.obliterate().await?;
+        //queue.obliterate().await?;
     }
 
     Ok(())
@@ -226,9 +226,10 @@ fn setup_tracing() {
     let fmt_layer = tracing_subscriber::fmt::layer().with_target(true);
 
     // Create an env filter
-    let filter_layer = tracing_subscriber::EnvFilter::try_from_default_env()
-        .or_else(|_| tracing_subscriber::EnvFilter::try_new("debug"))
-        .unwrap();
+    let filter_layer = tracing_subscriber::EnvFilter::from_default_env()
+        //.add_directive("tokio=trace".parse().unwrap()) // Required for console
+        //.add_directive("runtime=trace".parse().unwrap()) // Required for console
+        .add_directive("info".parse().unwrap()); // Required for console
 
     // Combine all layers
     tracing_subscriber::registry()
