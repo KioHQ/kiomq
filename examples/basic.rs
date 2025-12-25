@@ -18,7 +18,6 @@ use uuid::Uuid;
 #[tokio::main]
 #[framed]
 async fn main() -> KioResult<()> {
-    //console_subscriber::init();
     setup_tracing();
 
     let remove_opts = RemoveOnCompletionOrFailure::Opts(kio_mq::KeepJobs {
@@ -34,7 +33,7 @@ async fn main() -> KioResult<()> {
         remove_on_complete: Some(remove_opts),
         attempts: 2,
         default_backoff: Some(backoff_opts.clone()),
-        //event_mode: Some(QueueEventMode::PubS),
+        event_mode: Some(QueueEventMode::PubSub),
         ..Default::default()
     };
 
@@ -66,16 +65,16 @@ async fn main() -> KioResult<()> {
                 expected_delay,
                 prev_state: _,
                 job_id: _,
-            } = dbg!(state)
+            } = state
             {
                 completed.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                //info!("{job_metrics}  expected_delay: {expected_delay:?}",);
+                info!("{job_metrics}  expected_delay: {expected_delay:?}",);
             }
         }
     };
     queue.on_all_events(event_listener);
 
-    let count = 1;
+    let count = 1000;
     let repeats = 2;
     use croner::Cron;
     let _cron_schedule: Cron = "1/2 * * * * *".parse()?;
@@ -103,9 +102,6 @@ async fn main() -> KioResult<()> {
         ..Default::default()
     };
     let processor = |con: _, job: Job<_, _, _>| process_callback(con, job);
-    //let _worker = Worker::new_async(&queue, processor, Some(opts.clone()))?;
-    //let _worker = Worker::new_async(&queue, processor, Some(opts.clone()))?;
-    //let _worker = Worker::new_async(&queue, processor, Some(opts.clone()))?;
     let worker = Worker::new_async(&queue, processor, Some(opts))?;
     let adding = Instant::now();
     queue.bulk_add_only(iterator).await?;
@@ -118,7 +114,7 @@ async fn main() -> KioResult<()> {
     dbg!(now.elapsed());
     worker.close();
     if worker.closed() {
-        //queue.obliterate().await?;
+        queue.obliterate().await?;
     }
     Ok(())
 }
@@ -128,7 +124,7 @@ async fn process_callback<S: Store<i32, i32, i32>>(
     mut job: Job<i32, i32, i32>,
 ) -> Result<i32, std::io::Error> {
     let progress = job.progress.unwrap_or_default();
-    //let _ = store.update_job_progress(&mut job, progress + 1);
+    let _ = store.update_job_progress(&mut job, progress + 1);
     //let id: u64 = job.id.unwrap_or_default().parse().unwrap_or_default();
     //if id % 2 == 0 && job.attempts_made < job.opts.attempts - 1 {
     //    //uncomment the line below to test to catching panics
@@ -138,18 +134,12 @@ async fn process_callback<S: Store<i32, i32, i32>>(
 }
 
 fn setup_tracing() {
-    // Create the console layer for tokio-console
     let console_layer = console_subscriber::spawn();
-
-    // Create a formatting layer for regular logs
     let fmt_layer = tracing_subscriber::fmt::layer().with_target(true);
-
-    // Create an env filter
-    let filter_layer = tracing_subscriber::EnvFilter::try_from_default_env()
-        .or_else(|_| tracing_subscriber::EnvFilter::try_new("debug"))
-        .unwrap();
-
-    // Combine all layers
+    let filter_layer = tracing_subscriber::EnvFilter::from_default_env()
+        .add_directive("tokio=trace".parse().unwrap()) // Required for console
+        .add_directive("runtime=trace".parse().unwrap()) // Required for console
+        .add_directive("info".parse().unwrap()); // Required for console
     tracing_subscriber::registry()
         .with(console_layer)
         .with(filter_layer)
