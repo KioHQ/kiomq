@@ -169,7 +169,7 @@ impl<D, R, P> RocksDbStore<D, R, P> {
         None
     }
     async fn purge_expired(&self) {
-        if self.locks.len_expired() > 0 {
+        if self.locks.len_expired().await > 0 {
             self.locks.purge_expired().await;
         }
     }
