@@ -489,15 +489,13 @@ where
                     processing = processing.len(),
                 );
                 to_pause.store(true, Ordering::Relaxed);
-                match cancellation_token
+                if cancellation_token
                     .run_until_cancelled(paused_here.notified())
                     .await
+                    .is_none()
                 {
-                    None => {
-                        info!("... breaking loop");
-                        break;
-                    }
-                    Some(_) => {}
+                    info!("... breaking loop");
+                    break;
                 }
 
                 info!("resumed job_schedular_loop");
