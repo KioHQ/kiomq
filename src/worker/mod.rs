@@ -257,7 +257,7 @@ impl<
             self.cancellation_token.cancel();
 
             self.timers.close();
-            //self.queue.resume_workers();
+            self.queue.resume_workers();
             self.queue.worker_notifier.notify_waiters();
             self.queue
                 .pause_workers
@@ -271,9 +271,7 @@ impl<
                 // wait for handle to finishd
                 let running_tasks = self.processing.len();
                 warn!("waiting for all {running_tasks} tasks to complete or abort");
-                //timers.abort();
-                //handle.abort();
-
+                // wait for the main loop to close
                 while !handle.is_finished() {}
             }
         });

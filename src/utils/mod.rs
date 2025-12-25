@@ -22,8 +22,7 @@ use std::num::NonZero;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::task_local;
 use tokio_util::sync::CancellationToken;
-use tracing::field::debug;
-use tracing::{info, info_span, Instrument};
+use tracing::{debug, info, info_span, Instrument};
 use uuid::Uuid;
 
 pub(crate) mod processor_types;
@@ -292,7 +291,7 @@ where
         queue
             .update_processing_count(false, worker_id, job_id, state)
             .await?;
-        info!("processed job {job_id} in task({key}) to state: {state}");
+        debug!("processed job {job_id} in task({key}) to state: {state}");
     }
     Ok(())
 }
@@ -375,7 +374,7 @@ where
     ) = params;
 
     info!(
-        "Worker Starting with conncurrency set to {}",
+        "Worker Starting with concurrency set to {}",
         opts.concurrency
     );
     let delayed = JobQueue::default();
@@ -411,12 +410,12 @@ where
                 timers.run(&job_queue).await?;
                 queue_clone.store.purge_expired().await;
                 if pause_schedular.load(Ordering::Acquire) && running.is_empty() {
-                    info!("pausing ... ");
+                    debug!("pausing ... ");
                     worker_state_clone.store(WorkerState::Idle, Ordering::Release);
                     // wait for all running jobs to completed
                     timers.pause().await;
                     cancel_token.run_until_cancelled(notifer.notified()).await;
-                    info!("resumed");
+                    debug!("resumed");
                     worker_state_clone.store(WorkerState::Active, Ordering::Release);
                     timers.resume().await;
                 }
