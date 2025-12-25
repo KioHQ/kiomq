@@ -68,6 +68,7 @@ pub struct RocksDbStore<D, R, P> {
     #[debug(skip)]
     events: Arc<SharedEmitter<R, P>>,
     pause_workers: Arc<ArcSwapOption<AtomicBool>>,
+    pub stored_metrics: Arc<ArcSwapOption<QueueMetrics>>,
     is_inital: Arc<AtomicBool>,
     notifier: Arc<ArcSwapOption<Notify>>,
     #[debug(skip)]
@@ -109,8 +110,10 @@ impl<D, R, P> RocksDbStore<D, R, P> {
         let notifier = Arc::default();
         let pause_workers = Arc::default();
         let is_inital = Arc::default();
+        let stored_metrics = Arc::default();
 
         let store = Self {
+            stored_metrics,
             pause_workers,
             notifier,
             is_inital,
@@ -250,6 +253,7 @@ impl<D, R, P> RocksDbStore<D, R, P> {
         tx.put_cf(&cf, priorized_col.to_bytes(), priorized);
         self.commit().await?;
         tx.commit()?;
+        // update the metrics here after a bulk submission
 
         Ok(())
     }
@@ -340,6 +344,7 @@ where
             event.priority = Some(priority);
         }
         self.publish_event(self.event_mode, event).await?;
+
         Ok(())
     }
 }
@@ -417,6 +422,7 @@ where
         self.events.store(Some(emitter.clone()));
         self.notifier.store(Some(notifier.clone()));
         self.pause_workers.store(Some(pause_workers.clone()));
+        self.stored_metrics.store(Some(metrics));
         let task = tokio::spawn(async move { Ok(()) });
         Ok(task)
     }
@@ -451,7 +457,13 @@ where
             .await?;
         }
         self.submit_changes(is_paused, (list, priorized, delayed))
-            .await
+            .await?;
+
+        let updated = self.get_metrics().await?;
+        if let Some(metrics) = self.stored_metrics.load().as_ref() {
+            metrics.update(&updated);
+        }
+        Ok(())
     }
     async fn add_bulk(
         &self,
@@ -487,6 +499,10 @@ where
         }
         self.submit_changes(is_paused, (list, priorized, delayed))
             .await?;
+        let updated = self.get_metrics().await?;
+        if let Some(metrics) = self.stored_metrics.load().as_ref() {
+            metrics.update(&updated);
+        }
         Ok(jobs)
     }
     async fn get_delayed_at(&self, start: i64, stop: i64) -> KioResult<(Vec<u64>, Vec<u64>)> {
@@ -615,6 +631,7 @@ where
             let col: VecDeque<u64> = simd_json::from_slice(paused)?;
             metrics.paused.store(col.len() as u64, Ordering::Relaxed);
         }
+
         Ok(metrics)
     }
     async fn get_job(&self, id: u64) -> Option<Job<D, R, P>> {
@@ -842,15 +859,16 @@ where
     ) -> KioResult<()> {
         let key = event.id;
         if let Some(emitter) = self.events.load().as_ref() {
-            let metrics = self.get_metrics().await?;
-            if let (Some(notifier), Some(pause_workers)) = (
+            if let (Some(notifier), Some(pause_workers), Some(metrics)) = (
                 self.notifier.load().as_ref(),
                 self.pause_workers.load().as_ref(),
+                self.stored_metrics.load().as_ref(),
             ) {
-                process_each_event(event, emitter, self, &metrics).await?;
-                pause_or_resume_workers(notifier, &metrics, pause_workers, &self.is_inital);
+                process_each_event(event, emitter, self, metrics).await?;
+                pause_or_resume_workers(notifier, metrics, pause_workers, &self.is_inital);
             }
         }
+
         Ok(())
     }
 
