@@ -270,6 +270,8 @@ where
         self.events.store(Some(emitter.clone()));
         self.notifier.store(Some(notifier.clone()));
         self.pause_workers.store(Some(pause_workers.clone()));
+        // set our stored_metrics to the queue's metrics;
+        self.stored_metrics.store(Some(metrics));
         let task = tokio::spawn(async move { Ok(()) });
         Ok(task)
     }
@@ -431,7 +433,6 @@ where
             self.is_paused.load(Ordering::Acquire),
             self.event_mode,
         );
-        self.stored_metrics.swap(Some(Arc::new(metrics.clone())));
         Ok(metrics)
     }
 
