@@ -533,7 +533,7 @@ impl<
         self.store.clear_jobs(last_id).await
     }
 
-    pub async fn promote_delayed_jobs(
+    pub(crate) async fn promote_delayed_jobs(
         &self,
         date_time: Dt,
         mut interval_ms: i64,
