@@ -519,8 +519,8 @@ where
             Ordering::Acquire,
             Ordering::Relaxed,
         );
-        info!("Worker Closed");
     }
+    info!("Worker Closed");
     Ok(())
 }
 use crate::Dt;
@@ -543,7 +543,6 @@ where
     let (jobs, missed_deadline): (Vec<u64>, Vec<u64>) =
         queue.store.get_delayed_at(start, stop).await?;
     if !jobs.is_empty() {
-        //tokio::time::sleep(Duration::from_millis(interval_ms as u64)).await;
         for job in jobs {
             let timer = TimerType::PromotedDelayed(job);
             timers.insert(timer).await;

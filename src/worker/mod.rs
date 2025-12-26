@@ -50,6 +50,7 @@ pub enum WorkerState {
 use tracing::{debug, trace, warn, Instrument, Span};
 
 pub(crate) use worker_opts::MIN_DELAY_MS_LIMIT;
+pub(crate) type SharedTaskHandle = Arc<AtomicRefCell<Option<Task>>>;
 #[derive(Clone, Debug)]
 pub struct Worker<D, R, P, S> {
     pub id: Uuid,
@@ -67,8 +68,8 @@ pub struct Worker<D, R, P, S> {
     mini_block_timout: u64,
     active_job_count: Arc<AtomicUsize>,
     continue_notifier: Arc<Notify>,
-    main_task: Arc<AtomicRefCell<Option<Task>>>,
-    timers_task: Arc<AtomicRefCell<Option<Task>>>,
+    main_task: SharedTaskHandle,
+    timers_task: SharedTaskHandle,
 }
 use crate::utils::processor_types;
 use processor_types::Callback;
@@ -158,7 +159,7 @@ impl<
                 callback_type,
                 id.as_u64_pair().0,
             );
-            tracing::debug_span!(parent:None, "",worker_type)
+            tracing::info_span!(parent:None, "",worker_type)
         };
         let main_task = Arc::default();
         let timers_task = Arc::default();
@@ -254,20 +255,17 @@ impl<
             );
             self.processing.close();
 
-            self.cancellation_token.cancel();
-
             self.timers.close();
             self.queue.resume_workers();
             self.queue.worker_notifier.notify_waiters();
             self.queue
                 .pause_workers
                 .store(false, std::sync::atomic::Ordering::Release);
-
+            self.cancellation_token.cancel();
             // TODO: work on gracefully shutdown later; currently we just cancel the token but
             // don't check whether the main_task has closed too. Handle this later
             let mut main_task = self.main_task.borrow_mut();
-            let mut timers_task = self.timers_task.borrow_mut();
-            if let (Some(handle), Some(timers)) = (main_task.take(), timers_task.take()) {
+            if let (Some(handle)) = main_task.take() {
                 // wait for handle to finishd
                 let running_tasks = self.processing.len();
                 warn!("waiting for all {running_tasks} tasks to complete or abort");
