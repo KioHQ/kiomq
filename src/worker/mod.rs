@@ -31,9 +31,11 @@ use tokio::{
     task::{AbortHandle, JoinHandle},
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
-type JobMeta<D, R, P> = (Job<D, R, P>, JobToken, AtomicU64);
+type JobMeta<D, R, P> = (Job<D, R, P>, JobToken, TaskHandle);
 pub(crate) type JobMap<D, R, P> = Arc<SkipMap<u64, JobMeta<D, R, P>>>;
 type Task = JoinHandle<KioResult<()>>;
+pub(crate) type TaskHandle = AtomicRefCell<Option<Task>>;
+pub(crate) type SharedTaskHandle = Arc<TaskHandle>;
 use tokio::task::Id;
 pub(crate) type ProcessingQueue = TaskTracker;
 use atomig::{Atom, Atomic};
@@ -50,7 +52,6 @@ pub enum WorkerState {
 use tracing::{debug, trace, warn, Instrument, Span};
 
 pub(crate) use worker_opts::MIN_DELAY_MS_LIMIT;
-pub(crate) type SharedTaskHandle = Arc<AtomicRefCell<Option<Task>>>;
 #[derive(Clone, Debug)]
 pub struct Worker<D, R, P, S> {
     pub id: Uuid,
