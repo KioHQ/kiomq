@@ -22,7 +22,7 @@ pub(crate) enum TimerType {
     #[display("ExtendLock after {:#?}", _0.elapsed())]
     #[debug("ExtendLock")]
     ExtendLock(Instant),
-    #[debug("PromotedJob(0_)")]
+    #[debug("PromoteJob")]
     #[display(
         "Promoted job {} after {:#?}",
         _0,
@@ -180,7 +180,6 @@ impl<
                     }
                 }
                 TimerType::PromotedDelayed(job_id) => {
-                    //job_queue.push(job_id);
                     self.queue
                         .store
                         .add_item(crate::CollectionSuffix::Wait, job_id, None, true)
