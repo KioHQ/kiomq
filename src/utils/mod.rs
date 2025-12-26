@@ -2,7 +2,9 @@ use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo, JobError, Que
 use crate::events::QueueStreamEvent;
 use crate::stores::Store;
 use crate::timers::{DelayQueueTimer, TimerType};
-use crate::worker::{JobMap, ProcessingQueue, WorkerCallback, WorkerState, MIN_DELAY_MS_LIMIT};
+use crate::worker::{
+    JobMap, ProcessingQueue, TaskHandle, WorkerCallback, WorkerState, MIN_DELAY_MS_LIMIT,
+};
 use crate::{
     utils, EventEmitter, EventParameters, FailedDetails, JobMetrics, JobOptions, JobState,
     JobToken, KioError, QueueEventMode, QueueOpts, Trace, WorkerOpts,
@@ -224,9 +226,10 @@ where
                         .clean_up_job(job_id, job.opts.remove_on_complete)
                         .await?;
                 }
-
-                let handle_id = handle.load(std::sync::atomic::Ordering::Acquire);
-                task_queue.push((handle_id, job_id, move_to_state));
+                let stored_handle = handle.borrow_mut().take();
+                if let Some(handle) = stored_handle {
+                    let handle_id = task_queue.push((handle.id(), job_id, move_to_state));
+                }
             }
         }
         Err(err) => {
@@ -279,9 +282,11 @@ where
                 if failed_job.attempts_made == job.opts.attempts {
                     queue.clean_up_job(job_id, job.opts.remove_on_fail).await?;
                 }
-                let handle_id = handle.load(std::sync::atomic::Ordering::Acquire);
 
-                task_queue.push((handle_id, job_id, move_to_state));
+                let stored_handle = handle.borrow_mut().take();
+                if let Some(handle) = stored_handle {
+                    let handle_id = task_queue.push((handle.id(), job_id, move_to_state));
+                }
             }
         }
     }
@@ -345,7 +350,7 @@ type MainLoopParams<D, R, P, S> = (
     DelayQueueTimer<D, R, P, S>,
 );
 use tokio::task::{Id, JoinHandle};
-type TaskToRemove = ArrayQueue<(u64, u64, JobState)>;
+type TaskToRemove = ArrayQueue<(Id, u64, JobState)>;
 pub(crate) type JobQueue = Arc<SegQueue<u64>>;
 #[async_backtrace::framed]
 pub(crate) async fn main_loop<D, R, P, S>(params: MainLoopParams<D, R, P, S>) -> KioResult<()>
@@ -451,7 +456,7 @@ where
                 ),
             ) {
                 if let Some(id) = job.id {
-                    jobs_in_progress.insert(id, (job.clone(), token, AtomicU64::default()));
+                    jobs_in_progress.insert(id, (job.clone(), token, TaskHandle::default()));
 
                     let state = job.state;
                     let callback = processor.clone();
@@ -469,11 +474,10 @@ where
                         active_job_count.clone(),
                     )
                     .boxed()));
-                    let task_id: u64 = task.id().to_string().parse()?;
                     if let Some(mut re) = jobs_in_progress.get(&id) {
                         let (_, _, stored_handle) = re.value();
 
-                        stored_handle.swap(task_id, Ordering::AcqRel);
+                        stored_handle.borrow_mut().replace(task);
                     }
                 }
             }
