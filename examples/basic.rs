@@ -137,9 +137,9 @@ fn setup_tracing() {
     let console_layer = console_subscriber::spawn();
     let fmt_layer = tracing_subscriber::fmt::layer().with_target(true);
     let filter_layer = tracing_subscriber::EnvFilter::from_default_env()
-        .add_directive("tokio=trace".parse().unwrap()) // Required for console
-        .add_directive("runtime=trace".parse().unwrap()) // Required for console
-        .add_directive("info".parse().unwrap()); // Required for console
+        //.add_directive("tokio=trace".parse().unwrap()) // Uncomment to use tokio-console
+        //.add_directive("runtime=trace".parse().unwrap()) // Uncomment to use tokio-console
+        .add_directive("debug".parse().unwrap()); // Required for console
     tracing_subscriber::registry()
         .with(console_layer)
         .with(filter_layer)
