@@ -24,6 +24,7 @@ use std::num::NonZero;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::task_local;
 use tokio_util::sync::CancellationToken;
+#[cfg(feature = "tracing")]
 use tracing::{debug, info, info_span, Instrument};
 use uuid::Uuid;
 
@@ -144,7 +145,7 @@ pub async fn get_queue_metrics<C: redis::aio::ConnectionLike>(
 }
 
 // ---- UTIL FUNCTIONS for the worker
-
+#[allow(clippy::too_many_arguments)]
 #[async_backtrace::framed]
 pub(crate) async fn process_job<D, R, P, S>(
     job: Job<D, R, P>,
@@ -296,6 +297,8 @@ where
         queue
             .update_processing_count(false, worker_id, job_id, state)
             .await?;
+
+        #[cfg(feature = "tracing")]
         debug!("processed job {job_id} in task({key}) to state: {state}");
     }
     Ok(())
@@ -333,9 +336,25 @@ where
 
     Ok(None)
 }
-
+#[cfg(feature = "tracing")]
 type MainLoopParams<D, R, P, S> = (
     tracing::Span,
+    Uuid,
+    CancellationToken,
+    ProcessingQueue,
+    WorkerOpts,
+    Arc<AtomicU64>,
+    JobMap<D, R, P>,
+    Arc<AtomicUsize>,
+    WorkerCallback<D, R, P, S>,
+    Arc<Queue<D, R, P, S>>,
+    Arc<atomig::Atomic<WorkerState>>,
+    Arc<Notify>,
+    DelayQueueTimer<D, R, P, S>,
+);
+
+#[cfg(not(feature = "tracing"))]
+type MainLoopParams<D, R, P, S> = (
     Uuid,
     CancellationToken,
     ProcessingQueue,
@@ -362,6 +381,7 @@ where
 {
     use std::sync::atomic::Ordering;
     use tokio_util::time::FutureExt;
+    #[cfg(feature = "tracing")]
     let (
         resource_span,
         id,
@@ -378,6 +398,23 @@ where
         timers,
     ) = params;
 
+    #[cfg(not(feature = "tracing"))]
+    let (
+        id,
+        cancellation_token,
+        processing,
+        opts,
+        block_until,
+        jobs_in_progress,
+        active_job_count,
+        processor,
+        queue,
+        worker_state,
+        paused_here,
+        timers,
+    ) = params;
+
+    #[cfg(feature = "tracing")]
     info!(
         "Worker Starting with concurrency set to {}",
         opts.concurrency
@@ -394,46 +431,52 @@ where
     let pause_schedular = to_pause.clone();
     let worker_state_clone = worker_state.clone();
     let current_job_current = active_job_count.clone();
+    #[cfg(feature = "tracing")]
     timers
         .start_timers()
         .instrument(resource_span.clone())
         .await;
-    let sub_span = info_span!(parent: &resource_span, "timer_and_clean_up_task");
-    let timers_and_clean_up_task = tokio::spawn(
-        async move {
-            while !cancel_token.is_cancelled() {
-                // promote jobs here;
-                let date_time = Utc::now();
-                let interval_ms = (MIN_DELAY_MS_LIMIT) as i64;
-                let metrics = queue_clone.get_metrics().await?;
-                if queue_clone.current_metrics.has_delayed() {
-                    queue_clone
-                        .promote_delayed_jobs(date_time, interval_ms, &timers)
-                        .await?;
-                }
-
-                timers.run(&job_queue).await?;
-                queue_clone.store.purge_expired().await;
-                if pause_schedular.load(Ordering::Acquire) && running.is_empty() {
-                    debug!("pausing ... ");
-                    worker_state_clone.store(WorkerState::Idle, Ordering::Release);
-                    // wait for all running jobs to completed
-                    timers.pause().await;
-                    cancel_token.run_until_cancelled(notifer.notified()).await;
-                    debug!("resumed");
-                    worker_state_clone.store(WorkerState::Active, Ordering::Release);
-                    timers.resume().await;
-                }
-                tokio::task::yield_now().await;
+    #[cfg(not(feature = "tracing"))]
+    timers.start_timers().await;
+    let t_task = async move {
+        while !cancel_token.is_cancelled() {
+            // promote jobs here;
+            let date_time = Utc::now();
+            let interval_ms = (MIN_DELAY_MS_LIMIT) as i64;
+            let metrics = queue_clone.get_metrics().await?;
+            if queue_clone.current_metrics.has_delayed() {
+                queue_clone
+                    .promote_delayed_jobs(date_time, interval_ms, &timers)
+                    .await?;
             }
-            info!("cancelled");
 
-            Ok::<(), KioError>(())
+            timers.run(&job_queue).await?;
+            queue_clone.store.purge_expired().await;
+            if pause_schedular.load(Ordering::Acquire) && running.is_empty() {
+                #[cfg(feature = "tracing")]
+                debug!("pausing ... ");
+                worker_state_clone.store(WorkerState::Idle, Ordering::Release);
+                // wait for all running jobs to completed
+                timers.pause().await;
+                cancel_token.run_until_cancelled(notifer.notified()).await;
+                #[cfg(feature = "tracing")]
+                debug!("resumed");
+                worker_state_clone.store(WorkerState::Active, Ordering::Release);
+                timers.resume().await;
+            }
+            tokio::task::yield_now().await;
         }
-        .instrument(sub_span)
-        .boxed(),
-    );
+        #[cfg(feature = "tracing")]
+        info!("cancelled");
 
+        Ok::<(), KioError>(())
+    };
+    #[cfg(feature = "tracing")]
+    let sub_span = info_span!(parent: &resource_span, "timer_and_clean_up_task");
+    #[cfg(feature = "tracing")]
+    let timers_and_clean_up_task = tokio::spawn(t_task.instrument(sub_span).boxed());
+    #[cfg(not(feature = "tracing"))]
+    let timers_and_clean_up_task = tokio::spawn(t_task.boxed());
     let now = Instant::now();
     let semaphore = Arc::new(Semaphore::new(opts.concurrency));
     while !cancellation_token.is_cancelled() {
@@ -486,6 +529,7 @@ where
                 && delayed.is_empty()
                 && processing.is_empty()
             {
+                #[cfg(feature = "tracing")]
                 info!(
                     "pausing job_schedular_loop with  {delayed} delayed_jobs and {processing} running_jobs",
                     delayed = delayed.len(),
@@ -497,15 +541,16 @@ where
                     .await
                     .is_none()
                 {
+                    #[cfg(feature = "tracing")]
                     info!("... breaking loop");
                     break;
                 }
-
+                #[cfg(feature = "tracing")]
                 info!("resumed job_schedular_loop");
 
                 to_pause.store(false, Ordering::Relaxed);
             }
-            // yield here so any for timer to clean_up tasks
+            // yield, so other tasks run
             tokio::task::yield_now().await;
         }
 
@@ -524,6 +569,7 @@ where
             Ordering::Relaxed,
         );
     }
+    #[cfg(feature = "tracing")]
     info!("Worker Closed");
     Ok(())
 }
@@ -853,6 +899,7 @@ pub(crate) fn pause_or_resume_workers(
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
     {
+        #[cfg(feature = "tracing")]
         info!("sent pause signal to workers ");
     } else {
         resume_helper(metrics, pause_workers, notifier);

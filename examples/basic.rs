@@ -2,8 +2,13 @@ use std::{
     sync::{atomic::AtomicUsize, Arc},
     time::Instant,
 };
+#[cfg(feature = "tracing")]
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+#[cfg(not(feature = "tracing"))]
+macro_rules! info {
+    ($($arg:tt)*) => { println!($($arg)*) };
+}
 
 use kio_mq::{
     framed, BackOffJobOptions, EventParameters, InMemoryStore, Job, JobOptions, KioResult, Queue,
@@ -18,8 +23,10 @@ use uuid::Uuid;
 #[tokio::main]
 #[framed]
 async fn main() -> KioResult<()> {
+    #[cfg(feature = "tracing")]
     setup_tracing();
-
+    #[cfg(not(feature = "tracing"))]
+    console_subscriber::init();
     let remove_opts = RemoveOnCompletionOrFailure::Opts(kio_mq::KeepJobs {
         age: Some(60 * 60),
         count: None,
@@ -133,7 +140,9 @@ async fn process_callback<S: Store<i32, i32, i32>>(
     Ok(job.id.unwrap_or_default() as i32)
 }
 
+#[cfg(feature = "tracing")]
 fn setup_tracing() {
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
     let console_layer = console_subscriber::spawn();
     let fmt_layer = tracing_subscriber::fmt::layer().with_target(true);
     let filter_layer = tracing_subscriber::EnvFilter::from_default_env()

@@ -49,12 +49,14 @@ pub enum WorkerState {
     Idle,
     Closed,
 }
-use tracing::{debug, trace, warn, Instrument, Span};
+#[cfg(feature = "tracing")]
+use tracing::{debug, instrument, trace, warn, Instrument, Span};
 
 pub(crate) use worker_opts::MIN_DELAY_MS_LIMIT;
 #[derive(Clone, Debug)]
 pub struct Worker<D, R, P, S> {
     pub id: Uuid,
+    #[cfg(feature = "tracing")]
     resource_span: Span,
     queue: Arc<Queue<D, R, P, S>>,
     jobs_in_progress: JobMap<D, R, P>,
@@ -152,6 +154,7 @@ impl<
         let timers = DelayQueueTimer::new(jobs.clone(), opts.clone(), queue.clone());
         let continue_notifier = queue.worker_notifier.clone();
 
+        #[cfg(feature = "tracing")]
         let resource_span = {
             let location = std::panic::Location::caller();
             let queue_name = queue.name();
@@ -167,6 +170,7 @@ impl<
         let worker = Self {
             timers_task,
             main_task,
+            #[cfg(feature = "tracing")]
             resource_span,
             timers,
             continue_notifier,
@@ -216,7 +220,22 @@ impl<
                 return Err(WorkerError::WorkerAlreadyClosed(self.id).into());
             }
         }
-
+        #[cfg(not(feature = "tracing"))]
+        let params = (
+            self.id,
+            self.cancellation_token.clone(),
+            self.processing.clone(),
+            self.opts.clone(),
+            self.block_until.clone(),
+            self.jobs_in_progress.clone(),
+            self.active_job_count.clone(),
+            self.processor.clone(),
+            self.queue.clone(),
+            self.state.clone(),
+            self.continue_notifier.clone(),
+            self.timers.clone(),
+        );
+        #[cfg(feature = "tracing")]
         let params = (
             self.resource_span.clone(),
             self.id,
@@ -232,7 +251,10 @@ impl<
             self.continue_notifier.clone(),
             self.timers.clone(),
         );
+        #[cfg(feature = "tracing")]
         let main = main_loop(params).instrument(self.resource_span.clone());
+        #[cfg(not(feature = "tracing"))]
+        let main = main_loop(params);
         let main_task = tokio::spawn(main.boxed());
         self.main_task.borrow_mut().replace(main_task);
         Ok(())
@@ -244,36 +266,38 @@ impl<
                 .load(std::sync::atomic::Ordering::Acquire)
                 .is_closed()
     }
+
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
     /// Stops the worker from running (adding more jobs to run)
     pub fn close(&self) {
         if !self.is_running() {
             return;
         }
-        self.resource_span.in_scope(|| {
-            debug!(
-                "cancel the worker's engine_loop, current_state: {:#?}",
-                self.state.load(std::sync::atomic::Ordering::Acquire)
-            );
-            self.processing.close();
+        #[cfg(feature = "tracing")]
+        debug!(
+            "cancel the worker's engine_loop, current_state: {:#?}",
+            self.state.load(std::sync::atomic::Ordering::Acquire)
+        );
+        self.processing.close();
 
-            self.timers.close();
-            self.queue.resume_workers();
-            self.queue.worker_notifier.notify_waiters();
-            self.queue
-                .pause_workers
-                .store(false, std::sync::atomic::Ordering::Release);
-            self.cancellation_token.cancel();
-            // TODO: work on gracefully shutdown later; currently we just cancel the token but
-            // don't check whether the main_task has closed too. Handle this later
-            let mut main_task = self.main_task.borrow_mut();
-            if let (Some(handle)) = main_task.take() {
-                // wait for handle to finishd
-                let running_tasks = self.processing.len();
-                warn!("waiting for all {running_tasks} tasks to complete or abort");
-                // wait for the main loop to close
-                while !handle.is_finished() {}
-            }
-        });
+        self.timers.close();
+        self.queue.resume_workers();
+        self.queue.worker_notifier.notify_waiters();
+        self.queue
+            .pause_workers
+            .store(false, std::sync::atomic::Ordering::Release);
+        self.cancellation_token.cancel();
+        // TODO: work on gracefully shutdown later; currently we just cancel the token but
+        // don't check whether the main_task has closed too. Handle this later
+        let mut main_task = self.main_task.borrow_mut();
+        if let (Some(handle)) = main_task.take() {
+            // wait for handle to finishd
+            let running_tasks = self.processing.len();
+            #[cfg(feature = "tracing")]
+            warn!("waiting for all {running_tasks} tasks to complete or abort");
+            // wait for the main loop to close
+            while !handle.is_finished() {}
+        }
     }
 
     pub fn on<F, C>(&self, event: JobState, callback: C) -> Uuid

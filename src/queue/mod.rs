@@ -18,8 +18,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
-use tracing::Span;
-use tracing::{debug_span, Instrument};
+#[cfg(feature = "tracing")]
+use tracing::{debug_span, Instrument, Span};
 use uuid::Uuid;
 
 use crate::worker::{WorkerOpts, MIN_DELAY_MS_LIMIT};
@@ -49,6 +49,7 @@ use redis::{
 };
 #[derive(Debug, Clone)]
 pub struct Queue<D, R, P, S> {
+    #[cfg(feature = "tracing")]
     resource_span: Span,
     pub paused: Arc<AtomicBool>,
     pub job_count: Arc<AtomicU64>,
@@ -88,13 +89,15 @@ impl<
                 event_mode.swap(passed_mode, Ordering::AcqRel);
             }
         }
-        let queue_name = store.queue_name();
-        let resource_span = debug_span!("Queue", queue_name);
+        let _queue_name = store.queue_name();
+        #[cfg(feature = "tracing")]
+        let resource_span = debug_span!("Queue", _queue_name);
         let worker_notifier: Arc<Notify> = Arc::default();
         let current_metrics = Arc::new(metrics);
         let pause_workers: Arc<AtomicBool> = Arc::default();
         let is_paused = current_metrics.is_paused.load(Ordering::Relaxed);
         let store = Arc::new(store);
+        #[cfg(feature = "tracing")]
         let task = store
             .create_stream_listener(
                 emitter.clone(),
@@ -105,8 +108,19 @@ impl<
             )
             .instrument(resource_span.clone())
             .await?;
+        #[cfg(not(feature = "tracing"))]
+        let task = store
+            .create_stream_listener(
+                emitter.clone(),
+                worker_notifier.clone(),
+                current_metrics.clone(),
+                pause_workers.clone(),
+                event_mode.load(Ordering::Acquire),
+            )
+            .await?;
         let stream_listener = Arc::new(task);
         Ok(Self {
+            #[cfg(feature = "tracing")]
             resource_span,
             store,
             event_mode,
