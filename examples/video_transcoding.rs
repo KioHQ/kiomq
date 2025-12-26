@@ -11,8 +11,13 @@ use std::{
     sync::Arc,
 };
 use tokio::fs;
+#[cfg(feature = "tracing")]
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+#[cfg(not(feature = "tracing"))]
+macro_rules! info {
+    ($($arg:tt)*) => { println!($($arg)*) };
+}
 type BoxedError = Box<dyn std::error::Error + Send>;
 use ffmpeg_sidecar::{
     command::FfmpegCommand,
@@ -47,7 +52,10 @@ struct Progress {
 #[tokio::main]
 #[framed]
 async fn main() -> KioResult<()> {
+    #[cfg(feature = "tracing")]
     setup_tracing();
+    #[cfg(not(feature = "tracing"))]
+    console_subscriber::init();
     let input_path = "sampleFHD.mp4";
     let _store: InMemoryStore<ProcessData, ReturnData, Progress> =
         InMemoryStore::new(None, "video-processing");
@@ -217,7 +225,9 @@ fn create_h265_source(path_str: &str) {
         });
     info!("Created H265 source video: {path_str}");
 }
+#[cfg(feature = "tracing")]
 fn setup_tracing() {
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
     let console_layer = console_subscriber::spawn();
     let fmt_layer = tracing_subscriber::fmt::layer().with_target(true);
     let filter_layer = tracing_subscriber::EnvFilter::from_default_env()

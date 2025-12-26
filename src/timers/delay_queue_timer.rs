@@ -41,6 +41,7 @@ use arc_swap::ArcSwapOption;
 use tokio_util::time::delay_queue::Key;
 
 use crate::{worker::JobMap, Queue, Store, WorkerOpts};
+#[cfg(feature = "tracing")]
 use tracing::{info, info_span, instrument, Span};
 use xutex::AsyncMutex;
 /// A Runner for both  the stalled_check and lock_extension timer that requires polling
@@ -55,6 +56,7 @@ pub(crate) struct DelayQueueTimer<D, R, P, S> {
     // (extendLock, Stalled)
     keys: Arc<[AtomicCell<Option<Key>>; 2]>,
     close_now: Arc<AtomicBool>,
+    #[cfg(feature = "tracing")]
     resource_span: Span,
 
     _data: PhantomData<S>,
@@ -71,9 +73,11 @@ impl<
         let state = [AtomicCell::default(), AtomicCell::default()];
         let keys = Arc::new(state);
         let pause_state = Arc::new(ArrayQueue::new(2));
+        #[cfg(feature = "tracing")]
         let resource_span = info_span!("Timers");
 
         Self {
+            #[cfg(feature = "tracing")]
             resource_span,
             pause_state,
             keys,
@@ -85,12 +89,13 @@ impl<
             _data: PhantomData,
         }
     }
-    #[instrument(parent = &self.resource_span, skip(self))]
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
     pub async fn insert(&self, timer: TimerType) {
         let next_duration = self.next_duration(timer);
         let key = self.delay_queue.lock().await.insert(timer, next_duration);
         self.set_key(timer, key);
         let duration = self.next_duration(timer);
+        #[cfg(feature = "tracing")]
         info!("Started {timer:?} timer running every {duration:?}");
     }
     fn set_key(&self, timer: TimerType, key: Key) {
@@ -148,7 +153,7 @@ impl<
             _ => Duration::from_millis(MIN_DELAY_MS_LIMIT),
         }
     }
-    #[instrument(parent = &self.resource_span, skip(self, job_queue))]
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self, job_queue)))]
     pub async fn run(&self, job_queue: &SegQueue<u64>) -> KioResult<()> {
         use futures::StreamExt;
         use tokio_util::time::FutureExt;
@@ -160,6 +165,7 @@ impl<
         let timeout = Duration::from_millis(1);
         if let Ok(Some(expired)) = self.delay_queue.lock().await.next().timeout(timeout).await {
             let key = expired.into_inner();
+            #[cfg(feature = "tracing")]
             info!("Running {key} ");
             match key {
                 TimerType::StalledCheck(_) => {
