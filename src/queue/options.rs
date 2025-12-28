@@ -335,10 +335,14 @@ impl QueueMetrics {
             .swap(other.last_id.load(Ordering::Acquire), Ordering::AcqRel);
         self.delayed
             .swap(other.delayed.load(Ordering::Acquire), Ordering::AcqRel);
+        self.failed
+            .swap(other.failed.load(Ordering::Acquire), Ordering::AcqRel);
         self.waiting
             .swap(other.waiting.load(Ordering::Acquire), Ordering::AcqRel);
         self.processing
             .swap(other.processing.load(Ordering::Acquire), Ordering::AcqRel);
+        self.prioritized
+            .swap(other.prioritized.load(Ordering::Acquire), Ordering::AcqRel);
         self.event_mode
             .swap(other.event_mode.load(Ordering::Acquire), Ordering::AcqRel);
     }
