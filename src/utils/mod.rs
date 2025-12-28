@@ -480,47 +480,52 @@ where
     let now = Instant::now();
     let semaphore = Arc::new(Semaphore::new(opts.concurrency));
     while !cancellation_token.is_cancelled() {
-        while !cancellation_token.is_cancelled() && semaphore.available_permits() > 0 {
-            let token_prefix = active_job_count.load(std::sync::atomic::Ordering::Acquire);
-            let next_id = Uuid::new_v4();
-            let token = JobToken(id, next_id, token_prefix as u64);
-            let worker_id = id;
-            let block_delay = block_until.load(std::sync::atomic::Ordering::Acquire);
-            let passed_id = delayed.pop();
-            if let (Some(Ok(permit)), Ok(Some(job))) = tokio::join!(
-                cancellation_token.run_until_cancelled(semaphore.clone().acquire_owned()),
-                get_next_job(
+        while !cancellation_token.is_cancelled()
+            && semaphore.available_permits() > 0
+            && processing.len() < opts.concurrency
+        {
+            if let Ok(permit) = semaphore.clone().acquire_owned().await {
+                let token_prefix = active_job_count.load(std::sync::atomic::Ordering::Acquire);
+                let next_id = Uuid::new_v4();
+                let token = JobToken(id, next_id, token_prefix as u64);
+                let worker_id = id;
+                let block_delay = block_until.load(std::sync::atomic::Ordering::Acquire);
+                let passed_id = delayed.pop();
+
+                if let Ok(Some(job)) = get_next_job(
                     queue.as_ref(),
                     token,
                     block_delay,
                     cancellation_token.is_cancelled(),
                     &opts,
                     passed_id,
-                ),
-            ) {
-                if let Some(id) = job.id {
-                    jobs_in_progress.insert(id, (job.clone(), token, TaskHandle::default()));
+                )
+                .await
+                {
+                    if let Some(id) = job.id {
+                        jobs_in_progress.insert(id, (job.clone(), token, TaskHandle::default()));
 
-                    let state = job.state;
-                    let callback = processor.clone();
-                    queue
-                        .update_processing_count(true, worker_id, id, state)
-                        .await?;
-                    let task = processing.spawn(async_backtrace::frame!(process_job(
-                        job,
-                        token,
-                        jobs_in_progress.clone(),
-                        queue.clone(),
-                        callback,
-                        permit,
-                        worker_id,
-                        active_job_count.clone(),
-                    )
-                    .boxed()));
-                    if let Some(mut re) = jobs_in_progress.get(&id) {
-                        let (_, _, stored_handle) = re.value();
+                        let state = job.state;
+                        let callback = processor.clone();
+                        queue
+                            .update_processing_count(true, worker_id, id, state)
+                            .await?;
+                        let task = processing.spawn(async_backtrace::frame!(process_job(
+                            job,
+                            token,
+                            jobs_in_progress.clone(),
+                            queue.clone(),
+                            callback,
+                            permit,
+                            worker_id,
+                            active_job_count.clone(),
+                        )
+                        .boxed()));
+                        if let Some(mut re) = jobs_in_progress.get(&id) {
+                            let (_, _, stored_handle) = re.value();
 
-                        stored_handle.borrow_mut().replace(task);
+                            stored_handle.borrow_mut().replace(task);
+                        }
                     }
                 }
             }
