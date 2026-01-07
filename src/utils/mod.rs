@@ -458,7 +458,14 @@ where
                 worker_state_clone.store(WorkerState::Idle, Ordering::Release);
                 // wait for all running jobs to completed
                 timers.pause().await;
-                cancel_token.run_until_cancelled(notifer.notified()).await;
+                if cancel_token
+                    .run_until_cancelled(notifer.notified())
+                    .await
+                    .is_none()
+                {
+                    // handle cancellation here too
+                    break;
+                }
                 #[cfg(feature = "tracing")]
                 debug!("resumed");
                 worker_state_clone.store(WorkerState::Active, Ordering::Release);
@@ -528,6 +535,7 @@ where
                         }
                     }
                 }
+                tokio::task::yield_now().await;
             }
 
             if queue.pause_workers.load(Ordering::Acquire)
@@ -540,7 +548,7 @@ where
                     delayed = delayed.len(),
                     processing = processing.len(),
                 );
-                to_pause.store(true, Ordering::Relaxed);
+                to_pause.store(true, Ordering::Release);
                 if cancellation_token
                     .run_until_cancelled(paused_here.notified())
                     .await
@@ -553,7 +561,7 @@ where
                 #[cfg(feature = "tracing")]
                 info!("resumed job_schedular_loop");
 
-                to_pause.store(false, Ordering::Relaxed);
+                to_pause.store(false, Ordering::Release);
             }
             // yield, so other tasks run
             tokio::task::yield_now().await;
@@ -570,8 +578,8 @@ where
         worker_state.compare_exchange(
             WorkerState::Active,
             WorkerState::Closed,
-            Ordering::Acquire,
-            Ordering::Relaxed,
+            Ordering::AcqRel,
+            Ordering::SeqCst,
         );
     }
     #[cfg(feature = "tracing")]
@@ -909,5 +917,5 @@ pub(crate) fn pause_or_resume_workers(
     } else {
         resume_helper(metrics, pause_workers, notifier);
     }
-    is_inital.compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed);
+    is_inital.compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire);
 }
