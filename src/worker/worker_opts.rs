@@ -2,7 +2,7 @@ use derive_more::Debug;
 
 use crate::Dt;
 pub(crate) const MIN_DELAY_MS_LIMIT: u64 = 50;
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct WorkerOpts {
     /// Number of milliseconds between stallness checks. Default is 30000
     pub stalled_interval: u64,
