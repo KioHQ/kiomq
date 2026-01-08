@@ -151,7 +151,7 @@ impl<
         let now = tokio::time::Instant::now();
         let queue_clone = queue.clone();
 
-        let timers = DelayQueueTimer::new(jobs.clone(), opts.clone(), queue.clone());
+        let timers = DelayQueueTimer::new(jobs.clone(), opts, queue.clone());
         let continue_notifier = queue.worker_notifier.clone();
 
         #[cfg(feature = "tracing")]
@@ -225,7 +225,7 @@ impl<
             self.id,
             self.cancellation_token.clone(),
             self.processing.clone(),
-            self.opts.clone(),
+            self.opts,
             self.block_until.clone(),
             self.jobs_in_progress.clone(),
             self.active_job_count.clone(),
