@@ -207,7 +207,7 @@ where
         for id in ids {
             let key = CollectionSuffix::Job(*id).tag();
             if let Some(found) = self.jobs.inner.get(&key) {
-                results.push_back(found.value().value.borrow().clone());
+                results.push_back(found.value().value.read().clone());
             }
         }
         Ok(results)
@@ -441,7 +441,7 @@ where
         self.jobs
             .inner
             .get(&job_key)
-            .map(|pair| pair.value().value.borrow().clone())
+            .map(|pair| pair.value().value.read().clone())
     }
 
     async fn get_token(&self, id: u64) -> Option<JobToken> {
@@ -449,7 +449,7 @@ where
         self.locks
             .inner
             .get(&lock_key)
-            .and_then(|entry| match *entry.value().value.borrow() {
+            .and_then(|entry| match *entry.value().value.read() {
                 Lock::Token(token) => Some(token),
                 _ => None,
             })
@@ -460,7 +460,7 @@ where
         self.jobs
             .inner
             .get(&job_key)
-            .map(|entry| entry.value().value.borrow().state)
+            .map(|entry| entry.value().value.read().state)
     }
 
     fn update_job_progress(&self, job: &mut Job<D, R, P>, value: P) -> KioResult<()> {
@@ -469,7 +469,7 @@ where
             let jobs = self.jobs.clone();
             let value_clone = value.clone();
             if let Some(entry) = jobs.inner.get(&job_key) {
-                entry.value().value.borrow_mut().progress = Some(value_clone);
+                entry.value().value.write().progress = Some(value_clone);
             }
             job.progress = Some(value);
         }
@@ -684,7 +684,7 @@ where
     async fn set_fields(&self, job_id: u64, fields: Vec<JobField<R>>) -> KioResult<()> {
         let key = CollectionSuffix::Job(job_id);
         if let Some(mut pair) = self.jobs.inner.get(&key.tag()) {
-            let job = &mut pair.value().value.borrow_mut();
+            let job = &mut pair.value().value.write();
             for field in fields {
                 match field {
                     JobField::BackTrace(trace) => job.stack_trace.push(trace),
@@ -745,7 +745,7 @@ where
                     };
                     let mut next = 0;
                     if let Some(pair) = self.jobs.inner.get(&key.tag()) {
-                        let job = &mut pair.value().value.borrow_mut();
+                        let job = &mut pair.value().value.write();
                         next = update_job(job)
                     }
                     return Ok(next);
@@ -769,7 +769,7 @@ where
                 if let Some(field) = hash_key {
                     let job_key = key.tag();
                     return self.jobs.inner.get(&job_key).and_then(|pair| {
-                        let job = &pair.value().value.borrow();
+                        let job = &pair.value().value.read();
                         match field.to_lowercase().as_str() {
                             "stalled_counter" | "stalledcounter" => Some(job.stalled_counter),
                             "attempts_made" | "attemptsmade" => Some(job.attempts_made),
