@@ -171,7 +171,7 @@ where
     let attempts_made = job.attempts_made + 1;
     let mut metrics = job.get_metrics().unwrap_or_default();
     metrics.attempt = attempts_made;
-    let task_queue = TaskToRemove::new(1);
+    let mut task_queue = None;
 
     let returned = match callback {
         WorkerCallback::Sync(cb) => {
@@ -229,7 +229,7 @@ where
                 }
                 let stored_handle = handle.borrow_mut().take();
                 if let Some(handle) = stored_handle {
-                    let handle_id = task_queue.push((handle.id(), job_id, move_to_state));
+                    let handle_id = task_queue.replace((handle.id(), job_id, move_to_state));
                 }
             }
         }
@@ -286,13 +286,13 @@ where
 
                 let stored_handle = handle.borrow_mut().take();
                 if let Some(handle) = stored_handle {
-                    let handle_id = task_queue.push((handle.id(), job_id, move_to_state));
+                    let handle_id = task_queue.replace((handle.id(), job_id, move_to_state));
                 }
             }
         }
     }
 
-    while let Some((key, job_id, state)) = task_queue.pop() {
+    while let Some((key, job_id, state)) = task_queue.take() {
         let count = current_job_current.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
         queue
             .update_processing_count(false, worker_id, job_id, state)
