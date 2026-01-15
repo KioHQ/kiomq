@@ -247,12 +247,12 @@ where
                 backtrace.map(|trace| trace.iter().map(|loc| loc.to_string()).collect());
             let reason = failed_reason.clone();
             let frames = backtrace.map(|frames| Trace {
-                run: attempts_made + 1,
+                run: attempts_made,
                 reason,
                 frames,
             });
             let failed_reason = FailedDetails {
-                run: attempts_made + 1,
+                run: attempts_made,
                 reason: failed_reason,
             };
             // move job to failed_state
