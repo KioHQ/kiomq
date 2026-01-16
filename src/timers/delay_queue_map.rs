@@ -4,14 +4,14 @@ use atomic_refcell::AtomicRefCell;
 use crossbeam_queue::SegQueue;
 use crossbeam_skiplist::SkipMap;
 use crossbeam_utils::atomic::AtomicCell;
-use parking_lot::RwLock;
+use parking_lot::Mutex;
 use tokio::time::Duration;
 use tokio_util::time::{delay_queue::Key, DelayQueue};
 use xutex::AsyncMutex;
 
 #[derive(Debug)]
 pub struct ValueKeyPair<V> {
-    pub value: RwLock<V>,
+    pub value: Mutex<V>,
     pub key: AtomicCell<Option<Key>>,
 }
 impl<V> ValueKeyPair<V> {
