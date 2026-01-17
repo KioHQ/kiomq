@@ -241,7 +241,7 @@ impl<
             self.id,
             self.cancellation_token.clone(),
             self.processing.clone(),
-            self.opts.clone(),
+            self.opts,
             self.block_until.clone(),
             self.jobs_in_progress.clone(),
             self.active_job_count.clone(),

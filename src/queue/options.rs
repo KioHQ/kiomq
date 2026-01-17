@@ -286,10 +286,10 @@ pub struct QueueMetrics {
 }
 impl QueueMetrics {
     pub fn all_jobs_completed(&self) -> bool {
-        let last_id = self.last_id.load(Ordering::Relaxed);
+        let last_id = self.last_id.load(Ordering::Acquire);
         last_id > 0
-            && self.completed.load(Ordering::Relaxed) == last_id
-            && self.active.load(Ordering::Relaxed) == 0
+            && self.completed.load(Ordering::Acquire) == last_id
+            && self.active.load(Ordering::Acquire) == 0
             && self.is_idle()
     }
     #[allow(clippy::too_many_arguments)]
