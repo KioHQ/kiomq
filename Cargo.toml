@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 [package.metadata.cargo-commands]
 exclude-examples = true
+[lib]
+bench = false
 [dependencies]
 async-backtrace = "0.2.7"
 async-trait = "0.1.89"
