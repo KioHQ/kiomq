@@ -4,6 +4,9 @@ jobs:
   runBenchmark:
     name: run benchmark
     runs-on: buildjet-4vcpu-ubuntu-2204
+    permissions:
+      pull-requests: write
+      contents: read
     steps:
       - uses: actions/checkout@v3
 
