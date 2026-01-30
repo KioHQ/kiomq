@@ -176,12 +176,17 @@ where
     let returned = match callback {
         WorkerCallback::Sync(cb) => {
             let store = queue.store.clone();
-            async_backtrace::frame!(tokio::task::spawn_blocking(move || cb(store, job)))
-                .await?
-                .map_err(|e| {
+
+            BacktraceCatcher::catch(async_backtrace::frame!(tokio::task::spawn_blocking(
+                move || cb(store, job)
+            )))
+            .await
+            .and_then(|e| {
+                e.map_err(|err| {
                     let backtrace = async_backtrace::backtrace();
-                    CaughtError::Error(Box::new(e), backtrace)
+                    CaughtError::Error(Box::new(err), backtrace)
                 })
+            })
         }
         WorkerCallback::Async(cb) => {
             let store = queue.store.clone();
