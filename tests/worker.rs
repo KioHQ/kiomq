@@ -354,4 +354,108 @@ mod worker {
         queue.obliterate().await?;
         Ok(())
     }
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sync_worker_catches_panics_and_errors() -> KioResult<()> {
+        let config = &CONFIG;
+        let queue_opts = QueueOpts::default();
+        let name = Uuid::new_v4().to_string();
+        let store = RedisStore::new(None, &name, config).await?;
+        let queue = Queue::<i32, i32, i32, _>::new(store, Some(queue_opts)).await?;
+        let failed: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(2));
+        let failed_clone = failed.clone();
+        queue.on(
+            kio_mq::JobState::Failed,
+            move |state: kio_mq::EventParameters<i32, i32>| {
+                let failed = failed_clone.clone();
+                async move {
+                    if let EventParameters::Failed {
+                        reason: _,
+                        prev_state: _,
+                        job_id,
+                    } = state
+                    {
+                        let _ = failed.push(job_id);
+                    }
+                }
+            },
+        );
+        let count = 2;
+
+        let job_iterator = (0..count).map(|i| (i.to_string(), None, i));
+        queue.bulk_add_only(job_iterator).await?;
+        let processor = move |_conn, job: kio_mq::Job<i32, i32, i32>| {
+            if job.id.unwrap_or_default() == 1 {
+                return Err(std::io::Error::other("failed here").into());
+            }
+            panic!("panicked here");
+            Ok::<i32, KioError>(job.data.unwrap())
+        };
+        let worker = Worker::new_sync(&queue, processor, None)?;
+        worker.run()?;
+        while failed.len() < 2 {}
+
+        assert_eq!(failed.len(), 2);
+        assert_eq!(
+            queue
+                .current_metrics
+                .failed
+                .load(std::sync::atomic::Ordering::Acquire),
+            2
+        );
+        queue.obliterate().await?;
+
+        Ok(())
+    }
+    #[tokio::test(flavor = "multi_thread")]
+    async fn async_worker_catches_panics_and_errors() -> KioResult<()> {
+        let config = &CONFIG;
+        let queue_opts = QueueOpts::default();
+        let name = Uuid::new_v4().to_string();
+        let store = RedisStore::new(None, &name, config).await?;
+        let queue = Queue::<i32, i32, i32, _>::new(store, Some(queue_opts)).await?;
+        let failed: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(2));
+        let failed_clone = failed.clone();
+        queue.on(
+            kio_mq::JobState::Failed,
+            move |state: kio_mq::EventParameters<i32, i32>| {
+                let failed = failed_clone.clone();
+                async move {
+                    if let EventParameters::Failed {
+                        reason: _,
+                        prev_state: _,
+                        job_id,
+                    } = state
+                    {
+                        let _ = failed.push(job_id);
+                    }
+                }
+            },
+        );
+        let count = 2;
+
+        let job_iterator = (0..count).map(|i| (i.to_string(), None, i));
+        queue.bulk_add_only(job_iterator).await?;
+        let processor = move |_conn, job: kio_mq::Job<i32, i32, i32>| async move {
+            if job.id.unwrap_or_default() == 1 {
+                return Err(std::io::Error::other("failed here").into());
+            }
+            panic!("panicked here");
+            Ok::<i32, KioError>(job.data.unwrap())
+        };
+        let worker = Worker::new_async(&queue, processor, None)?;
+        worker.run()?;
+        while failed.len() < 2 {}
+
+        assert_eq!(failed.len(), 2);
+        assert_eq!(
+            queue
+                .current_metrics
+                .failed
+                .load(std::sync::atomic::Ordering::Acquire),
+            2
+        );
+        queue.obliterate().await?;
+
+        Ok(())
+    }
 }
