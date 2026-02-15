@@ -100,7 +100,7 @@ where
     fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
         let mut conn = self.get_blocking_connection()?;
         let prefix = CollectionSuffix::Prefix.to_collection_name(&self.prefix, &self.name);
-        let key = format!("{prefix}:worker_metrics*");
+        let key = format!("{prefix}worker_metrics*");
         let results = conn.scan_match::<_, Vec<u8>>(key)?;
         let metrics = results
             .into_iter()
