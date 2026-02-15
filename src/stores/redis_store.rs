@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{AcquireError, Notify};
 use tokio::task::JoinHandle;
+use tokio_util::bytes;
 use uuid::Uuid;
 /// a counter for adding bulk jobs,
 static START: AtomicU64 = AtomicU64::new(0);
@@ -97,10 +98,26 @@ where
     Self: Send,
 {
     fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
-        todo!()
+        let mut conn = self.get_blocking_connection()?;
+        let prefix = CollectionSuffix::Prefix.to_collection_name(&self.prefix, &self.name);
+        let key = format!("{prefix}:worker_metrics*");
+        let results = conn.scan_match::<_, Vec<u8>>(key)?;
+        let metrics = results
+            .into_iter()
+            .flat_map(|mut bytes| {
+                simd_json::from_slice::<WorkerMetrics>(&mut bytes)
+                    .map(|metrics| (metrics.worker_id, metrics))
+            })
+            .collect();
+        Ok((metrics))
     }
     async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()> {
-        todo!()
+        let key = CollectionSuffix::WorkerMetrics(metrics.worker_id)
+            .to_collection_name(&self.prefix, &self.name);
+        let mut conn = self.get_connection().await?;
+        let metrics_string = simd_json::to_string(&metrics)?;
+        let _: () = conn.pset_ex(key, metrics_string, ttl_ms).await?;
+        Ok(())
     }
     async fn metadata_field_exists(&self, field: &str) -> KioResult<bool> {
         let mut conn = self.get_connection().await?;

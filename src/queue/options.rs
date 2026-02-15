@@ -52,6 +52,7 @@ impl<R> JobField<R> {
 }
 
 use derive_more::{Debug, Display};
+use uuid::Uuid;
 #[derive(Display, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
 pub enum CollectionSuffix {
     Active,    // (list)
@@ -76,6 +77,8 @@ pub enum CollectionSuffix {
     Lock(u64),
     #[display("stalled_check")]
     StalledCheck, // key
+    #[display("worker_metrics:{_0}")]
+    WorkerMetrics(Uuid),
 }
 
 impl CollectionSuffix {
@@ -102,6 +105,7 @@ impl CollectionSuffix {
             Self::Prefix => 15,
             Self::Lock(_) => 16,
             Self::StalledCheck => 17,
+            Self::WorkerMetrics(_) => 18,
         }
     }
     pub fn tag(&self) -> u64 {
@@ -123,6 +127,7 @@ impl CollectionSuffix {
             | Self::Marker
             | Self::Prefix
             | Self::StalledCheck => top,
+            Self::WorkerMetrics(uuid) => top | (uuid.as_u64_pair().1 & 0x00FF_FFFF_FFFF_FFFF),
 
             // Tagged variants → combine variant id + payload in lower 56 bits
             Self::Job(id) | Self::Lock(id) => top | (id & 0x00FF_FFFF_FFFF_FFFF),
