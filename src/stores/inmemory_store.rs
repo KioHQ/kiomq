@@ -13,6 +13,7 @@ use derive_more::Debug;
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::VecDeque;
 use std::time::Duration;
+use uuid::Uuid;
 type StoredMap = SkipMap<u64, u64>;
 use crate::JobError;
 use std::sync::atomic::Ordering;
@@ -25,6 +26,7 @@ pub struct InMemoryStore<D, R, P> {
     processing: Counter,
     is_paused: Arc<AtomicBool>,
     jobs: Arc<TimedJobMap<D, R, P>>,
+    worker_metrics: Arc<TimedMap<Uuid, WorkerMetrics>>,
     #[debug(skip)]
     locks: Arc<TimedMap<u64, Lock>>, // locks that expires
     #[debug(skip)]
@@ -51,12 +53,14 @@ impl<D: Clone, R: Clone, P: Clone> InMemoryStore<D, R, P> {
         let name = name.to_lowercase();
         let events = Arc::default();
         let stored_metrics = Arc::default();
+        let worker_metrics = Arc::default();
         let notifier = Arc::default();
         let pause_workers = Arc::default();
         let is_inital = Arc::default();
 
         Self {
             is_inital,
+            worker_metrics,
             pause_workers,
             notifier,
             name,
@@ -178,6 +182,29 @@ where
     R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
     P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
 {
+    fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
+        let stored_metrics = self
+            .worker_metrics
+            .inner
+            .iter()
+            .map(|entry| {
+                let worker_id = *entry.key();
+                let value = entry.value().value.lock();
+                let metrics =
+                    WorkerMetrics::new(value.worker_id, value.active_len, value.tasks.clone());
+
+                (worker_id, metrics)
+            })
+            .collect();
+        Ok(stored_metrics)
+    }
+    async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()> {
+        let duration = std::time::Duration::from_millis(ttl_ms);
+        self.worker_metrics
+            .insert_expirable(metrics.worker_id, metrics, duration)
+            .await;
+        Ok(())
+    }
     fn queue_name(&self) -> &str {
         &self.name
     }
@@ -188,12 +215,17 @@ where
             }
         };
 
+        let purge_metrics = async {
+            if self.worker_metrics.len_expired().await > 0 {
+                self.worker_metrics.purge_expired().await;
+            }
+        };
         let purge_jobs = async move {
             if self.jobs.len_expired().await > 0 {
                 self.jobs.purge_expired().await;
             }
         };
-        tokio::join!(purge_jobs, purge_locks);
+        tokio::join!(purge_jobs, purge_locks, purge_metrics);
     }
 
     fn queue_prefix(&self) -> &str {

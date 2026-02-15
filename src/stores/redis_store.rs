@@ -96,6 +96,12 @@ impl<
 where
     Self: Send,
 {
+    fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
+        todo!()
+    }
+    async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()> {
+        todo!()
+    }
     async fn metadata_field_exists(&self, field: &str) -> KioResult<bool> {
         let mut conn = self.get_connection().await?;
         let meta_key = CollectionSuffix::Meta.to_collection_name(&self.prefix, &self.name);
