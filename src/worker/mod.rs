@@ -22,7 +22,10 @@ use std::{
     time::Duration,
 };
 use uuid::Uuid;
+mod metrics;
 mod worker_opts;
+pub use metrics::*;
+
 use crate::error::WorkerError;
 use crate::events::{EventEmitter, EventParameters};
 use crossbeam_skiplist::SkipMap;
@@ -30,8 +33,9 @@ use tokio::{
     sync::Notify,
     task::{AbortHandle, JoinHandle},
 };
+use tokio_metrics::TaskMonitor;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
-type JobMeta<D, R, P> = (Job<D, R, P>, JobToken, TaskHandle);
+type JobMeta<D, R, P> = (Job<D, R, P>, JobToken, TaskHandle, TaskMonitor);
 pub(crate) type JobMap<D, R, P> = Arc<SkipMap<u64, JobMeta<D, R, P>>>;
 type Task = JoinHandle<KioResult<()>>;
 pub(crate) type TaskHandle = AtomicRefCell<Option<Task>>;
@@ -151,7 +155,7 @@ impl<
         let now = tokio::time::Instant::now();
         let queue_clone = queue.clone();
 
-        let timers = DelayQueueTimer::new(jobs.clone(), opts, queue.clone());
+        let timers = DelayQueueTimer::new(jobs.clone(), id, opts, queue.clone());
         let continue_notifier = queue.worker_notifier.clone();
 
         #[cfg(feature = "tracing")]
