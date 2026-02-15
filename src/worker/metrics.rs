@@ -6,9 +6,9 @@ use uuid::Uuid;
 use std::{collections::VecDeque, time::Instant};
 #[derive(Deserialize, Serialize, Debug)]
 pub struct WorkerMetrics {
-    worker_id: Uuid,
-    active_len: usize,
-    tasks: Vec<TaskInfo>,
+    pub worker_id: Uuid,
+    pub active_len: usize,
+    pub tasks: Vec<TaskInfo>,
 }
 impl WorkerMetrics {
     pub fn new(worker_id: Uuid, active_len: usize, tasks: Vec<TaskInfo>) -> Self {

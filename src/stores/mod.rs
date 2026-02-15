@@ -1,12 +1,13 @@
 use std::{
+    collections::BTreeMap,
     ops::RangeBounds,
     sync::{atomic::AtomicBool, Arc},
 };
 
 use crate::{
-    events::QueueStreamEvent, BackOffJobOptions, CollectionSuffix, EventEmitter, Job, JobField,
-    JobOptions, JobState, JobToken, KioResult, ProcessedResult, QueueEventMode, QueueMetrics,
-    QueueOpts, RemoveOnCompletionOrFailure, Trace, WorkerOpts,
+    events::QueueStreamEvent, worker::WorkerMetrics, BackOffJobOptions, CollectionSuffix,
+    EventEmitter, Job, JobField, JobOptions, JobState, JobToken, KioResult, ProcessedResult,
+    QueueEventMode, QueueMetrics, QueueOpts, RemoveOnCompletionOrFailure, Trace, WorkerOpts,
 };
 use std::collections::VecDeque;
 mod inmemory_store;
@@ -35,7 +36,8 @@ pub trait Store<D, R, P> {
     fn queue_prefix(&self) -> &str;
     fn fetch_jobs(&self, ids: &[u64]) -> KioResult<VecDeque<Job<D, R, P>>>;
     async fn purge_expired(&self) {}
-
+    fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>>;
+    async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()>;
     async fn metadata_field_exists(&self, field: &str) -> KioResult<bool>;
     async fn exists_in(&self, col: CollectionSuffix, item: u64) -> KioResult<bool>;
     async fn set_event_mode(&self, event_mode: QueueEventMode) -> KioResult<()>;
