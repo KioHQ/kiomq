@@ -1,4 +1,4 @@
-use crate::worker::MIN_DELAY_MS_LIMIT;
+use crate::worker::{TaskInfo, TaskStats, WorkerMetrics, MIN_DELAY_MS_LIMIT};
 use crate::KioResult;
 use crossbeam_queue::{ArrayQueue, SegQueue};
 use crossbeam_utils::atomic::AtomicCell;
@@ -29,6 +29,7 @@ pub(crate) enum TimerType {
         Duration::from_millis(MIN_DELAY_MS_LIMIT)
     )]
     PromotedDelayed(u64),
+    CollectMetrics,
 }
 use tokio::time::Instant;
 #[derive(Debug, Clone, Copy)]
@@ -47,6 +48,7 @@ use xutex::AsyncMutex;
 /// A Runner for both  the stalled_check and lock_extension timer that requires polling
 #[derive(Clone, derive_more::Debug)]
 pub(crate) struct DelayQueueTimer<D, R, P, S> {
+    worker_id: uuid::Uuid,
     queue: Arc<Queue<D, R, P, S>>,
     #[debug(skip)]
     delay_queue: Arc<AsyncMutex<DelayQueue<TimerType>>>,
@@ -54,7 +56,7 @@ pub(crate) struct DelayQueueTimer<D, R, P, S> {
     opts: WorkerOpts,
     pause_state: Arc<ArrayQueue<PausedTimerState>>,
     // (extendLock, Stalled)
-    keys: Arc<[AtomicCell<Option<Key>>; 2]>,
+    keys: Arc<[AtomicCell<Option<Key>>; 3]>,
     close_now: Arc<AtomicBool>,
     #[cfg(feature = "tracing")]
     resource_span: Span,
@@ -69,16 +71,26 @@ impl<
         S: Clone + Store<D, R, P> + Send + 'static,
     > DelayQueueTimer<D, R, P, S>
 {
-    pub fn new(jobs: JobMap<D, R, P>, opts: WorkerOpts, queue: Arc<Queue<D, R, P, S>>) -> Self {
-        let state = [AtomicCell::default(), AtomicCell::default()];
+    pub fn new(
+        jobs: JobMap<D, R, P>,
+        worker_id: uuid::Uuid,
+        opts: WorkerOpts,
+        queue: Arc<Queue<D, R, P, S>>,
+    ) -> Self {
+        let state = [
+            AtomicCell::default(),
+            AtomicCell::default(),
+            AtomicCell::default(),
+        ];
         let keys = Arc::new(state);
-        let pause_state = Arc::new(ArrayQueue::new(2));
+        let pause_state = Arc::new(ArrayQueue::new(3));
         #[cfg(feature = "tracing")]
         let resource_span = info_span!("Timers");
 
         Self {
             #[cfg(feature = "tracing")]
             resource_span,
+            worker_id,
             pause_state,
             keys,
             queue,
@@ -103,6 +115,7 @@ impl<
             TimerType::StalledCheck(_) => self.keys[1].swap(Some(key)),
             TimerType::ExtendLock(_) => self.keys[0].swap(Some(key)),
             TimerType::PromotedDelayed(_) => self.keys[0].swap(Some(key)),
+            TimerType::CollectMetrics => self.keys[1].swap(Some(key)),
         };
     }
     pub async fn pause(&self) {
@@ -141,6 +154,7 @@ impl<
         let instant = Instant::now();
         self.insert(TimerType::ExtendLock(instant)).await;
         self.insert(TimerType::StalledCheck(instant)).await;
+        self.insert(TimerType::CollectMetrics).await;
     }
     pub async fn clear(&self) {
         self.delay_queue.lock().await.clear()
@@ -150,6 +164,7 @@ impl<
         match timer {
             TimerType::StalledCheck(_) => Duration::from_millis(self.opts.stalled_interval),
             TimerType::ExtendLock(_) => Duration::from_millis(self.opts.lock_duration),
+            TimerType::CollectMetrics => Duration::from_millis(self.opts.metrics_update_interval),
             _ => Duration::from_millis(MIN_DELAY_MS_LIMIT),
         }
     }
@@ -174,7 +189,7 @@ impl<
                 }
                 TimerType::ExtendLock(_) => {
                     for pair in self.jobs.iter() {
-                        let (job, token, handle) = pair.value();
+                        let (job, token, handle, _) = pair.value();
 
                         if let Some(id) = job.id {
                             let done = self
@@ -190,6 +205,25 @@ impl<
                         .store
                         .add_item(crate::CollectionSuffix::Wait, job_id, None, true)
                         .await?;
+                }
+                TimerType::CollectMetrics => {
+                    let tasks: Vec<_> = self
+                        .jobs
+                        .iter()
+                        .map(|entry| {
+                            let id = entry.key();
+                            let (_, _, _, monitor) = entry.value();
+                            let metrics = monitor.cumulative();
+                            TaskInfo::new(*id, *id, metrics)
+                        })
+                        .collect();
+                    let active_len = tasks.len();
+
+                    let worker_id = self.worker_id;
+                    let worker_metrics = WorkerMetrics::new(worker_id, active_len, tasks);
+                    // TOD0: store the metrics in database with expiration set to
+                    // worker_opts.metrics_update_interval
+                    next_key.replace(key);
                 }
             }
         }

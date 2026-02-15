@@ -9,7 +9,7 @@ use crate::{
     utils, EventEmitter, EventParameters, FailedDetails, JobMetrics, JobOptions, JobState,
     JobToken, KioError, QueueEventMode, QueueOpts, Trace, WorkerOpts,
 };
-use chrono::Utc;
+use chrono::{Month, Utc};
 use crossbeam_queue::{ArrayQueue, SegQueue};
 use futures::future::OkInto;
 use futures::{FutureExt, StreamExt};
@@ -23,6 +23,7 @@ use std::fmt::{format, Write};
 use std::num::NonZero;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::task_local;
+use tokio_metrics::TaskMonitor;
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
 use tracing::{debug, info, info_span, Instrument};
@@ -219,7 +220,7 @@ where
                 )
                 .await?;
             if let Some(entry) = jobs_in_progress.remove(&job_id) {
-                let (job, _, handle) = entry.value();
+                let (job, _, handle, _) = entry.value();
                 if completed.attempts_made < job.opts.attempts {
                     if let Some(repeat_opts) = completed.opts.repeat.as_ref() {
                         //dbg!("job here", job_id, &repeat_opts);
@@ -275,7 +276,7 @@ where
                 )
                 .await?;
             if let Some(entry) = jobs_in_progress.remove(&job_id) {
-                let (job, _, handle) = entry.value();
+                let (job, _, handle, _) = entry.value();
                 // retry failed jobs
                 if failed_job.attempts_made < job.opts.attempts {
                     if let Some(backoff_job_opts) = job.opts.backoff.as_ref() {
@@ -515,14 +516,18 @@ where
                 .await
                 {
                     if let Some(id) = job.id {
-                        jobs_in_progress.insert(id, (job.clone(), token, TaskHandle::default()));
+                        let monitor = TaskMonitor::new();
+                        jobs_in_progress.insert(
+                            id,
+                            (job.clone(), token, TaskHandle::default(), monitor.clone()),
+                        );
 
                         let state = job.state;
                         let callback = processor.clone();
                         queue
                             .update_processing_count(true, worker_id, id, state)
                             .await?;
-                        let task = processing.spawn(async_backtrace::frame!(process_job(
+                        let process_fn = monitor.instrument(process_job(
                             job,
                             token,
                             jobs_in_progress.clone(),
@@ -531,10 +536,10 @@ where
                             permit,
                             worker_id,
                             active_job_count.clone(),
-                        )
-                        .boxed()));
+                        ));
+                        let task = processing.spawn(async_backtrace::frame!(process_fn.boxed()));
                         if let Some(mut re) = jobs_in_progress.get(&id) {
-                            let (_, _, stored_handle) = re.value();
+                            let (_, _, stored_handle, _) = re.value();
 
                             stored_handle.borrow_mut().replace(task);
                         }
