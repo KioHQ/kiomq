@@ -10,7 +10,7 @@ use crossbeam_queue::SegQueue;
 use futures::future::Future;
 use futures::stream::{FuturesOrdered, FuturesUnordered};
 use futures::{FutureExt, StreamExt};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::marker::{PhantomData, PhantomPinned};
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -22,7 +22,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug_span, Instrument, Span};
 use uuid::Uuid;
 
-use crate::worker::{WorkerOpts, MIN_DELAY_MS_LIMIT};
+use crate::worker::{WorkerMetrics, WorkerOpts, MIN_DELAY_MS_LIMIT};
 use crate::{
     queue, BackOff, BackOffJobOptions, BackOffOptions, Dt, FailedDetails, JobOptions, JobToken,
     KeepJobs, KioResult, RemoveOnCompletionOrFailure, Repeat, StoredFn, Trace,
@@ -740,6 +740,12 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
         let updated = self.store.get_metrics().await?;
         self.current_metrics.update(&updated);
         Ok(updated)
+    }
+    pub fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
+        self.store.fetch_worker_metrics()
+    }
+    pub async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()> {
+        self.store.store_worker_metrics(metrics, ttl_ms).await
     }
     pub async fn update_processing_count(
         &self,
