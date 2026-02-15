@@ -221,8 +221,9 @@ impl<
 
                     let worker_id = self.worker_id;
                     let worker_metrics = WorkerMetrics::new(worker_id, active_len, tasks);
-                    // TOD0: store the metrics in database with expiration set to
-                    // worker_opts.metrics_update_interval
+                    self.queue
+                        .store_worker_metrics(worker_metrics, self.opts.metrics_update_interval)
+                        .await?;
                     next_key.replace(key);
                 }
             }
