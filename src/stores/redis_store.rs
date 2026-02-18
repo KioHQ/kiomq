@@ -109,7 +109,7 @@ where
                     .map(|metrics| (metrics.worker_id, metrics))
             })
             .collect();
-        Ok((metrics))
+        Ok(metrics)
     }
     async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()> {
         let key = CollectionSuffix::WorkerMetrics(metrics.worker_id)
