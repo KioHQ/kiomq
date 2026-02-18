@@ -1,3 +1,5 @@
+use crate::Dt;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio_metrics::TaskMetrics;
@@ -25,7 +27,7 @@ pub struct TaskInfo {
     task_id: u64,
     job_id: u64,
     metrics: TaskStats,
-    //last_updated: ,
+    last_updated: Dt,
 }
 
 impl TaskInfo {
@@ -34,13 +36,13 @@ impl TaskInfo {
             task_id,
             job_id,
             metrics: TaskStats::from_metrics(metrics),
-            //last_updated: Instant::now(),
+            last_updated: Utc::now(),
         }
     }
 
     fn update(&mut self, metrics: TaskMetrics) {
         self.metrics = TaskStats::from_metrics(metrics);
-        //self.last_updated = Instant::now();
+        self.last_updated = Utc::now();
     }
 }
 #[derive(Clone, Copy, Serialize, Deserialize, Debug)]
