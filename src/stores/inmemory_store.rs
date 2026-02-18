@@ -87,6 +87,7 @@ impl<D: Clone, R: Clone, P: Clone> InMemoryStore<D, R, P> {
     pub fn toggle_expiration(&self) {
         self.locks.toggle_expiration();
         self.jobs.toggle_expiration();
+        self.worker_metrics.toggle_expiration();
     }
 }
 impl<D, R, P> InMemoryStore<D, R, P>
