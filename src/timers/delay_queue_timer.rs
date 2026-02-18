@@ -139,6 +139,16 @@ impl<
                 let _ = self.pause_state.push(state);
             }
         }
+        if let Some(key) = self.keys[2].load().as_ref() {
+            if let Some(expired) = self.delay_queue.lock().await.try_remove(key) {
+                let deadline = expired.deadline();
+                let state = PausedTimerState {
+                    deadline,
+                    timer: TimerType::CollectMetrics,
+                };
+                let _ = self.pause_state.push(state);
+            }
+        }
     }
     pub async fn resume(&self) {
         while let Some(PausedTimerState { timer, deadline }) = self.pause_state.pop() {
