@@ -24,10 +24,10 @@ impl WorkerMetrics {
 
 #[derive(Clone, Copy, Serialize, Deserialize, Debug)]
 pub struct TaskInfo {
-    task_id: u64,
-    job_id: u64,
-    metrics: TaskStats,
-    last_updated: Dt,
+    pub task_id: u64,
+    pub job_id: u64,
+    pub metrics: TaskStats,
+    pub last_updated: Dt,
 }
 
 impl TaskInfo {
