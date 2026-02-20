@@ -16,7 +16,7 @@ pub use events::EventParameters;
 pub use job::*;
 pub use queue::*;
 pub use stores::*;
-pub use timers::Timer;
+pub use timers::{TimedMap, Timer};
 #[cfg(feature = "redis-store")]
 pub use utils::{fetch_redis_pass, get_queue_metrics};
 pub use worker::{Worker, WorkerMetrics, WorkerOpts};
