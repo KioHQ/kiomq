@@ -517,10 +517,6 @@ where
                 {
                     if let Some(id) = job.id {
                         let monitor = TaskMonitor::new();
-                        jobs_in_progress.insert(
-                            id,
-                            (job.clone(), token, TaskHandle::default(), monitor.clone()),
-                        );
 
                         let state = job.state;
                         let callback = processor.clone();
@@ -528,7 +524,7 @@ where
                             .update_processing_count(true, worker_id, id, state)
                             .await?;
                         let process_fn = monitor.instrument(process_job(
-                            job,
+                            job.clone(),
                             token,
                             jobs_in_progress.clone(),
                             queue.clone(),
@@ -537,6 +533,7 @@ where
                             worker_id,
                             active_job_count.clone(),
                         ));
+                        jobs_in_progress.insert(id, (job, token, TaskHandle::default(), monitor));
                         let task = processing.spawn(async_backtrace::frame!(process_fn.boxed()));
                         if let Some(mut re) = jobs_in_progress.get(&id) {
                             let (_, _, stored_handle, _) = re.value();
