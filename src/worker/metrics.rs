@@ -6,7 +6,7 @@ use tokio_metrics::TaskMetrics;
 use uuid::Uuid;
 
 use std::{collections::VecDeque, time::Instant};
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub struct WorkerMetrics {
     pub worker_id: Uuid,
     pub active_len: usize,
@@ -22,7 +22,7 @@ impl WorkerMetrics {
     }
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
+#[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskInfo {
     pub task_id: u64,
     pub job_id: u64,
@@ -45,7 +45,7 @@ impl TaskInfo {
         self.last_updated = Utc::now();
     }
 }
-#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
+#[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskStats {
     pub total_poll_count: u64,
     pub total_slow_poll_count: u64,
