@@ -59,10 +59,10 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
         let pair = ValueKeyPair::new(value);
         let pair = self.inner.insert(key, pair);
     }
-    pub async fn insert_expirable(&self, key: K, value: V, timeout: Duration) {
+    pub fn insert_expirable(&self, key: K, value: V, timeout: Duration) {
         let pair = ValueKeyPair::new(value);
         if !self.disable_expiration.load(Ordering::Acquire) {
-            let mut expiries = self.expiries.lock().await;
+            let mut expiries = self.expiries.as_sync().lock();
             let expiry_key = expiries.insert(key.clone(), timeout);
             pair.key.store(Some(expiry_key));
         }
@@ -121,8 +121,7 @@ mod tests {
     #[tokio::test]
     async fn test_purge_removes_expired() {
         let map: Arc<TimedMap<u64, u64>> = Arc::new(TimedMap::new());
-        map.insert_expirable(1, 100, Duration::from_millis(50))
-            .await;
+        map.insert_expirable(1, 100, Duration::from_millis(50));
 
         // wait for it to expire
         sleep(Duration::from_millis(80)).await;
@@ -145,7 +144,7 @@ mod tests {
                 // insert many keys with small expiry
                 for j in 0..10u64 {
                     let k = i * 100 + j;
-                    m.insert_expirable(k, k, Duration::from_millis(30)).await;
+                    m.insert_expirable(k, k, Duration::from_millis(30));
                 }
             }));
         }
