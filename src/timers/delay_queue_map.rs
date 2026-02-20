@@ -104,10 +104,16 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
         use futures::StreamExt;
         use tokio_util::time::FutureExt;
         let timeout = Duration::from_micros(10);
+        let mut expiries = self.expiries.lock().await;
         // clean any queued for deletion;
-        while let Ok(Some(value)) = self.expiries.lock().await.next().timeout(timeout).await {
-            let key = value.into_inner();
-            self.inner.remove(&key);
+        loop {
+            match expiries.next().timeout(timeout).await {
+                Ok(Some(expired)) => {
+                    let key = expired.into_inner();
+                    self.inner.remove(&key);
+                }
+                _ => break,
+            }
         }
     }
 }
