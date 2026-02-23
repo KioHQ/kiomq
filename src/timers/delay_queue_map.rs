@@ -5,6 +5,7 @@ use crossbeam_queue::SegQueue;
 use crossbeam_skiplist::SkipMap;
 use crossbeam_utils::atomic::AtomicCell;
 use parking_lot::Mutex;
+use tokio::runtime::Handle;
 use tokio::time::Duration;
 use tokio_util::time::{delay_queue::Key, DelayQueue};
 use xutex::AsyncMutex;
@@ -22,7 +23,6 @@ impl<V> ValueKeyPair<V> {
         }
     }
 }
-
 #[derive(derive_more::Debug)]
 /// A map with timed value-eviction
 pub struct TimedMap<K: Ord, V> {
@@ -62,8 +62,14 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
     pub fn insert_expirable(&self, key: K, value: V, timeout: Duration) {
         let pair = ValueKeyPair::new(value);
         if !self.disable_expiration.load(Ordering::Acquire) {
-            let mut expiries = self.expiries.as_sync().lock();
-            let expiry_key = expiries.insert(key.clone(), timeout);
+            // To use async-mutex here, use block_in_place (on rt-multithread) - Subject to
+            // change in the future
+            let expiry_key = tokio::task::block_in_place(|| {
+                Handle::current().block_on(async {
+                    let mut expiries = self.expiries.lock().await;
+                    expiries.insert(key.clone(), timeout)
+                })
+            });
             pair.key.store(Some(expiry_key));
         }
         let pair = self.inner.insert(key, pair);
@@ -74,7 +80,13 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
     pub fn remove(&self, key: &K) {
         if let Some(removed) = self.inner.remove(key) {
             if let Some(expiry_key) = removed.value().key.load() {
-                self.expiries.as_sync().lock().remove(&expiry_key);
+                // To use async-mutex here, use block_in_place (on rt-multithread) - Subject to
+                // change in the future
+                tokio::task::block_in_place(|| {
+                    Handle::current().block_on(async {
+                        self.expiries.lock().await.remove(&expiry_key);
+                    })
+                });
             }
         }
     }
@@ -95,7 +107,13 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
 
     pub fn clear(&self) {
         self.inner.clear();
-        self.expiries.as_sync().lock().clear();
+        // To use async-mutex here, use block_in_place (on rt-multithread) - Subject to
+        // change in the future
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                self.expiries.lock().await.clear();
+            })
+        })
     }
     pub async fn purge_expired(&self) {
         if !self.expires_entries() {
@@ -124,7 +142,7 @@ mod tests {
     use tokio::time::{sleep, Duration};
 
     // Basic test: insert an expirable entry, wait, purge, ensure remove returns None.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_purge_removes_expired() {
         let map: Arc<TimedMap<u64, u64>> = Arc::new(TimedMap::new());
         map.insert_expirable(1, 100, Duration::from_millis(50));
@@ -139,7 +157,7 @@ mod tests {
     }
 
     // Concurrency test: spawn many inserters and updaters, then purge and ensure no lingering expiries.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_concurrent_inserts_and_purge() {
         let map = Arc::new(TimedMap::new());
         let mut handles = Vec::new();
