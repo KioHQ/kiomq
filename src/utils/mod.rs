@@ -156,7 +156,6 @@ pub(crate) async fn process_job<D, R, P, S>(
     permit: OwnedSemaphorePermit,
     worker_id: Uuid,
     current_job_current: Arc<AtomicUsize>,
-    task_monitor: TaskMonitor,
 ) -> KioResult<()>
 where
     R: Serialize + Send + Clone + DeserializeOwned + 'static + Sync,
@@ -179,7 +178,7 @@ where
             let store = queue.store.clone();
 
             BacktraceCatcher::catch(
-                task_monitor.instrument(tokio::task::spawn_blocking(move || cb(store, job))),
+                tokio::task::spawn_blocking(move || cb(store, job)),
             )
             .await
             .and_then(|e| {
@@ -191,7 +190,7 @@ where
         }
         WorkerCallback::Async(cb) => {
             let store = queue.store.clone();
-            let callback = task_monitor.instrument(cb(store, job));
+            let callback = cb(store, job);
             BacktraceCatcher::catch(callback).await
         }
     };
@@ -532,10 +531,9 @@ where
                             permit,
                             worker_id,
                             active_job_count.clone(),
-                            monitor.clone(),
                         );
-                        jobs_in_progress.insert(id, (job, token, TaskHandle::default(), monitor));
-                        let task = processing.spawn(async_backtrace::frame!(process_fn.boxed()));
+                        jobs_in_progress.insert(id, (job, token, TaskHandle::default(), monitor.clone()));
+                        let task = processing.spawn(monitor.instrument(async_backtrace::frame!(process_fn.boxed())));
                         if let Some(mut re) = jobs_in_progress.get(&id) {
                             let (_, _, stored_handle, _) = re.value();
 

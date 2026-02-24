@@ -458,4 +458,69 @@ mod worker {
 
         Ok(())
     }
+    #[tokio::test(flavor = "multi_thread")]
+    async fn task_metrics_update_over_time() -> KioResult<()> {
+        use kio_mq::{InMemoryStore, WorkerOpts};
+        use std::time::Duration;
+
+        let name = Uuid::new_v4().to_string();
+        let store = InMemoryStore::<i32, i32, i32>::new(None, &name);
+        let queue = Queue::<i32, i32, i32, _>::new(store, None).await?;
+
+        // Processor with multiple yields so completed idle cycles accumulate while
+        // the job is still running (allowing metrics collection to capture them).
+        let processor = move |_conn, _job: kio_mq::Job<i32, i32, i32>| async move {
+            for _ in 0..5u8 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Ok::<i32, KioError>(42)
+        };
+
+        let worker_opts = WorkerOpts {
+            metrics_update_interval: 50, // collect metrics every 50ms
+            ..Default::default()
+        };
+        let worker = Worker::new_async(&queue, processor, Some(worker_opts))?;
+        worker.run()?;
+
+        // Add a job that sleeps in multiple short bursts (5 x 100ms = 500ms total)
+        queue.add_job("test", 1, None).await?;
+
+        // Poll for collected metrics. Wait until poll_count >= 2, which means at least
+        // one full sleep cycle has completed and idle_duration should be non-zero.
+        let mut found_non_zero = false;
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            let metrics_map = queue.fetch_worker_metrics()?;
+            if let Some(worker_metrics) = metrics_map.values().next() {
+                if let Some(task_info) = worker_metrics.tasks.first() {
+                    // poll_count >= 2 means at least one sleep cycle has completed
+                    if task_info.metrics.total_poll_count >= 2 {
+                        assert!(
+                            task_info.metrics.total_idle_duration > Duration::ZERO,
+                            "Expected non-zero idle duration after a completed sleep cycle; \
+                             poll_count={}, idle={:?}, scheduled={:?}",
+                            task_info.metrics.total_poll_count,
+                            task_info.metrics.total_idle_duration,
+                            task_info.metrics.total_scheduled_duration,
+                        );
+                        found_non_zero = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        assert!(
+            found_non_zero,
+            "Task metrics never showed poll_count >= 2 within the timeout"
+        );
+
+        // Wait for job to complete before cleaning up
+        while !queue.current_metrics.all_jobs_completed() {
+            tokio::task::yield_now().await;
+        }
+        worker.close();
+        Ok(())
+    }
 }
