@@ -67,12 +67,19 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
             let expiry_key = tokio::task::block_in_place(|| {
                 Handle::current().block_on(async {
                     let mut expiries = self.expiries.lock().await;
+                    // Remove any stale expiry key for this key so it doesn't
+                    // purge the freshly inserted value later.
+                    if let Some(old_entry) = self.inner.get(&key) {
+                        if let Some(old_key) = old_entry.value().key.load() {
+                            expiries.remove(&old_key);
+                        }
+                    }
                     expiries.insert(key.clone(), timeout)
                 })
             });
             pair.key.store(Some(expiry_key));
         }
-        let pair = self.inner.insert(key, pair);
+        let _ = self.inner.insert(key, pair);
     }
     pub async fn len_expired(&self) -> usize {
         self.expiries.lock().await.len()

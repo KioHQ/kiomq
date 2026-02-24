@@ -227,7 +227,7 @@ impl<
                                 .borrow()
                                 .as_ref()
                                 .and_then(|t_handle| t_handle.id().to_string().parse().ok())
-                                .unwrap_or_default();
+                                .unwrap_or(*id);
                             let metrics = monitor.cumulative();
                             TaskInfo::new(task_id, *id, metrics)
                         })
