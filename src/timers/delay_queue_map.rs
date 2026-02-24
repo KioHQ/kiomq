@@ -79,7 +79,7 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
             });
             pair.key.store(Some(expiry_key));
         }
-        let _ = self.inner.insert(key, pair);
+        self.inner.insert(key, pair);
     }
     pub async fn len_expired(&self) -> usize {
         self.expiries.lock().await.len()
