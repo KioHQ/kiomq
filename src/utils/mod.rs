@@ -147,7 +147,6 @@ pub async fn get_queue_metrics<C: redis::aio::ConnectionLike>(
 
 // ---- UTIL FUNCTIONS for the worker
 #[allow(clippy::too_many_arguments)]
-#[async_backtrace::framed]
 pub(crate) async fn process_job<D, R, P, S>(
     job: Job<D, R, P>,
     token: JobToken,
@@ -157,6 +156,7 @@ pub(crate) async fn process_job<D, R, P, S>(
     permit: OwnedSemaphorePermit,
     worker_id: Uuid,
     current_job_current: Arc<AtomicUsize>,
+    task_monitor: TaskMonitor,
 ) -> KioResult<()>
 where
     R: Serialize + Send + Clone + DeserializeOwned + 'static + Sync,
@@ -178,9 +178,9 @@ where
         WorkerCallback::Sync(cb) => {
             let store = queue.store.clone();
 
-            BacktraceCatcher::catch(async_backtrace::frame!(tokio::task::spawn_blocking(
-                move || cb(store, job)
-            )))
+            BacktraceCatcher::catch(
+                task_monitor.instrument(tokio::task::spawn_blocking(move || cb(store, job))),
+            )
             .await
             .and_then(|e| {
                 e.map_err(|err| {
@@ -191,7 +191,7 @@ where
         }
         WorkerCallback::Async(cb) => {
             let store = queue.store.clone();
-            let callback = async_backtrace::frame!(cb(store, job));
+            let callback = task_monitor.instrument(cb(store, job));
             BacktraceCatcher::catch(callback).await
         }
     };
@@ -523,7 +523,7 @@ where
                         queue
                             .update_processing_count(true, worker_id, id, state)
                             .await?;
-                        let process_fn = monitor.instrument(process_job(
+                        let process_fn = process_job(
                             job.clone(),
                             token,
                             jobs_in_progress.clone(),
@@ -532,7 +532,8 @@ where
                             permit,
                             worker_id,
                             active_job_count.clone(),
-                        ));
+                            monitor.clone(),
+                        );
                         jobs_in_progress.insert(id, (job, token, TaskHandle::default(), monitor));
                         let task = processing.spawn(async_backtrace::frame!(process_fn.boxed()));
                         if let Some(mut re) = jobs_in_progress.get(&id) {

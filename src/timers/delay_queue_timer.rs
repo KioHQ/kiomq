@@ -222,9 +222,14 @@ impl<
                         .iter()
                         .map(|entry| {
                             let id = entry.key();
-                            let (_, _, _, monitor) = entry.value();
+                            let (_, _, task_handle, monitor) = entry.value();
+                            let task_id: u64 = task_handle
+                                .borrow()
+                                .as_ref()
+                                .and_then(|t_handle| t_handle.id().to_string().parse().ok())
+                                .unwrap_or_default();
                             let metrics = monitor.cumulative();
-                            TaskInfo::new(*id, *id, metrics)
+                            TaskInfo::new(task_id, *id, metrics)
                         })
                         .collect();
                     let active_len = tasks.len();

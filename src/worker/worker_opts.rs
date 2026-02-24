@@ -21,7 +21,7 @@ pub struct WorkerOpts {
     pub concurrency: usize,
     /// The interval to check for delayed jobs or next jobs to schedule
     pub autorun: bool,
-    ///  Number of milliseconds between sending worker_metrics. Default is 500
+    ///  Number of milliseconds between sending worker_metrics. Default is 100
     pub metrics_update_interval: u64,
 }
 impl Default for WorkerOpts {
