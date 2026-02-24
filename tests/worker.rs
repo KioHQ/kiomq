@@ -470,7 +470,7 @@ mod worker {
         // Processor with multiple yields so completed idle cycles accumulate while
         // the job is still running (allowing metrics collection to capture them).
         let processor = move |_conn, _job: kio_mq::Job<i32, i32, i32>| async move {
-            for _ in 0..5u8 {
+            for _ in 0..5 {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Ok::<i32, KioError>(42)
