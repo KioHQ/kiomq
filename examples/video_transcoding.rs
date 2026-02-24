@@ -16,7 +16,9 @@ use tracing::info;
 
 #[cfg(not(feature = "tracing"))]
 macro_rules! info {
-    ($($arg:tt)*) => { println!($($arg)*) };
+    ($($arg:tt)*) => {
+        //println!($($arg)*)
+    };
 }
 type BoxedError = Box<dyn std::error::Error + Send>;
 use ffmpeg_sidecar::{
@@ -25,6 +27,9 @@ use ffmpeg_sidecar::{
     event::{FfmpegEvent, LogLevel},
     log_parser::parse_time_str,
 };
+use kio_dashboard::{queue::SimpleQueue, serde_json, Dashboard};
+use serde_json::{json, Value};
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 struct ProcessData {
     path: PathBuf,
@@ -48,7 +53,6 @@ struct Progress {
     fps: f32,
     bitrate_kbps: f32,
 }
-
 #[tokio::main]
 #[framed]
 async fn main() -> KioResult<()> {
@@ -57,8 +61,7 @@ async fn main() -> KioResult<()> {
     #[cfg(not(feature = "tracing"))]
     console_subscriber::init();
     let input_path = "sampleFHD.mp4";
-    let _store: InMemoryStore<ProcessData, ReturnData, Progress> =
-        InMemoryStore::new(None, "video-processing");
+    let _store: InMemoryStore<_, _, _> = InMemoryStore::new(None, "video-processing");
     #[cfg(all(feature = "redis-store", not(feature = "default")))]
     let password = fetch_redis_pass();
     #[cfg(all(feature = "redis-store", not(feature = "default")))]
@@ -73,7 +76,7 @@ async fn main() -> KioResult<()> {
     let db = Arc::new(temporary_rocks_db());
     #[cfg(feature = "rocksdb-store")]
     let _store = RocksDbStore::new(None, "video-processing", db.clone())?;
-    let queue = Queue::new(_store, None).await?;
+    let queue = Arc::new(Queue::new(_store, None).await?);
     let processor = |con: _, job: _| process_callback(con, job);
     // auto download ffmpeg if it's not installed;
     tokio::task::spawn_blocking(auto_download)
@@ -87,13 +90,15 @@ async fn main() -> KioResult<()> {
     if !Path::new("compressed").exists() {
         fs::create_dir("compressed").await?;
     }
+    let dashboard = Dashboard::new();
+    dashboard.add_queue(queue.clone());
     let sizes = [(1280, 720), (640, 480), (1920, 1080), (3840, 2160)];
     let iter = sizes.into_iter().map(|(height, width)| {
         let size = Size { height, width };
-        let data = ProcessData {
+        let data = json!(ProcessData {
             size,
             path: input_path.into(),
-        };
+        });
         (height.to_string().to_lowercase(), None, data)
     });
 
@@ -122,7 +127,7 @@ async fn main() -> KioResult<()> {
 
     queue.bulk_add_only(iter).await?;
     worker.run()?;
-    while !updating_metrics.all_jobs_completed() && worker.is_running() {}
+    dashboard.run().await.map_err(std::io::Error::other)?;
     worker.close();
     if worker.closed() {
         queue.obliterate().await?;
@@ -132,12 +137,13 @@ async fn main() -> KioResult<()> {
 }
 
 #[framed]
-fn process_callback<S: Store<ProcessData, ReturnData, Progress>>(
+fn process_callback<S: Store<Value, Value, Value>>(
     store: Arc<S>,
-    mut job: Job<ProcessData, ReturnData, Progress>,
-) -> KioResult<ReturnData> {
+    mut job: Job<Value, Value, Value>,
+) -> KioResult<Value> {
     use uuid::Uuid;
     let data = job.data.clone().unwrap_or_default();
+    let data: ProcessData = serde_json::from_value(data).unwrap_or_default();
     let input_path = data.path.to_str().expect("failed to extract");
 
     let size = data.size;
@@ -173,7 +179,7 @@ fn process_callback<S: Store<ProcessData, ReturnData, Progress>>(
                         current_progress.current_duration = parsed_duration;
                     }
                 }
-                store.update_job_progress(&mut job, current_progress)?;
+                store.update_job_progress(&mut job, json!(current_progress))?;
             }
 
             FfmpegEvent::Log(log_level, msg) => {
@@ -196,10 +202,10 @@ fn process_callback<S: Store<ProcessData, ReturnData, Progress>>(
             }
 
             FfmpegEvent::LogEOF => {
-                return Ok(ReturnData {
+                return Ok(json!(ReturnData {
                     output_path: output_path.into(),
                     processed_size: size,
-                });
+                }));
             }
 
             _ => {}
