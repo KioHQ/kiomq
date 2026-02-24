@@ -157,7 +157,7 @@ fn process_callback<S: Store<Value, Value, Value>>(
         .input(input_path)
         .size(size.height, size.width)
         .output(expected_path)
-        .print_command()
+        //.print_command()
         .spawn()?;
     let mut total_duration = 1.0;
 
@@ -216,7 +216,7 @@ fn process_callback<S: Store<Value, Value, Value>>(
 
 /// create a H265 source video from scratch
 fn create_h265_source(path_str: &str) {
-    info!("Creating H265 source video: {path_str}");
+    //info!("Creating H265 source video: {path_str}");
     FfmpegCommand::new()
         .args("-f lavfi -i testsrc=size=1920x1080:rate=30:duration=15 -c:v libx265".split(' '))
         .arg(path_str)
@@ -225,8 +225,12 @@ fn create_h265_source(path_str: &str) {
         .iter()
         .expect("failed to get iter")
         .for_each(|e| match e {
-            FfmpegEvent::Log(LogLevel::Error, e) => info!("Error: {e}"),
-            FfmpegEvent::Progress(p) => info!("Progress: {} / 00:00:15", p.time),
+            FfmpegEvent::Log(LogLevel::Error, e) => {
+                info!("Error: {e}");
+            }
+            FfmpegEvent::Progress(p) => {
+                info!("Progress: {} / 00:00:15", p.time);
+            }
             _ => {}
         });
     info!("Created H265 source video: {path_str}");
