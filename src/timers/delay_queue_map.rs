@@ -87,8 +87,8 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
     pub fn remove(&self, key: &K) {
         if let Some(removed) = self.inner.remove(key) {
             if let Some(expiry_key) = removed.value().key.load() {
-                // To use async-mutex here, use block_in_place (on rt-multithread) - Subject to
-                // change in the future
+                // To use async-mutex here, use block_in_place (on rt-multithread)
+                // - Subject to change in the future
                 tokio::task::block_in_place(|| {
                     Handle::current().block_on(async {
                         self.expiries.lock().await.remove(&expiry_key);
@@ -148,22 +148,18 @@ mod tests {
     use std::sync::Arc;
     use tokio::time::{sleep, Duration};
 
-    // Basic test: insert an expirable entry, wait, purge, ensure remove returns None.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_purge_removes_expired() {
         let map: Arc<TimedMap<u64, u64>> = Arc::new(TimedMap::new());
         map.insert_expirable(1, 100, Duration::from_millis(50));
 
-        // wait for it to expire
         sleep(Duration::from_millis(80)).await;
 
         map.purge_expired().await;
 
-        // after purge, remove should return None
         assert!(!map.inner.contains_key(&1));
     }
 
-    // Concurrency test: spawn many inserters and updaters, then purge and ensure no lingering expiries.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_concurrent_inserts_and_purge() {
         let map = Arc::new(TimedMap::new());
@@ -172,7 +168,6 @@ mod tests {
         for i in 0..50u64 {
             let m = Arc::clone(&map);
             handles.push(tokio::spawn(async move {
-                // insert many keys with small expiry
                 for j in 0..10u64 {
                     let k = i * 100 + j;
                     m.insert_expirable(k, k, Duration::from_millis(30));
@@ -180,18 +175,14 @@ mod tests {
             }));
         }
 
-        // wait for all inserts to complete
         for h in handles {
             let _ = h.await;
         }
 
-        // wait for expirations to be ready
         sleep(Duration::from_millis(60)).await;
 
-        // purge them all
         map.purge_expired().await;
 
-        // there should be no scheduled expiries left
         assert_eq!(map.len_expired().await, 0);
     }
 }
