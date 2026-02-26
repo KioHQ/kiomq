@@ -177,16 +177,14 @@ where
         WorkerCallback::Sync(cb) => {
             let store = queue.store.clone();
 
-            BacktraceCatcher::catch(
-                tokio::task::spawn_blocking(move || cb(store, job)),
-            )
-            .await
-            .and_then(|e| {
-                e.map_err(|err| {
-                    let backtrace = async_backtrace::backtrace();
-                    CaughtError::Error(Box::new(err), backtrace)
+            BacktraceCatcher::catch(tokio::task::spawn_blocking(move || cb(store, job)))
+                .await
+                .and_then(|e| {
+                    e.map_err(|err| {
+                        let backtrace = async_backtrace::backtrace();
+                        CaughtError::Error(Box::new(err), backtrace)
+                    })
                 })
-            })
         }
         WorkerCallback::Async(cb) => {
             let store = queue.store.clone();
@@ -532,8 +530,10 @@ where
                             worker_id,
                             active_job_count.clone(),
                         );
-                        jobs_in_progress.insert(id, (job, token, TaskHandle::default(), monitor.clone()));
-                        let task = processing.spawn(monitor.instrument(async_backtrace::frame!(process_fn.boxed())));
+                        jobs_in_progress
+                            .insert(id, (job, token, TaskHandle::default(), monitor.clone()));
+                        let task = processing
+                            .spawn(monitor.instrument(async_backtrace::frame!(process_fn.boxed())));
                         if let Some(mut re) = jobs_in_progress.get(&id) {
                             let (_, _, stored_handle, _) = re.value();
 
