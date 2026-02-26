@@ -477,7 +477,7 @@ mod worker {
         };
 
         let worker_opts = WorkerOpts {
-            metrics_update_interval: 50, // collect metrics every 50ms
+            metrics_update_interval: 50,
             ..Default::default()
         };
         let worker = Worker::new_async(&queue, processor, Some(worker_opts))?;
@@ -516,7 +516,6 @@ mod worker {
             "Task metrics never showed poll_count >= 2 within the timeout"
         );
 
-        // Wait for job to complete before cleaning up
         while !queue.current_metrics.all_jobs_completed() {
             tokio::task::yield_now().await;
         }
