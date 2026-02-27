@@ -248,7 +248,7 @@ async fn main() -> KioResult<()> {
 ### Queue configuration (QueueOpts)
 
 ```rust
-use kio_mq::{
+use kiomq::{
     BackOffJobOptions, BackOffOptions, KeepJobs, QueueEventMode, QueueOpts,
     RemoveOnCompletionOrFailure,
 };
@@ -279,7 +279,7 @@ let queue_opts = QueueOpts {
 ### Per-job configuration (JobOptions)
 
 ```rust
-use kio_mq::JobOptions;
+use kiomq::JobOptions;
 
 let mut job_opts = JobOptions {
     // delay: 500.into(), // delay by ms (or cron-based delay)
@@ -293,7 +293,7 @@ job_opts.attempts = 5;
 ### Worker configuration (WorkerOpts)
 
 ```rust
-use kio_mq::WorkerOpts;
+use kiomq::WorkerOpts;
 
 let worker_opts = WorkerOpts {
     concurrency: 100,
@@ -320,7 +320,7 @@ KioMQ can emit events using:
 ## Events & observability
 
 ```rust
-use kio_mq::{EventParameters, JobState};
+use kiomq::{EventParameters, JobState};
 
 queue.on(JobState::Completed, |_evt| async move {
     // handle completed
@@ -342,7 +342,7 @@ See:
 
 ```rust
 use std::sync::Arc;
-use kio_mq::{Job, KioError, Store};
+use kiomq::{Job, KioError, Store};
 
 async fn processor<S: Store<MyData, MyReturn, MyProgress>>(
     store: Arc<S>,
@@ -377,11 +377,11 @@ docker run --rm -p 6379:6379 redis:latest
 ```
 
 ```rust
-use kio_mq::{Config, KioResult, Queue, RedisStore};
+use kiomq::{Config, KioResult, Queue, RedisStore};
 
 #[tokio::main]
 async fn main() -> KioResult<()> {
-    // `Config` can be imported from `kio_mq` or from `deadpool_redis`
+    // `Config` can be imported from `kiomq` or from `deadpool_redis`
     // (if you already use it in your app).
     let config = Config::default();
 
