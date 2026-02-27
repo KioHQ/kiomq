@@ -1,10 +1,10 @@
 #[cfg(all(feature = "redis-store", not(feature = "default")))]
-use kio_mq::{fetch_redis_pass, Config, RedisStore};
-use kio_mq::{
+use kiomq::{fetch_redis_pass, Config, RedisStore};
+use kiomq::{
     framed, EventParameters, InMemoryStore, Job, KioResult, Queue, Store, Worker, WorkerOpts,
 };
 #[cfg(feature = "rocksdb-store")]
-use kio_mq::{temporary_rocks_db, RocksDbStore};
+use kiomq::{temporary_rocks_db, RocksDbStore};
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},

@@ -1354,7 +1354,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "kio-mq"
+name = "kiomq"
 version = "0.1.0"
 dependencies = [
  "arc-swap",

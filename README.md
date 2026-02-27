@@ -141,7 +141,7 @@ kio-mq = "0.1"
 
 ```rust
 use std::sync::Arc;
-use kio_mq::{InMemoryStore, Job, KioError, KioResult, Queue, Worker, WorkerOpts};
+use kiomq::{InMemoryStore, Job, KioError, KioResult, Queue, Worker, WorkerOpts};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> KioResult<()> {
@@ -174,7 +174,7 @@ This section summarizes the main knobs you’ll use in production.
 Configure defaults that apply across jobs enqueued into a queue.
 
 ```rust
-use kio_mq::{
+use kiomq::{
     BackOffJobOptions, BackOffOptions, KeepJobs, QueueEventMode, QueueOpts,
     RemoveOnCompletionOrFailure,
 };
@@ -215,7 +215,7 @@ let queue_opts = QueueOpts {
 Override queue defaults per job (e.g. delay, priority, attempts, repeat).
 
 ```rust
-use kio_mq::JobOptions;
+use kiomq::JobOptions;
 
 let opts = JobOptions {
     // delay: 500.into(), // delay by ms
@@ -232,7 +232,7 @@ let opts = JobOptions {
 Worker options control concurrency, lock timing, stalled detection, and metrics intervals.
 
 ```rust
-use kio_mq::WorkerOpts;
+use kiomq::WorkerOpts;
 
 let worker_opts = WorkerOpts {
     /// Number of tasks processed concurrently by this worker
@@ -265,7 +265,7 @@ Pick `PubSub` when you want low-latency “live” events, and `Stream` when you
 ## Events & observability
 
 ```rust
-use kio_mq::{EventParameters, JobState};
+use kiomq::{EventParameters, JobState};
 
 queue.on(JobState::Completed, |_evt| async move {
     // handle completed
@@ -282,7 +282,7 @@ queue.on_all_events(|evt: EventParameters<_, _>| async move {
 
 ```rust
 use std::sync::Arc;
-use kio_mq::{Job, KioError, Store};
+use kiomq::{Job, KioError, Store};
 
 async fn processor<S: Store<MyData, MyReturn, MyProgress>>(
     store: Arc<S>,
@@ -330,7 +330,7 @@ docker run --rm -p 6379:6379 redis:latest
 ```
 
 ```rust
-use kio_mq::{Config, KioResult, Queue, RedisStore};
+use kiomq::{Config, KioResult, Queue, RedisStore};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> KioResult<()> {

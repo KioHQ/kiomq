@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use tokio::runtime::Runtime;
 
-use kio_mq::{InMemoryStore, Job, JobState, KioError, Queue, Worker, WorkerOpts};
+use kiomq::{InMemoryStore, Job, JobState, KioError, Queue, Worker, WorkerOpts};
 
 fn bench_bulk_add(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();

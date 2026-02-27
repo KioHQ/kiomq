@@ -10,15 +10,15 @@ macro_rules! info {
     ($($arg:tt)*) => { println!($($arg)*) };
 }
 
-use kio_mq::{
+use kiomq::{
     framed, BackOffJobOptions, EventParameters, InMemoryStore, Job, JobOptions, KioResult, Queue,
     QueueEventMode, QueueOpts, RemoveOnCompletionOrFailure, Store, Worker, WorkerOpts,
 };
 
 #[cfg(all(feature = "redis-store", not(feature = "default")))]
-use kio_mq::{fetch_redis_pass, Config, RedisStore};
+use kiomq::{fetch_redis_pass, Config, RedisStore};
 #[cfg(feature = "rocksdb-store")]
-use kio_mq::{temporary_rocks_db, RocksDbStore};
+use kiomq::{temporary_rocks_db, RocksDbStore};
 use uuid::Uuid;
 #[tokio::main]
 #[framed]
@@ -27,11 +27,11 @@ async fn main() -> KioResult<()> {
     setup_tracing();
     #[cfg(not(feature = "tracing"))]
     console_subscriber::init();
-    let remove_opts = RemoveOnCompletionOrFailure::Opts(kio_mq::KeepJobs {
+    let remove_opts = RemoveOnCompletionOrFailure::Opts(kiomq::KeepJobs {
         age: Some(60 * 60),
         count: None,
     });
-    let backoff_opts = BackOffJobOptions::Opts(kio_mq::BackOffOptions {
+    let backoff_opts = BackOffJobOptions::Opts(kiomq::BackOffOptions {
         type_: Some("exponential".to_owned()),
         delay: Some(200),
     });
