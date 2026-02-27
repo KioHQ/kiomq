@@ -1,5 +1,7 @@
 <p align="center">
-  <img src="assets/logo-dark.png" alt="KioMQ logo" width="220" />
+  <!-- Cropped (bottom-right) logo variant.
+       Replace `assets/logo-dark.png` with your actual path if different. -->
+  <img src="assets/logo-dark.png" alt="KioMQ logo" width="320" />
 </p>
 
 <p align="center">
@@ -15,77 +17,15 @@
 
 - A **Queue** to enqueue tasks/jobs
 - One or more **Workers** to process jobs concurrently
-- Pluggable **Stores** (Redis default; optional RocksDB; in-memory for ephemeral workloads)
+- Pluggable **Stores**:
+  - **Redis** (default) for durable, distributed workloads
+  - **In-memory** for **ephemeral** workloads (tests, dev, short-lived tasks)
+  - **RocksDB** _(under construction)_ for embedded persistence
 - **Scheduling** (delays, cron, repeat)
 - **Reliability** (attempts, retries, backoff, stalled job recovery)
 - **Observability** (events, progress updates, metrics)
 
 Inspired by BullMQ’s ergonomics, implemented as an embeddable Rust library for Tokio apps.
-
----
-
-## Built for scale
-
-KioMQ is designed to scale both **vertically** and **horizontally**:
-
-### Vertical scale (single machine)
-
-- Run **multiple worker instances** in the same process or across multiple processes on one machine
-- Each worker supports **configurable concurrency** (defaults to CPU count)
-- Best performance when using Tokio’s **multi-thread runtime** (`rt-multi-thread`)
-
-### Horizontal scale (multiple machines)
-
-With the **Redis store** you can:
-
-- Run workers on **multiple machines** (or containers) against the same queue
-- Add/remove workers without changing producer code
-- Use Redis-backed persistence + coordination for distributed processing
-
----
-
-## Table of contents
-
-- [Tokio runtime requirements](#tokio-runtime-requirements)
-- [Key features](#key-features)
-- [Installation](#installation)
-- [Quickstart](#quickstart)
-- [Configuration](#configuration)
-  - [Queue configuration (`QueueOpts`)](#queue-configuration-queueopts)
-  - [Per-job configuration (`JobOptions`)](#per-job-configuration-joboptions)
-  - [Worker configuration (`WorkerOpts`)](#worker-configuration-workeropts)
-  - [Event delivery (`QueueEventMode`)](#event-delivery-queueeventmode)
-- [Events & observability](#events--observability)
-- [Progress updates](#progress-updates)
-- [Scheduling: delays, cron, repeat](#scheduling-delays-cron-repeat)
-- [Backends](#backends)
-- [Examples](#examples)
-- [Benchmarks](#benchmarks)
-- [Testing](#testing)
-- [License](#license)
-
----
-
-## Tokio runtime requirements
-
-KioMQ is built on **Tokio** and is intended to be used with the **multi-thread runtime**.
-
-### Recommended
-
-Use `#[tokio::main(flavor = "multi_thread")]`:
-
-```rust
-#[tokio::main(flavor = "multi_thread")]
-async fn main() {
-    // create queue, spawn worker(s), etc...
-}
-```
-
-If you configure Tokio in your app, ensure you have:
-
-```toml
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-```
 
 ---
 
@@ -115,10 +55,89 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 - Progress updates from inside processors
 - Queue metrics (counts per state, last id, etc.)
 
-### Control plane
+### Efficient idle workers (event-driven)
 
-- Pause/resume processing
-- Cleanup policies for completed/failed jobs (keep by age/count)
+When queue **events** are enabled, workers can become effectively **idle** (near-zero CPU usage) while the queue has no work.
+
+This is achieved by coordinating wakeups with a combination of:
+
+- lock-free **atomics** to track state
+- Tokio synchronization primitives such as
+  [`tokio::sync::Notify`](https://docs.rs/tokio/latest/tokio/sync/struct.Notify.html)
+
+The result is an event-driven “sleep until work arrives” behavior, rather than tight polling loops, which helps reduce CPU burn in low-traffic queues.
+
+#### Suitable for low-powered devices
+
+This event-driven idle behavior makes KioMQ a good fit for low-powered devices and low-traffic services:
+
+- minimal CPU usage between jobs helps reduce power draw / improve battery life
+- less heat and fewer wasted cycles on small CPUs
+
+---
+
+## Built for scale
+
+KioMQ is designed to scale both **vertically** and **horizontally**:
+
+### Vertical scale (single machine)
+
+- Run **multiple workers** on the same machine (same process or multiple processes)
+- Each worker supports **configurable concurrency** (defaults to CPU count)
+- Best performance when using Tokio’s **multi-thread runtime** (`rt-multi-thread`)
+
+### Horizontal scale (multiple machines)
+
+With the **Redis store** you can:
+
+- Run workers across **multiple machines/containers** against the same queue
+- Add/remove workers without changing producer code
+- Use Redis-backed persistence + coordination for distributed processing
+
+---
+
+## Table of contents
+
+- [Tokio runtime requirements](#tokio-runtime-requirements)
+- [Key features](#key-features)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Configuration](#configuration)
+  - [Queue configuration (QueueOpts)](#queue-configuration-queueopts)
+  - [Per-job configuration (JobOptions)](#per-job-configuration-joboptions)
+  - [Worker configuration (WorkerOpts)](#worker-configuration-workeropts)
+  - [Event delivery (QueueEventMode)](#event-delivery-queueeventmode)
+- [Events & observability](#events--observability)
+- [Progress updates](#progress-updates)
+- [Scheduling](#scheduling)
+- [Backends](#backends)
+- [Benchmarks](#benchmarks)
+- [Testing](#testing)
+- [License](#license)
+
+---
+
+## Tokio runtime requirements
+
+KioMQ is built on **Tokio**.
+
+- For best throughput and “scale up” behavior, **Tokio’s multi-thread runtime is recommended** (`rt-multi-thread`).
+- You don’t need to specify the runtime flavor in most application code—`#[tokio::main]` is fine.
+
+If you configure Tokio in your app, ensure you have:
+
+```toml
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+```
+
+### Tests (explicit multi-thread runtime)
+
+```rust
+#[tokio::test(flavor = "multi_thread")]
+async fn my_test() {
+    // ...
+}
+```
 
 ---
 
@@ -132,18 +151,29 @@ kio-mq = "0.1"
 ### Cargo features
 
 - `redis-store` (default): Redis backend (recommended for distributed workers)
-- `rocksdb-store`: RocksDB backend
+- `rocksdb-store`: RocksDB backend _(under construction)_
 - `tracing`: tracing instrumentation
 
 ---
 
-## Quickstart
+## Usage
+
+Start with the repo examples:
+
+- [`examples/basic.rs`](examples/basic.rs) — queue + worker + options + events + bulk enqueue
+- [`examples/video_transcoding.rs`](examples/video_transcoding.rs) — real workload + progress reporting
+
+KioMQ supports both **async** and **sync** worker processors.
+
+### Async worker
+
+Async processors run directly on the Tokio runtime and are best for I/O-bound work.
 
 ```rust
 use std::sync::Arc;
 use kiomq::{InMemoryStore, Job, KioError, KioResult, Queue, Worker, WorkerOpts};
 
-#[tokio::main(flavor = "multi_thread")]
+#[tokio::main]
 async fn main() -> KioResult<()> {
     // InMemoryStore is ideal for ephemeral workloads (tests, dev, short-lived tasks)
     let store: InMemoryStore<u64, u64, ()> = InMemoryStore::new(None, "demo");
@@ -159,6 +189,54 @@ async fn main() -> KioResult<()> {
     let jobs = (0..100u64).map(|i| (format!("job-{i}"), None, i));
     queue.bulk_add_only(jobs).await?;
 
+    // Wait until all jobs are done, then shutdown the worker.
+    while !updating_metrics.all_jobs_completed() && worker.is_running() {}
+    worker.close();
+
+    Ok(())
+}
+```
+
+### Sync worker
+
+Sync processors are designed for CPU-bound or blocking workloads.
+
+Under the hood, a sync worker runs your processor on a dedicated blocking thread via
+[`tokio::task::spawn_blocking`](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html),
+so it won’t block Tokio’s async executor threads.
+
+This is suitable for:
+
+- heavy computation (hashing, image processing, compression, ML inference, etc.)
+- blocking libraries that aren’t async-friendly
+
+Future direction:
+
+- a Rayon integration is a natural fit here (e.g. using a Rayon thread pool for CPU work),
+  and may be added as an optional execution backend.
+
+```rust
+use std::sync::Arc;
+use kiomq::{InMemoryStore, Job, KioError, KioResult, Queue, Worker, WorkerOpts};
+
+#[tokio::main]
+async fn main() -> KioResult<()> {
+    let store: InMemoryStore<u64, u64, ()> = InMemoryStore::new(None, "demo");
+    let queue = Queue::new(store, None).await?;
+
+    let processor = |_store: Arc<_>, job: Job<u64, u64, ()>| {
+        Ok::<u64, KioError>(job.data.unwrap_or_default() * 2)
+    };
+
+    let worker = Worker::new_sync(&queue, processor, Some(WorkerOpts::default()))?;
+    worker.run()?;
+
+    let jobs = (0..100u64).map(|i| (format!("job-{i}"), None, i));
+    queue.bulk_add_only(jobs).await?;
+
+    while !updating_metrics.all_jobs_completed() && worker.is_running() {}
+    worker.close();
+
     Ok(())
 }
 ```
@@ -167,105 +245,82 @@ async fn main() -> KioResult<()> {
 
 ## Configuration
 
-This section summarizes the main knobs you’ll use in production.
-
-### Queue configuration (`QueueOpts`)
-
-Configure defaults that apply across jobs enqueued into a queue.
+### Queue configuration (QueueOpts)
 
 ```rust
-use kiomq::{
+use kio_mq::{
     BackOffJobOptions, BackOffOptions, KeepJobs, QueueEventMode, QueueOpts,
     RemoveOnCompletionOrFailure,
 };
 
-let cleanup = RemoveOnCompletionOrFailure::Opts(KeepJobs {
+let remove_opts = RemoveOnCompletionOrFailure::Opts(KeepJobs {
     age: Some(60 * 60), // keep for 1 hour
     count: None,
 });
 
-let backoff = BackOffJobOptions::Opts(BackOffOptions {
+let backoff_opts = BackOffJobOptions::Opts(BackOffOptions {
     type_: Some("exponential".to_owned()),
     delay: Some(200),
 });
 
 let queue_opts = QueueOpts {
-    /// Default max attempts if job doesn't override it
-    attempts: 3,
+    attempts: 2,
+    default_backoff: Some(backoff_opts.clone()),
+    remove_on_fail: Some(remove_opts),
+    remove_on_complete: Some(remove_opts),
 
-    /// Default backoff policy used for retries (and optionally repeat policies)
-    default_backoff: Some(backoff),
-
-    /// Cleanup policies for terminal states
-    remove_on_complete: Some(cleanup),
-    remove_on_fail: Some(cleanup),
-
-    /// Event delivery mode: Stream (default) or PubSub
+    // Stream (default) or PubSub
     event_mode: Some(QueueEventMode::PubSub),
 
-    /// Optional queue-level repeat policy
-    repeat: None,
-
     ..Default::default()
 };
 ```
 
-### Per-job configuration (`JobOptions`)
-
-Override queue defaults per job (e.g. delay, priority, attempts, repeat).
+### Per-job configuration (JobOptions)
 
 ```rust
-use kiomq::JobOptions;
+use kio_mq::JobOptions;
 
-let opts = JobOptions {
-    // delay: 500.into(), // delay by ms
+let mut job_opts = JobOptions {
+    // delay: 500.into(), // delay by ms (or cron-based delay)
     // priority: 10,
-    // attempts: 5,
     ..Default::default()
 };
+
+job_opts.attempts = 5;
 ```
 
-> Note: `delay` can be based on milliseconds or cron schedules (see `JobDelay` and `Repeat`).
-
-### Worker configuration (`WorkerOpts`)
-
-Worker options control concurrency, lock timing, stalled detection, and metrics intervals.
+### Worker configuration (WorkerOpts)
 
 ```rust
-use kiomq::WorkerOpts;
+use kio_mq::WorkerOpts;
 
 let worker_opts = WorkerOpts {
-    /// Number of tasks processed concurrently by this worker
     concurrency: 100,
 
-    /// Stall checks and locking behavior (tune for your workload)
     // stalled_interval: 30_000,
     // lock_duration: 30_000,
     // lock_renew_time: 15_000,
     // max_stalled_count: 1,
 
-    /// How often worker metrics are produced
     // metrics_update_interval: 100,
-
     ..Default::default()
 };
 ```
 
-### Event delivery (`QueueEventMode`)
+### Event delivery (QueueEventMode)
 
-KioMQ can emit queue events through:
+KioMQ can emit events using:
 
-- `QueueEventMode::Stream` (default): Redis Streams-based eventing
-- `QueueEventMode::PubSub`: Redis PubSub-based eventing
-
-Pick `PubSub` when you want low-latency “live” events, and `Stream` when you want stream semantics and replay-friendly behavior.
+- `QueueEventMode::Stream` (default)
+- `QueueEventMode::PubSub`
 
 ---
 
 ## Events & observability
 
 ```rust
-use kiomq::{EventParameters, JobState};
+use kio_mq::{EventParameters, JobState};
 
 queue.on(JobState::Completed, |_evt| async move {
     // handle completed
@@ -276,13 +331,18 @@ queue.on_all_events(|evt: EventParameters<_, _>| async move {
 });
 ```
 
+See:
+
+- [`JobState` (event type)](src/job_state.rs)
+- [`EventParameters`](src/events/event_parameters.rs)
+
 ---
 
 ## Progress updates
 
 ```rust
 use std::sync::Arc;
-use kiomq::{Job, KioError, Store};
+use kio_mq::{Job, KioError, Store};
 
 async fn processor<S: Store<MyData, MyReturn, MyProgress>>(
     store: Arc<S>,
@@ -295,18 +355,12 @@ async fn processor<S: Store<MyData, MyReturn, MyProgress>>(
 
 ---
 
-## Scheduling: delays, cron, repeat
-
-KioMQ supports:
-
-- Delay by milliseconds
-- Delay by cron expressions
-- Repeat policies
+## Scheduling
 
 See:
 
-- `JobDelay`
-- `Repeat`
+- [`JobDelay`](src/job/delay.rs)
+- [`Repeat`](src/job/repeat.rs)
 
 ---
 
@@ -314,14 +368,7 @@ See:
 
 ### In-memory — best for ephemeral tasks
 
-Use `InMemoryStore` when you want:
-
-- fast local execution
-- tests and CI
-- dev-mode background work
-- ephemeral queues where persistence across restarts is not required
-
-If you need durability or distributed workers, use **Redis** (default) instead.
+Use `InMemoryStore` when you want fast local execution and don’t need persistence across restarts.
 
 ### Redis (default) — scale out across machines
 
@@ -330,35 +377,29 @@ docker run --rm -p 6379:6379 redis:latest
 ```
 
 ```rust
-use kiomq::{Config, KioResult, Queue, RedisStore};
+use kio_mq::{Config, KioResult, Queue, RedisStore};
 
-#[tokio::main(flavor = "multi_thread")]
+#[tokio::main]
 async fn main() -> KioResult<()> {
+    // `Config` can be imported from `kio_mq` or from `deadpool_redis`
+    // (if you already use it in your app).
     let config = Config::default();
+
     let store = RedisStore::new(None, "my-queue", &config).await?;
     let queue = Queue::new(store, None).await?;
     Ok(())
 }
 ```
 
-### RocksDB
+### RocksDB _(under construction)_
 
-Embedded persistence. Enable with `rocksdb-store`.
-
----
-
-## Examples
-
-- `examples/basic.rs`
-- `examples/video_transcoding.rs`
-
-```bash
-cargo run --example basic
-```
+The RocksDB store is a work-in-progress and may change.
 
 ---
 
 ## Benchmarks
+
+Criterion benchmarks live in [`benches/`](benches/):
 
 ```bash
 cargo bench
@@ -376,4 +417,4 @@ cargo test
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
+MIT — see [`LICENSE`](LICENSE)IT — see [`LICENSE`](LICENSE)IT — see [LICENSE](LICENSE)
