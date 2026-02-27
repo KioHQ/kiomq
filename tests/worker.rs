@@ -1,10 +1,10 @@
 #[cfg(test)]
 mod worker {
     use crossbeam_queue::ArrayQueue;
-    use kio_mq::{
+    use kiomq::{
         fetch_redis_pass, EventParameters, JobOptions, KioError, QueueEventMode, RedisStore,
     };
-    use kio_mq::{Config, KioResult, Queue, QueueOpts, Worker};
+    use kiomq::{Config, KioResult, Queue, QueueOpts, Worker};
     use std::collections::VecDeque;
     use std::sync::{Arc, LazyLock};
     use uuid::Uuid;
@@ -28,8 +28,8 @@ mod worker {
         let completed: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new((count + 2) as usize));
         let jobs = completed.clone();
         queue.on(
-            kio_mq::JobState::Completed,
-            move |state: kio_mq::EventParameters<i32, i32>| {
+            kiomq::JobState::Completed,
+            move |state: kiomq::EventParameters<i32, i32>| {
                 let completed = jobs.clone();
                 async move {
                     if let EventParameters::Completed {
@@ -46,7 +46,7 @@ mod worker {
             },
         );
         let job_iterator = (0..count).map(|i| (i.to_string(), None, i));
-        let processor = move |_conn, job: kio_mq::Job<i32, i32, i32>| async move {
+        let processor = move |_conn, job: kiomq::Job<i32, i32, i32>| async move {
             Ok::<i32, KioError>(job.data.unwrap())
         };
         let worker = Worker::new_async(&queue, processor, None)?;
@@ -71,13 +71,13 @@ mod worker {
     }
     #[tokio::test]
     async fn errors_with_multiple_run_calls() -> KioResult<()> {
-        use kio_mq::WorkerError;
+        use kiomq::WorkerError;
         let config = &CONFIG;
         let queue_opts = QueueOpts::default();
         let name = Uuid::new_v4().to_string();
         let store = RedisStore::new(None, &name, config).await?;
         let queue = Queue::<i32, i32, i32, _>::new(store, Some(queue_opts)).await?;
-        let processor = move |_conn, job: kio_mq::Job<i32, i32, i32>| async move {
+        let processor = move |_conn, job: kiomq::Job<i32, i32, i32>| async move {
             Ok::<i32, KioError>(job.data.unwrap())
         };
         let worker = Worker::new_async(&queue, processor, None)?;
@@ -114,8 +114,8 @@ mod worker {
         let completed: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(count as usize));
         let jobs = completed.clone();
         queue.on(
-            kio_mq::JobState::Active,
-            move |state: kio_mq::EventParameters<i32, i32>| {
+            kiomq::JobState::Active,
+            move |state: kiomq::EventParameters<i32, i32>| {
                 let completed = jobs.clone();
                 async move {
                     if let EventParameters::Active {
@@ -128,7 +128,7 @@ mod worker {
                 }
             },
         );
-        let processor = move |_conn, job: kio_mq::Job<i32, i32, i32>| async move {
+        let processor = move |_conn, job: kiomq::Job<i32, i32, i32>| async move {
             Ok::<i32, KioError>(job.data.unwrap())
         };
         let worker = Worker::new_async(&queue, processor, None)?;
@@ -173,8 +173,8 @@ mod worker {
         let completed: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(count as usize));
         let jobs = completed.clone();
         queue.on(
-            kio_mq::JobState::Completed,
-            move |state: kio_mq::EventParameters<i32, i32>| {
+            kiomq::JobState::Completed,
+            move |state: kiomq::EventParameters<i32, i32>| {
                 let completed = jobs.clone();
                 async move {
                     if let EventParameters::Completed {
@@ -191,7 +191,7 @@ mod worker {
             },
         );
         let job_iterator = (0..count).map(|i| (i.to_string(), None, i));
-        let processor = move |_conn, job: kio_mq::Job<i32, i32, i32>| async move {
+        let processor = move |_conn, job: kiomq::Job<i32, i32, i32>| async move {
             Ok::<i32, KioError>(job.data.unwrap())
         };
         let worker = Worker::new_async(&queue, processor, None)?;
@@ -238,8 +238,8 @@ mod worker {
         let moved_to_active: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(count as usize));
         let jobs = moved_to_active.clone();
         queue.on(
-            kio_mq::JobState::Active,
-            move |state: kio_mq::EventParameters<i32, i32>| {
+            kiomq::JobState::Active,
+            move |state: kiomq::EventParameters<i32, i32>| {
                 let completed = jobs.clone();
                 async move {
                     if let EventParameters::Active {
@@ -252,7 +252,7 @@ mod worker {
                 }
             },
         );
-        let processor = move |_conn, job: kio_mq::Job<i32, i32, i32>| async move {
+        let processor = move |_conn, job: kiomq::Job<i32, i32, i32>| async move {
             Ok::<i32, KioError>(job.data.unwrap())
         };
         let worker = Worker::new_async(&queue, processor, None)?;
@@ -282,7 +282,7 @@ mod worker {
     }
     #[tokio::test(flavor = "multi_thread")]
     async fn runs_jobs_and_respects_clean_up() -> KioResult<()> {
-        use kio_mq::{CollectionSuffix, RemoveOnCompletionOrFailure};
+        use kiomq::{CollectionSuffix, RemoveOnCompletionOrFailure};
         let removal_opts = RemoveOnCompletionOrFailure::Bool(true);
         let config = &CONFIG;
         let queue_opts = QueueOpts {
@@ -298,7 +298,7 @@ mod worker {
         let queue = Queue::<i32, i32, i32, _>::new(store.clone(), Some(queue_opts)).await?;
         let completed: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(count as usize));
         let jobs = completed.clone();
-        queue.on_all_events(move |state: kio_mq::EventParameters<i32, i32>| {
+        queue.on_all_events(move |state: kiomq::EventParameters<i32, i32>| {
             let completed = jobs.clone();
             async move {
                 if let EventParameters::Completed {
@@ -322,7 +322,7 @@ mod worker {
             }
         });
         let job_iterator = (0..count).map(|i| (i.to_string(), None, i));
-        let processor = move |_conn, job: kio_mq::Job<i32, i32, i32>| async move {
+        let processor = move |_conn, job: kiomq::Job<i32, i32, i32>| async move {
             // fail the 3 third job
             if job.id.unwrap_or_default() == 3 {
                 panic!("failed here")
@@ -364,8 +364,8 @@ mod worker {
         let failed: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(2));
         let failed_clone = failed.clone();
         queue.on(
-            kio_mq::JobState::Failed,
-            move |state: kio_mq::EventParameters<i32, i32>| {
+            kiomq::JobState::Failed,
+            move |state: kiomq::EventParameters<i32, i32>| {
                 let failed = failed_clone.clone();
                 async move {
                     if let EventParameters::Failed {
@@ -383,7 +383,7 @@ mod worker {
 
         let job_iterator = (0..count).map(|i| (i.to_string(), None, i));
         queue.bulk_add_only(job_iterator).await?;
-        let processor = move |_conn, job: kio_mq::Job<i32, i32, i32>| {
+        let processor = move |_conn, job: kiomq::Job<i32, i32, i32>| {
             if job.id.unwrap_or_default() == 1 {
                 return Err(std::io::Error::other("failed here").into());
             }
@@ -416,8 +416,8 @@ mod worker {
         let failed: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(2));
         let failed_clone = failed.clone();
         queue.on(
-            kio_mq::JobState::Failed,
-            move |state: kio_mq::EventParameters<i32, i32>| {
+            kiomq::JobState::Failed,
+            move |state: kiomq::EventParameters<i32, i32>| {
                 let failed = failed_clone.clone();
                 async move {
                     if let EventParameters::Failed {
@@ -435,7 +435,7 @@ mod worker {
 
         let job_iterator = (0..count).map(|i| (i.to_string(), None, i));
         queue.bulk_add_only(job_iterator).await?;
-        let processor = move |_conn, job: kio_mq::Job<i32, i32, i32>| async move {
+        let processor = move |_conn, job: kiomq::Job<i32, i32, i32>| async move {
             if job.id.unwrap_or_default() == 1 {
                 return Err(std::io::Error::other("failed here").into());
             }
@@ -460,7 +460,7 @@ mod worker {
     }
     #[tokio::test(flavor = "multi_thread")]
     async fn task_metrics_update_over_time() -> KioResult<()> {
-        use kio_mq::{InMemoryStore, WorkerOpts};
+        use kiomq::{InMemoryStore, WorkerOpts};
         use std::time::Duration;
 
         let name = Uuid::new_v4().to_string();
@@ -469,7 +469,7 @@ mod worker {
 
         // Processor with multiple yields so completed idle cycles accumulate while
         // the job is still running (allowing metrics collection to capture them).
-        let processor = move |_conn, _job: kio_mq::Job<i32, i32, i32>| async move {
+        let processor = move |_conn, _job: kiomq::Job<i32, i32, i32>| async move {
             for _ in 0..5 {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }

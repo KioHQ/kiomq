@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod queue {
-    use kio_mq::{fetch_redis_pass, JobOptions, JobState, RedisStore};
-    use kio_mq::{Config, KioResult, Queue, QueueOpts};
+    use kiomq::{fetch_redis_pass, JobOptions, JobState, RedisStore};
+    use kiomq::{Config, KioResult, Queue, QueueOpts};
     use std::sync::LazyLock;
     use uuid::Uuid;
     static CONFIG: LazyLock<Config> = LazyLock::new(|| {
@@ -137,7 +137,7 @@ mod queue {
         let name = Uuid::new_v4().to_string();
         let store = RedisStore::new(None, &name, config).await?;
         let queue_opts = QueueOpts {
-            event_mode: Some(kio_mq::QueueEventMode::PubSub),
+            event_mode: Some(kiomq::QueueEventMode::PubSub),
             ..Default::default()
         };
         let queue = Queue::<i32, i32, i32, _>::new(store, Some(queue_opts)).await?;
