@@ -417,4 +417,5 @@ cargo test
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE)IT — see [`LICENSE`](LICENSE)IT — see [LICENSE](LICENSE)
+MIT — see [`LICENSE`](LICENSE)
+
