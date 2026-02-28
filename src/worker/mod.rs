@@ -9,8 +9,8 @@ use crate::{
 };
 
 use crate::utils::{get_next_job, main_loop};
-use atomic_refcell::AtomicRefCell;
 use chrono::Utc;
+use crossbeam::atomic::AtomicCell;
 use derive_more::Debug;
 use futures::future::{BoxFuture, Future, FutureExt, Shared, TryFutureExt};
 use serde::{de::DeserializeOwned, Serialize};
@@ -28,6 +28,7 @@ pub use metrics::*;
 
 use crate::error::WorkerError;
 use crate::events::{EventEmitter, EventParameters};
+use arc_swap::ArcSwapOption;
 use crossbeam_skiplist::SkipMap;
 use tokio::{
     sync::Notify,
@@ -38,7 +39,7 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 type JobMeta<D, R, P> = (Job<D, R, P>, JobToken, TaskHandle, TaskMonitor);
 pub(crate) type JobMap<D, R, P> = Arc<SkipMap<u64, JobMeta<D, R, P>>>;
 type Task = JoinHandle<KioResult<()>>;
-pub(crate) type TaskHandle = AtomicRefCell<Option<Task>>;
+pub(crate) type TaskHandle = ArcSwapOption<Task>;
 pub(crate) type SharedTaskHandle = Arc<TaskHandle>;
 use tokio::task::Id;
 pub(crate) type ProcessingQueue = TaskTracker;
@@ -260,7 +261,7 @@ impl<
         #[cfg(not(feature = "tracing"))]
         let main = main_loop(params);
         let main_task = tokio::spawn(main.boxed());
-        self.main_task.borrow_mut().replace(main_task);
+        self.main_task.swap(Some(main_task.into()));
         Ok(())
     }
     pub fn closed(&self) -> bool {
@@ -293,7 +294,7 @@ impl<
         self.cancellation_token.cancel();
         // TODO: work on gracefully shutdown later; currently we just cancel the token but
         // don't check whether the main_task has closed too. Handle this later
-        let mut main_task = self.main_task.borrow_mut();
+        let mut main_task = self.main_task.load_full();
         if let (Some(handle)) = main_task.take() {
             // wait for handle to finishd
             let running_tasks = self.processing.len();

@@ -224,7 +224,7 @@ impl<
                             let id = entry.key();
                             let (_, _, task_handle, monitor) = entry.value();
                             let task_id: u64 = task_handle
-                                .borrow()
+                                .load()
                                 .as_ref()
                                 .and_then(|t_handle| t_handle.id().to_string().parse().ok())
                                 .unwrap_or(*id);
