@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod worker {
-    use crossbeam_queue::ArrayQueue;
+    use crossbeam::queue::ArrayQueue;
     use kiomq::{
         fetch_redis_pass, EventParameters, JobOptions, KioError, QueueEventMode, RedisStore,
     };
@@ -95,7 +95,7 @@ mod worker {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn runs_delayed_jobs() -> KioResult<()> {
-        use crossbeam_queue::ArrayQueue;
+        use crossbeam::queue::ArrayQueue;
         let config = &CONFIG;
         let queue_opts = QueueOpts {
             ..Default::default()
@@ -221,7 +221,7 @@ mod worker {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn runs_prioritized_jobs_correctly() -> KioResult<()> {
-        use crossbeam_queue::ArrayQueue;
+        use crossbeam::queue::ArrayQueue;
         let config = &CONFIG;
         let queue_opts = QueueOpts::default();
         let name = Uuid::new_v4().to_string();

@@ -10,7 +10,7 @@ use crate::{
     JobToken, KioError, QueueEventMode, QueueOpts, Trace, WorkerOpts,
 };
 use chrono::{Month, Utc};
-use crossbeam_queue::{ArrayQueue, SegQueue};
+use crossbeam::queue::{ArrayQueue, SegQueue};
 use futures::future::OkInto;
 use futures::{FutureExt, StreamExt};
 #[cfg(feature = "redis-store")]

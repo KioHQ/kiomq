@@ -7,7 +7,7 @@ use crate::utils::{
 use crate::worker::MIN_DELAY_MS_LIMIT;
 use crate::{Counter, Dt, FailedDetails, QueueError};
 use chrono::Utc;
-use crossbeam_queue::SegQueue;
+use crossbeam::queue::SegQueue;
 use crossbeam_skiplist::{SkipMap, SkipSet};
 use derive_more::Debug;
 use serde::{de::DeserializeOwned, Serialize};

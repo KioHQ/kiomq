@@ -6,7 +6,7 @@ use crate::utils::{
     calculate_next_priority_score, process_queue_events, promote_jobs, resume_helper,
     serialize_into_pairs, update_job_opts, JobQueue, ReadStreamArgs,
 };
-use crossbeam_queue::SegQueue;
+use crossbeam::queue::SegQueue;
 use futures::future::Future;
 use futures::stream::{FuturesOrdered, FuturesUnordered};
 use futures::{FutureExt, StreamExt};

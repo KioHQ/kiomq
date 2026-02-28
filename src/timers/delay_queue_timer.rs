@@ -1,7 +1,7 @@
 use crate::worker::{TaskInfo, TaskStats, WorkerMetrics, MIN_DELAY_MS_LIMIT};
 use crate::KioResult;
-use crossbeam_queue::{ArrayQueue, SegQueue};
-use crossbeam_utils::atomic::AtomicCell;
+use crossbeam::atomic::AtomicCell;
+use crossbeam::queue::{ArrayQueue, SegQueue};
 use derive_more::Debug;
 use serde::{de::DeserializeOwned, Serialize};
 use std::time::Duration;

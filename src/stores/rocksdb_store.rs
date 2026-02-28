@@ -11,7 +11,7 @@ use crate::{
     QueueEventMode,
 };
 use chrono::Utc;
-use crossbeam_queue::SegQueue;
+use crossbeam::queue::SegQueue;
 use crossbeam_skiplist::map::Entry;
 use crossbeam_skiplist::SkipMap;
 use derive_more::Debug;

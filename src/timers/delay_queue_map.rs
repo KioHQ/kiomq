@@ -1,9 +1,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use atomic_refcell::AtomicRefCell;
-use crossbeam_queue::SegQueue;
+use crossbeam::atomic::AtomicCell;
+use crossbeam::queue::SegQueue;
 use crossbeam_skiplist::SkipMap;
-use crossbeam_utils::atomic::AtomicCell;
 use parking_lot::Mutex;
 use tokio::runtime::Handle;
 use tokio::time::Duration;
