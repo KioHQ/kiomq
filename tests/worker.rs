@@ -388,6 +388,7 @@ mod worker {
                 return Err(std::io::Error::other("failed here").into());
             }
             panic!("panicked here");
+            #[allow(unreachable_code)]
             Ok::<i32, KioError>(job.data.unwrap())
         };
         let worker = Worker::new_sync(&queue, processor, None)?;
@@ -440,6 +441,7 @@ mod worker {
                 return Err(std::io::Error::other("failed here").into());
             }
             panic!("panicked here");
+            #[allow(unreachable_code)]
             Ok::<i32, KioError>(job.data.unwrap())
         };
         let worker = Worker::new_async(&queue, processor, None)?;
