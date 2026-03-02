@@ -3,7 +3,7 @@ name: benchmark pull requests
 jobs:
   runBenchmark:
     name: run benchmark
-    runs-on: buildjet-4vcpu-ubuntu-2204
+    runs-on: blacksmith-4vcpu-ubuntu-2204
     permissions:
       pull-requests: write
       contents: read
