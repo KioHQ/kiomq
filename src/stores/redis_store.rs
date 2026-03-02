@@ -11,6 +11,7 @@ use futures::future::FutureExt;
 use futures::stream::Collect;
 use futures::StreamExt;
 use redis::aio::{PubSubSink, PubSubStream};
+use redis::pipe;
 use redis::streams::{StreamReadOptions, StreamReadReply};
 use redis::{streams::StreamPendingReply, AsyncCommands, Commands, LposOptions, Pipeline};
 use serde::de::DeserializeOwned;
@@ -100,16 +101,24 @@ where
     fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
         let mut conn = self.get_blocking_connection()?;
         let prefix = CollectionSuffix::Prefix.to_collection_name(&self.prefix, &self.name);
-        let key = format!("{prefix}worker_metrics*");
-        let results = conn.scan_match::<_, Vec<u8>>(key)?;
-        let metrics = results
+        let key = format!("{prefix}worker_metrics:*");
+        let mut pipe = redis::pipe();
+        let results = conn.scan_match::<_, redis::Value>(key)?;
+        results.into_iter().for_each(|mut value| match value {
+            redis::Value::BulkString(items) => {
+                pipe.get(&items);
+            }
+            redis::Value::SimpleString(str) => {
+                pipe.get(str.as_bytes());
+            }
+            _ => {}
+        });
+
+        let results: Vec<WorkerMetrics> = pipe.query(&mut conn)?;
+        Ok(results
             .into_iter()
-            .flat_map(|mut bytes| {
-                simd_json::from_slice::<WorkerMetrics>(&mut bytes)
-                    .map(|metrics| (metrics.worker_id, metrics))
-            })
-            .collect();
-        Ok(metrics)
+            .map(|metrics| (metrics.worker_id, metrics))
+            .collect())
     }
     async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()> {
         let key = CollectionSuffix::WorkerMetrics(metrics.worker_id)
