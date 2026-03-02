@@ -230,7 +230,7 @@ where
                         .clean_up_job(job_id, job.opts.remove_on_complete)
                         .await?;
                 }
-                let stored_handle = handle.load_full().take();
+                let stored_handle = handle.load_full();
                 if let Some(handle) = stored_handle {
                     let handle_id = task_queue.replace((handle.id(), job_id, move_to_state));
                 }
@@ -287,7 +287,7 @@ where
                     queue.clean_up_job(job_id, job.opts.remove_on_fail).await?;
                 }
 
-                let stored_handle = handle.load_full().take();
+                let stored_handle = handle.load_full();
                 if let Some(handle) = stored_handle {
                     let handle_id = task_queue.replace((handle.id(), job_id, move_to_state));
                 }
