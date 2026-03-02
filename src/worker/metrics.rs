@@ -73,7 +73,7 @@ impl FromRedisValue for WorkerMetrics {
         use std::sync::Arc;
         let mut bytes: Arc<[u8]> = redis::from_redis_value(v)?;
         let mut bytes = Arc::make_mut(&mut bytes);
-        let metrics = simd_json::from_slice(&mut bytes).map_err(std::io::Error::other)?;
+        let metrics = simd_json::from_slice(bytes).map_err(std::io::Error::other)?;
         Ok(metrics)
     }
 }
