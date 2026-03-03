@@ -26,7 +26,7 @@ macro_rules! worker_store_suite {
             use crossbeam::queue::ArrayQueue;
             use kiomq::{
                 EventParameters, JobOptions, KioError, KioResult, Queue, QueueEventMode, QueueOpts,
-                Store, Worker, WorkerOpts,
+                Store, Worker, WorkerOpts,CollectionSuffix,
             };
             use std::collections::VecDeque;
             use std::sync::Arc;
@@ -347,12 +347,15 @@ macro_rules! worker_store_suite {
                  tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
                 // Store-generic cleanup assertion
-                let ids: Vec<u64> = jobs.iter().filter_map(|j| j.id).collect();
-                let fetched = store.fetch_jobs(&ids)?;
+                let mut fetched:Vec<bool> =  vec![];
+                 for i in 1..count {
+                 let exists = store.exists_in(CollectionSuffix::Job(i as u64), i as u64).await?;
+                    fetched.push(exists);
+                    }
                 assert!(
-                    fetched.is_empty(),
-                    "Expected no jobs to be fetchable after cleanup, but fetch_jobs returned {} jobs",
-                    fetched.len()
+                    fetched.iter().all(|v|!v),
+                    "Expected no jobs to be fetchable after cleanup, but fetch_jobs returned {:?} jobs",
+                    fetched
                 );
 
                 queue.obliterate().await?;
