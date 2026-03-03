@@ -5,12 +5,48 @@ use std::sync::Arc;
 type BackoffFn = dyn Fn(i64) -> StoredFn + Send + Sync;
 pub type StoredFn = Arc<dyn Fn(i64) -> i64 + Send + Sync>;
 
+/// Detailed backoff configuration.
+///
+/// Pair with [`BackOffJobOptions::Opts`] or [`crate::QueueOpts`]'s `default_backoff` field.
+///
+/// # Built-in strategies
+///
+/// | `type_` | Formula |
+/// |---------|---------|
+/// | `"exponential"` | `2^attempt * delay_ms` |
+/// | `"fixed"` | `delay_ms` (constant) |
+///
+/// Custom strategies can be registered on a queue via
+/// [`crate::Queue::register_backoff_strategy`].
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Hash)]
 pub struct BackOffOptions {
+    /// Name of the backoff strategy.  Built-ins: `"exponential"`, `"fixed"`.
     #[serde(rename = "type")]
     pub type_: Option<String>,
+    /// Base delay in milliseconds used by the strategy formula.
     pub delay: Option<i64>,
 }
+/// Specifies the backoff policy for job retries.
+///
+/// | Variant | Meaning |
+/// |---------|---------|
+/// | `Number(n)` | Use the `"fixed"` strategy with a delay of `n` ms. |
+/// | `Opts(opts)` | Use a fully configured [`BackOffOptions`]. |
+///
+/// # Examples
+///
+/// ```rust
+/// use kiomq::{BackOffJobOptions, BackOffOptions};
+///
+/// // Simple fixed delay of 1 second
+/// let simple = BackOffJobOptions::Number(1_000);
+///
+/// // Exponential backoff starting at 200 ms
+/// let exp = BackOffJobOptions::Opts(BackOffOptions {
+///     type_: Some("exponential".to_owned()),
+///     delay: Some(200),
+/// });
+/// ```
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Hash)]
 #[serde(untagged)]
 pub enum BackOffJobOptions {

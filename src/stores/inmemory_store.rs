@@ -19,6 +19,29 @@ use crate::JobError;
 use std::sync::atomic::Ordering;
 type TimedJobMap<D, R, P> = TimedMap<u64, Job<D, R, P>>;
 type ListQueue = SkipMap<i64, u64>;
+/// An in-memory [`Store`] implementation.
+///
+/// `InMemoryStore` holds all queue data in heap-allocated concurrent data
+/// structures.  No external services are required, making it the ideal
+/// backend for:
+///
+/// - **Tests** – no Redis / Docker needed; doc-tests run with `cargo test`.
+/// - **Development** – fast iteration without a running message broker.
+/// - **Short-lived / ephemeral tasks** – data is not persisted across restarts.
+///
+/// # Examples
+///
+/// ```rust
+/// # #[tokio::main]
+/// # async fn main() -> kiomq::KioResult<()> {
+/// use kiomq::{InMemoryStore, Queue};
+///
+/// let store: InMemoryStore<String, String, ()> =
+///     InMemoryStore::new(Some("myapp"), "email-queue");
+/// let queue = Queue::new(store, None).await?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone, Debug)]
 pub struct InMemoryStore<D, R, P> {
     pub name: String,
@@ -48,6 +71,20 @@ pub struct InMemoryStore<D, R, P> {
     event_mode: QueueEventMode,
 }
 impl<D: Clone, R: Clone, P: Clone> InMemoryStore<D, R, P> {
+    /// Creates a new `InMemoryStore`.
+    ///
+    /// # Arguments
+    ///
+    /// * `prefix` – key namespace prefix (defaults to `"kio"` when `None`).
+    /// * `name` – queue name; combined with the prefix to form collection keys.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use kiomq::InMemoryStore;
+    ///
+    /// let store: InMemoryStore<u64, u64, ()> = InMemoryStore::new(None, "my-queue");
+    /// ```
     pub fn new(prefix: Option<&str>, name: &str) -> Self {
         let prefix = prefix.unwrap_or("kio").to_lowercase();
         let name = name.to_lowercase();

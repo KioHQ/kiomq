@@ -47,6 +47,33 @@ use redis::{
     self, pipe, AsyncCommands, FromRedisValue, JsonAsyncCommands, LposOptions, Pipeline,
     RedisResult, ToRedisArgs, Value,
 };
+/// A task queue that holds and manages jobs.
+///
+/// `Queue` is the central hub of KioMQ.  It stores jobs, drives state
+/// transitions (waiting → active → completed / failed), emits events, and
+/// coordinates with [`crate::Worker`]s.
+///
+/// # Type parameters
+///
+/// | Parameter | Description |
+/// |-----------|-------------|
+/// | `D` | Job *input* data type |
+/// | `R` | Job *return* (result) type |
+/// | `P` | Job *progress* type |
+/// | `S` | Backing [`Store`] implementation |
+///
+/// # Examples
+///
+/// ```rust
+/// # #[tokio::main]
+/// # async fn main() -> kiomq::KioResult<()> {
+/// use kiomq::{InMemoryStore, Queue};
+///
+/// let store: InMemoryStore<String, String, ()> = InMemoryStore::new(None, "my-queue");
+/// let queue = Queue::new(store, None).await?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct Queue<D, R, P, S> {
     #[cfg(feature = "tracing")]
@@ -73,6 +100,33 @@ impl<
         P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
     > Queue<D, R, P, S>
 {
+    /// Creates a new `Queue` backed by the given `store`.
+    ///
+    /// Reads existing metrics from the store so that a queue that is re-opened
+    /// after a restart retains the last known state counts.
+    ///
+    /// # Arguments
+    ///
+    /// * `store` – a [`Store`] implementation (e.g. [`crate::InMemoryStore`] or `RedisStore`).
+    /// * `queue_opts` – optional [`QueueOpts`]; uses sensible defaults when `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the store cannot be initialised (e.g. a Redis
+    /// connection failure).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # #[tokio::main]
+    /// # async fn main() -> kiomq::KioResult<()> {
+    /// use kiomq::{InMemoryStore, Queue, QueueOpts};
+    ///
+    /// let store: InMemoryStore<u64, u64, ()> = InMemoryStore::new(None, "demo");
+    /// let queue = Queue::new(store, Some(QueueOpts::default())).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn new(store: S, queue_opts: Option<QueueOpts>) -> KioResult<Self> {
         use typed_emitter::TypedEmitter;
         let opts = queue_opts.unwrap_or_default();
@@ -137,6 +191,15 @@ impl<
         })
     }
 
+    /// Enqueues multiple jobs in a single batch and returns them.
+    ///
+    /// Each item in `iter` is a tuple of `(name, options, data)`.  When
+    /// `options` is `None` the queue's default [`QueueOpts`] are applied.
+    ///
+    /// Returns the created [`Job`] objects, which contain the assigned IDs.
+    ///
+    /// See also [`bulk_add_only`](Self::bulk_add_only) if you don't need the
+    /// returned jobs.
     pub async fn bulk_add<I: Iterator<Item = (String, Option<JobOptions>, D)> + Send + 'static>(
         &self,
         iter: I,
@@ -147,6 +210,25 @@ impl<
             .add_bulk(Box::new(iter), self.opts.clone(), event_mode, is_paused)
             .await
     }
+    /// Enqueues multiple jobs in a single batch, discarding the results.
+    ///
+    /// Identical to [`bulk_add`](Self::bulk_add) but avoids allocating the
+    /// returned `Vec` when you only care about side effects (fire-and-forget).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # #[tokio::main]
+    /// # async fn main() -> kiomq::KioResult<()> {
+    /// use kiomq::{InMemoryStore, Queue};
+    ///
+    /// let store: InMemoryStore<u64, u64, ()> = InMemoryStore::new(None, "bulk-demo");
+    /// let queue = Queue::new(store, None).await?;
+    ///
+    /// queue.bulk_add_only((0..5u64).map(|i| (format!("job-{i}"), None, i))).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn bulk_add_only<
         I: Iterator<Item = (String, Option<JobOptions>, D)> + Send + 'static,
     >(
@@ -160,6 +242,33 @@ impl<
             .await
     }
 
+    /// Enqueues a single job and returns it.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` – a human-readable label for the job (does not need to be unique).
+    /// * `data` – the job payload.
+    /// * `opts` – optional per-job [`JobOptions`]; queue defaults are used when `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the underlying store fails.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # #[tokio::main]
+    /// # async fn main() -> kiomq::KioResult<()> {
+    /// use kiomq::{InMemoryStore, Queue};
+    ///
+    /// let store: InMemoryStore<u64, u64, ()> = InMemoryStore::new(None, "add-job-demo");
+    /// let queue = Queue::new(store, None).await?;
+    ///
+    /// let job = queue.add_job("process", 42u64, None).await?;
+    /// assert!(job.id.is_some());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn add_job(
         &self,
         name: &str,
@@ -178,9 +287,38 @@ impl<
         let job = jobs.pop().expect("failed to insert");
         Ok(job)
     }
+    /// Returns the number of jobs currently being processed by workers.
+    ///
+    /// This is an in-memory counter maintained by the queue itself (not a
+    /// store round-trip).  Use [`get_metrics`](Self::get_metrics) for a full
+    /// snapshot of all state counts.
     pub fn current_jobs(&self) -> u64 {
         self.job_count.load(std::sync::atomic::Ordering::Acquire)
     }
+    /// Retrieves a job by its numeric ID, or `None` if it no longer exists.
+    ///
+    /// Jobs may be absent because they were removed according to
+    /// [`RemoveOnCompletionOrFailure`] retention settings or via
+    /// [`obliterate`](Self::obliterate).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # #[tokio::main]
+    /// # async fn main() -> kiomq::KioResult<()> {
+    /// use kiomq::{InMemoryStore, Queue};
+    ///
+    /// let store: InMemoryStore<u64, u64, ()> = InMemoryStore::new(None, "get-job-demo");
+    /// let queue = Queue::new(store, None).await?;
+    ///
+    /// let job = queue.add_job("fetch-me", 99u64, None).await?;
+    /// let id = job.id.unwrap();
+    ///
+    /// let fetched = queue.get_job(id).await;
+    /// assert!(fetched.is_some());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn get_job(&self, id: u64) -> Option<Job<D, R, P>> {
         self.store.get_job(id).await
     }
@@ -255,6 +393,17 @@ impl<
         self.store.publish_event(event_mode, event).await?;
         Ok(())
     }
+    /// Toggles the paused/resumed state of the queue.
+    ///
+    /// * When **paused**, workers stop picking up new jobs; jobs already being
+    ///   processed continue to completion.
+    /// * When **resumed**, workers start picking up new jobs again.
+    ///
+    /// Emits a [`JobState::Paused`] or [`JobState::Resumed`] event respectively.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the underlying store operation fails.
     /// pauses the queue if not resumed and vice-versa
     pub async fn pause_or_resume(&self) -> Result<(), KioError> {
         // if its paused
@@ -276,6 +425,18 @@ impl<
         Ok(())
     }
 
+    /// Attempts to extend the lock on an active job.
+    ///
+    /// Returns `true` if the lock was successfully extended, or `false` if the
+    /// provided `token` does not match the token currently held on the job.
+    /// A token mismatch usually means the job's lock has already been acquired
+    /// by another worker or has expired.
+    ///
+    /// # Arguments
+    ///
+    /// * `job_id` – the numeric ID of the job whose lock you want to extend.
+    /// * `lock_duration` – the new lock lifetime in **milliseconds**.
+    /// * `token` – the [`JobToken`] originally granted to this worker.
     pub async fn extend_lock(
         &self,
         job_id: u64,
@@ -504,9 +665,30 @@ impl<
             .ok_or(JobError::JobNotFound)?;
         Ok(job)
     }
+    /// Emits an event with the given state and parameters to all registered listeners.
     pub async fn emit(&self, event: JobState, data: EventParameters<R, P>) {
         self.emitter.emit(event, data).await
     }
+    /// Registers a listener for a specific job-state event.
+    ///
+    /// Returns a [`Uuid`] that can be passed to [`remove_event_listener`](Self::remove_event_listener)
+    /// to deregister the callback.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # #[tokio::main]
+    /// # async fn main() -> kiomq::KioResult<()> {
+    /// use kiomq::{InMemoryStore, JobState, Queue};
+    ///
+    /// let store: InMemoryStore<u64, u64, ()> = InMemoryStore::new(None, "events");
+    /// let queue = Queue::new(store, None).await?;
+    ///
+    /// let id = queue.on(JobState::Completed, |evt| async move { let _ = evt; });
+    /// queue.remove_event_listener(id);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn on<F, C>(&self, event: JobState, callback: C) -> Uuid
     where
         C: Fn(EventParameters<R, P>) -> F + Send + Sync + 'static,
@@ -514,6 +696,10 @@ impl<
     {
         self.emitter.on(event, callback)
     }
+    /// Registers a listener that fires for **every** job-state event.
+    ///
+    /// Returns a [`Uuid`] handle that can later be passed to
+    /// [`remove_event_listener`](Self::remove_event_listener).
     pub fn on_all_events<F, C>(&self, callback: C) -> Uuid
     where
         C: Fn(EventParameters<R, P>) -> F + Send + Sync + 'static,
@@ -521,10 +707,23 @@ impl<
     {
         self.emitter.on_all(callback)
     }
+    /// Removes a previously registered event listener.
+    ///
+    /// Returns the listener's [`Uuid`] if it was found and removed, or `None`
+    /// if no listener with that ID exists.
     pub fn remove_event_listener(&self, id: Uuid) -> Option<Uuid> {
         self.emitter.remove_listener(id)
     }
 
+    /// Deletes **all** jobs and collection data for this queue.
+    ///
+    /// This is a destructive, irreversible operation.  All jobs in every state
+    /// are removed from the store.  A [`JobState::Obliterated`] event is
+    /// emitted after the cleanup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the store fails to clear collections.
     pub async fn obliterate(&self) -> KioResult<()> {
         self.delete_all_jobs().await?;
         // delete all other grouped collections;
@@ -609,9 +808,17 @@ impl<
         }
         Ok(())
     }
+    /// Retrieves multiple jobs by their IDs in one batch.
+    ///
+    /// Jobs that no longer exist (e.g. removed by retention policies) are
+    /// silently omitted from the result.
     pub fn fetch_jobs(&self, ids: &[u64]) -> KioResult<VecDeque<Job<D, R, P>>> {
         self.store.fetch_jobs(ids)
     }
+    /// Returns the IDs of jobs currently in the given `state`.
+    ///
+    /// Use `start` and `end` to paginate large result sets; pass `None` for
+    /// both to retrieve all IDs.
     pub fn get_job_ids_in_state(
         &self,
         state: JobState,
@@ -620,9 +827,11 @@ impl<
     ) -> KioResult<VecDeque<u64>> {
         self.store.get_job_ids_in_state(state, start, end)
     }
+    /// Returns the name of this queue (as provided to the store constructor).
     pub fn name(&self) -> &str {
         self.store.queue_name()
     }
+    /// Returns the key prefix used for all collections belonging to this queue.
     pub fn prefix(&self) -> &str {
         self.store.queue_prefix()
     }
@@ -644,6 +853,12 @@ impl<D, R, P> MoveToActiveResult<D, R, P> {
 // ----- UTILITY FUNCTIONS -------------------
 
 impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
+    /// Registers a custom backoff strategy under the given `name`.
+    ///
+    /// The strategy is a factory function that receives the *attempt number* and
+    /// returns a per-attempt delay function `(attempt) -> delay_ms`.
+    ///
+    /// If a strategy with the same name already exists it is **not** replaced.
     pub fn register_backoff_strategy(
         &self,
         name: &str,
@@ -653,6 +868,10 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
             self.backoff.register(name, strategy);
         }
     }
+    /// Calculates the delay in milliseconds before the next retry attempt.
+    ///
+    /// Returns `None` if the backoff options don't produce a valid delay for
+    /// the given attempt count (e.g. the max attempts have been exceeded).
     pub fn calculate_next_delay_ms(
         &self,
         backoff_job_opts: &BackOffJobOptions,
@@ -661,6 +880,11 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
         let backoff_opts = BackOff::normalize(Some(backoff_job_opts))?;
         self.backoff.calculate(Some(backoff_opts), attempts, None)
     }
+    /// Schedules a job for retry according to the given options.
+    ///
+    /// Accepts either a [`BackOffJobOptions`] (for failed-job backoff) or a
+    /// [`Repeat`] (for repeat-scheduling).  The job is moved to the delayed or
+    /// wait state as appropriate.
     pub async fn retry_job<'a, T: Into<RetryOptions<'a>>>(
         &self,
         job_id: u64,
@@ -723,12 +947,24 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
 
         Ok(())
     }
+    /// Returns `true` if the queue is currently paused.
+    ///
+    /// This reads the in-memory [`QueueMetrics::is_paused`] flag; it does **not**
+    /// perform a store round-trip.  Call [`get_metrics`](Self::get_metrics) first
+    /// if you need a fresh value from the store.
     pub fn is_paused(&self) -> bool {
         self.current_metrics.queue_is_paused()
     }
+    /// Signals all workers attached to this queue to stop picking up new jobs.
+    ///
+    /// This sets an atomic flag that workers poll; jobs already being processed
+    /// continue to completion.
     pub fn pause_active_workers(&self) {
         self.pause_workers.store(true, Ordering::Release);
     }
+    /// Allows workers to resume picking up new jobs after a pause.
+    ///
+    /// Wakes any workers that are sleeping on the notifier.
     pub fn resume_workers(&self) {
         resume_helper(
             &self.current_metrics,
@@ -736,14 +972,36 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
             &self.worker_notifier,
         );
     }
+    /// Fetches fresh metrics from the store and updates the in-memory snapshot.
+    ///
+    /// The returned [`QueueMetrics`] reflects the latest counts from the backing
+    /// store.  The queue's `current_metrics` field is also updated in place so
+    /// that subsequent reads of [`Queue::current_metrics`] are up-to-date.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the store cannot retrieve the metrics.
+    ///
+    /// # Note
+    ///
+    /// For a cheap in-memory read (no store round-trip), read `queue.current_metrics`
+    /// directly.  Keep in mind it may be slightly stale between `get_metrics` calls.
     pub async fn get_metrics(&self) -> KioResult<QueueMetrics> {
         let updated = self.store.get_metrics().await?;
         self.current_metrics.update(&updated);
         Ok(updated)
     }
+    /// Retrieves per-worker metrics stored in the backing store.
+    ///
+    /// Returns a map from worker [`Uuid`] to [`WorkerMetrics`].
     pub fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
         self.store.fetch_worker_metrics()
     }
+    /// Persists the given worker metrics to the backing store with a TTL.
+    ///
+    /// Workers call this periodically (controlled by
+    /// [`WorkerOpts::metrics_update_interval`]) so that operators can monitor
+    /// per-worker task health.
     pub async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()> {
         self.store.store_worker_metrics(metrics, ttl_ms).await
     }

@@ -193,6 +193,16 @@ impl ToRedisArgs for CollectionSuffix {
         out.write_arg_fmt(self.to_string().to_lowercase());
     }
 }
+/// How events are delivered to listeners.
+///
+/// KioMQ supports two delivery mechanisms:
+///
+/// | Variant | Description |
+/// |---------|-------------|
+/// | [`Stream`](QueueEventMode::Stream) *(default)* | Events are written to a persistent append-only stream.  New listeners can replay past events. |
+/// | [`PubSub`](QueueEventMode::PubSub) | Events are broadcast in real-time.  Listeners that connect after an event is fired miss it. |
+///
+/// Set this via [`QueueOpts::event_mode`].
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, Atom, Eq, PartialEq)]
 #[repr(u8)]
 pub enum QueueEventMode {
@@ -248,13 +258,42 @@ impl<'a> From<&'a Repeat> for RetryOptions<'a> {
         Self::WithRepeat(value)
     }
 }
+/// Queue-level configuration.
+///
+/// Pass this to [`crate::Queue::new`] to customise the queue's behaviour.
+///
+/// # Examples
+///
+/// ```rust
+/// use kiomq::{BackOffJobOptions, BackOffOptions, KeepJobs, QueueEventMode, QueueOpts,
+///             RemoveOnCompletionOrFailure};
+///
+/// let opts = QueueOpts {
+///     attempts: 3,
+///     default_backoff: Some(BackOffJobOptions::Opts(BackOffOptions {
+///         type_: Some("exponential".to_owned()),
+///         delay: Some(500),
+///     })),
+///     remove_on_complete: Some(RemoveOnCompletionOrFailure::Bool(true)),
+///     event_mode: Some(QueueEventMode::Stream),
+///     ..Default::default()
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct QueueOpts {
+    /// Policy for removing jobs after they fail.  `None` keeps them forever.
     pub remove_on_fail: Option<RemoveOnCompletionOrFailure>,
+    /// Policy for removing jobs after they complete.  `None` keeps them forever.
     pub remove_on_complete: Option<RemoveOnCompletionOrFailure>,
+    /// Default number of attempts for jobs that don't specify their own.
+    /// Defaults to `1`.
     pub attempts: u64,
+    /// Default backoff strategy applied to all jobs in this queue unless
+    /// overridden at the job level.
     pub default_backoff: Option<BackOffJobOptions>,
+    /// Controls how events are delivered (stream vs pub/sub).
     pub event_mode: Option<QueueEventMode>,
+    /// Default repeat policy applied to all jobs unless overridden.
     pub repeat: Option<Repeat>,
 }
 impl Default for QueueOpts {
@@ -274,6 +313,16 @@ pub(crate) type Counter = Arc<AtomicU64>;
 fn create_counter(count: u64) -> Counter {
     Counter::new(count.into())
 }
+/// A live snapshot of queue state counts.
+///
+/// Counters are stored as `Arc<AtomicU64>` so they can be cheaply shared and
+/// updated across threads.  The values are refreshed from the backing store
+/// whenever [`crate::Queue::get_metrics`] is called; between calls the counts may be
+/// slightly stale.
+///
+/// Use helper methods such as [`all_jobs_completed`](QueueMetrics::all_jobs_completed)
+/// and [`is_idle`](QueueMetrics::is_idle) rather than inspecting individual
+/// fields for common checks.
 #[derive(Debug, Clone, Default)]
 pub struct QueueMetrics {
     pub last_id: Counter,
@@ -290,6 +339,14 @@ pub struct QueueMetrics {
     pub event_mode: Arc<Atomic<QueueEventMode>>,
 }
 impl QueueMetrics {
+    /// Returns `true` when every enqueued job has completed.
+    ///
+    /// Specifically this is `true` when:
+    /// - `last_id > 0` (at least one job was ever enqueued),
+    /// - `completed == last_id` (all jobs have finished),
+    /// - `active == 0`, and
+    /// - the queue is otherwise idle (no waiting, delayed, stalled, or
+    ///   prioritized jobs and no in-flight workers).
     pub fn all_jobs_completed(&self) -> bool {
         let last_id = self.last_id.load(Ordering::Acquire);
         last_id > 0
@@ -351,24 +408,33 @@ impl QueueMetrics {
         self.event_mode
             .swap(other.event_mode.load(Ordering::Acquire), Ordering::AcqRel);
     }
+    /// Returns `true` if there are delayed jobs ready or waiting to run.
     pub fn has_delayed(&self) -> bool {
         self.delayed.load(Ordering::Acquire) > 0
     }
+    /// Returns `true` if there are jobs waiting to be picked up by a worker.
     pub fn queue_has_work(&self) -> bool {
         (self.waiting.load(Ordering::Acquire) > 0
             || self.delayed.load(Ordering::Acquire) > 0
             || self.stalled.load(Ordering::Acquire) > 0
             || self.prioritized.load(Ordering::Acquire) > 0)
     }
+    /// Returns `true` if the queue is currently in the paused state.
     pub fn queue_is_paused(&self) -> bool {
         self.is_paused.load(Ordering::Acquire)
     }
+    /// Returns `true` when no workers are currently processing a job.
     pub fn workers_idle(&self) -> bool {
         self.processing.load(Ordering::Acquire) == 0
     }
+    /// Returns `true` if at least one job is in the active state.
     pub fn has_active_jobs(&self) -> bool {
         self.active.load(Ordering::Acquire) > 0
     }
+    /// Returns `true` when the queue is in a fully quiescent state:
+    /// no work waiting, no active jobs, and no workers are processing.
+    ///
+    /// Also requires that `last_id > 0` (i.e. at least one job was ever enqueued).
     pub fn is_idle(&self) -> bool {
         !self.queue_has_work()
             && !self.has_active_jobs()

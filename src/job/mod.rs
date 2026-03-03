@@ -26,6 +26,9 @@ pub use backoff::{BackOff, BackOffJobOptions, BackOffOptions, StoredFn};
 pub use repeat::Repeat;
 use std::time::Duration;
 // Job Metrics
+/// Timing and attempt statistics for a completed job.
+///
+/// Obtain this by calling [`Job::get_metrics`].
 #[derive(Debug, Clone, Copy, Hash, Serialize, Deserialize, Display, Default)]
 #[display("job {id}-#{attempt} , ran for {ran_for:?}, delayed for {delayed_for:?}")]
 pub struct JobMetrics {
@@ -38,6 +41,26 @@ pub struct JobMetrics {
 
 /// alias for DateTime<Utc>
 pub(crate) type Dt = DateTime<Utc>;
+/// The lifecycle state of a job within the queue.
+///
+/// Jobs typically flow through: `Wait` → `Active` → `Completed` or `Failed`.
+/// Other transitions exist for priority queuing, delays, pausing, and stall
+/// detection.
+///
+/// | Variant | Description |
+/// |---------|-------------|
+/// | `Wait` | Ready to be picked up by a worker (default). |
+/// | `Prioritized` | In the priority sorted-set, waiting for a slot. |
+/// | `Stalled` | Worker that held the lock disappeared; pending recovery. |
+/// | `Active` | Currently being processed by a worker. |
+/// | `Paused` | Queue is paused; job is waiting in the paused list. |
+/// | `Resumed` | Queue has resumed; job transitions back to wait. |
+/// | `Completed` | Processor returned successfully. |
+/// | `Failed` | Processor returned an error (or stalled too many times). |
+/// | `Delayed` | Scheduled to run at a future timestamp. |
+/// | `Progress` | A progress update event (not a persistent state). |
+/// | `Obliterated` | Queue was obliterated; job was deleted. |
+/// | `Processing` | Worker has started executing the processor function. |
 #[derive(
     Debug,
     Serialize,
@@ -78,12 +101,35 @@ impl ToRedisArgs for JobState {
         out.write_arg_fmt(self.to_string().to_lowercase());
     }
 }
+/// Per-job configuration options.
+///
+/// Supply this to [`Queue::add_job`] or [`Queue::bulk_add`] to customise
+/// individual job behaviour.  Fields left at `Default` inherit the queue's
+/// [`crate::QueueOpts`] values.
+///
+/// # Examples
+///
+/// ```rust
+/// use kiomq::JobOptions;
+///
+/// let opts = JobOptions {
+///     attempts: 5,
+///     priority: 10,
+///     ..Default::default()
+/// };
+/// ```
 #[derive(Debug, Serialize, Deserialize, Default, Hash, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct JobOptions {
+    /// Scheduling priority (lower values run first). `0` means no priority.
     pub priority: u64,
+    /// When to run the job: immediately (`TimeMilis(0)`), after N milliseconds,
+    /// or according to a cron expression.
     pub delay: JobDelay,
+    /// Optional explicit job ID.  When `None` the store assigns one.
     pub id: Option<u64>,
+    /// Maximum number of attempts before the job is permanently marked as
+    /// failed.
     pub attempts: u64,
     /// total number of attempts to try the job until it completes.
     pub remove_on_complete: Option<RemoveOnCompletionOrFailure>,
@@ -92,6 +138,14 @@ pub struct JobOptions {
     pub repeat: Option<Repeat>,
 }
 
+/// Determines whether—and how many—jobs are retained after they finish.
+///
+/// | Variant | Behaviour |
+/// |---------|-----------|
+/// | `Bool(true)` | Remove the job immediately. |
+/// | `Bool(false)` | Keep the job forever (default). |
+/// | `Int(n)` | Keep at most `n` jobs; older ones are removed when the count is exceeded. |
+/// | `Opts(KeepJobs { age, count })` | Apply age **and/or** count retention. |
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, Hash, PartialEq)]
 #[serde(untagged)]
 pub enum RemoveOnCompletionOrFailure {
@@ -104,10 +158,15 @@ impl Default for RemoveOnCompletionOrFailure {
         Self::Bool(false)
     }
 }
+/// Fine-grained retention policy for completed/failed jobs.
+///
+/// Both fields are optional; omit one to use only the other constraint.
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, Hash, PartialEq)]
 pub struct KeepJobs {
-    pub age: Option<i64>,   // Maximum age in seconds for jobs to kept;
-    pub count: Option<i64>, // Maximum Number of jobs to keep
+    /// Maximum age in **seconds** for a job record to be kept.
+    pub age: Option<i64>,
+    /// Maximum number of job records to keep.
+    pub count: Option<i64>,
 }
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Hash, PartialEq)]
 pub struct Trace {
@@ -122,6 +181,23 @@ pub struct FailedDetails {
 }
 use chrono::serde::{ts_microseconds, ts_microseconds_option};
 use derive_more::Debug;
+/// A unit of work managed by a [`Queue`].
+///
+/// Jobs are created by [`Queue::add_job`] / [`Queue::bulk_add`] and passed to
+/// your processor function by the [`crate::Worker`].
+///
+/// # Type parameters
+///
+/// | Parameter | Description |
+/// |-----------|-------------|
+/// | `D` | Input data type |
+/// | `R` | Return / result type |
+/// | `P` | Progress update type |
+///
+/// # Note on data access
+///
+/// `data`, `returned_value`, and `progress` are skipped in `Debug` output
+/// to avoid accidentally logging sensitive payloads.
 #[derive(Debug, Serialize, Deserialize, Default, Hash, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Job<D, R, P> {
@@ -210,9 +286,14 @@ impl ToRedisArgs for JobToken {
 }
 // skip comparing the data,progress and return_value field;
 impl<D, R, P> Job<D, R, P> {
+    /// Boxes this job on the heap, returning `Box<Job<D, R, P>>`.
     pub fn boxed(self) -> Box<Self> {
         Box::new(self)
     }
+    /// Constructs a new `Job` with default options and no assigned ID.
+    ///
+    /// Prefer using [`Queue::add_job`](crate::Queue::add_job) to create jobs
+    /// in normal usage; this constructor is primarily for testing and internal use.
     pub fn new(name: &str, data: Option<D>, id: Option<u64>, queue_name: Option<&str>) -> Self {
         let ts = Utc::now();
 
@@ -238,6 +319,12 @@ impl<D, R, P> Job<D, R, P> {
             priority: 0,
         }
     }
+    /// Returns timing and attempt statistics for this job, if it has been
+    /// processed.
+    ///
+    /// The returned [`JobMetrics`] captures when the job ran, for how long,
+    /// and the number of attempts made.  Returns `None` if the job has not
+    /// been processed yet (i.e. `processed_on` and `finished_on` are not set).
     pub fn get_metrics(&self) -> Option<JobMetrics> {
         let delay = self.opts.delay.as_diff_ms(self.ts) as u64;
         let processed_on = self.processed_on.unwrap_or_default();
@@ -255,11 +342,22 @@ impl<D, R, P> Job<D, R, P> {
         })
     }
 
+    /// Applies the given [`JobOptions`] to this job, updating priority, delay,
+    /// and other scheduling fields.
     pub fn add_opts(&mut self, opts: JobOptions) {
         self.priority = opts.priority;
         self.delay = opts.delay.as_diff_ms(self.ts) as u64;
         self.opts = opts.clone();
     }
+    /// Updates the job's progress value and persists it to the store.
+    ///
+    /// Call this from inside your processor function to report incremental
+    /// progress.  Listeners subscribed to [`JobState::Progress`] events will
+    /// receive the update.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`](crate::KioError) if the store update fails.
     pub fn update_progress<C>(&mut self, value: P, store: &C) -> Result<(), KioError>
     where
         P: Serialize + Clone,
