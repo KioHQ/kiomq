@@ -2,6 +2,7 @@
 mod error;
 mod events;
 mod job;
+pub mod macros;
 mod queue;
 mod stores;
 mod timers;
