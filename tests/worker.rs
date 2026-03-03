@@ -1,14 +1,16 @@
+#![allow(unused)]
 use kiomq::macros::worker_store_suite;
 use uuid::Uuid;
 
-worker_store_suite!(inmemory_store, async {
+#[cfg(any(feature = "default", not(feature = "redis-store")))]
+worker_store_suite!(worker_inmemory_store, async {
     use kiomq::InMemoryStore;
     let name = Uuid::new_v4().to_string();
     Ok::<_, kiomq::KioError>(InMemoryStore::<i32, i32, i32>::new(None, &name))
 });
 
 #[cfg(all(feature = "redis-store", not(feature = "default")))]
-mod redis {
+mod worker_redis {
     use super::*;
     use kiomq::{fetch_redis_pass, Config, RedisStore};
     use std::sync::LazyLock;

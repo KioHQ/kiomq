@@ -1,5 +1,8 @@
+#![allow(unused)]
 use kiomq::macros::queue_store_suite;
+use uuid::Uuid;
 
+#[cfg(any(feature = "default", not(feature = "redis-store")))]
 queue_store_suite!(queue_inmemory_store, async {
     use kiomq::InMemoryStore;
     let name = Uuid::new_v4().to_string();
