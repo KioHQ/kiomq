@@ -120,8 +120,12 @@ async fn main() -> kiomq::KioResult<()> {
 
 ### Panics & errors in the processor
 
-Return `Err` to fail a job; the worker retries it (up to `attempts`) with the configured
-backoff. Panics are also caught and treated as failures.
+A processor signals a job failure by **returning `Err`**. The worker catches the error,
+marks the job as failed, and — depending on the `attempts` configuration — retries it
+with the configured backoff.
+
+Panics inside a processor are also caught by the worker and treated as failures, so a
+rogue job cannot bring down the whole process.
 
 #### Async backtrace with `#[framed]`
 
@@ -220,6 +224,26 @@ let _listener_id2 = queue.on_all_events(|evt: EventParameters<u64, ()>| async mo
 
 // Remove a listener when no longer needed.
 queue.remove_event_listener(_listener_id);
+```
+
+---
+
+### Progress updates
+
+Report progress from inside your processor using `job.update_progress`:
+
+```rust
+use std::sync::Arc;
+use kiomq::{Job, KioError, Store};
+
+async fn processor<S: Store<u64, u64, u8>>(
+    store: Arc<S>,
+    mut job: Job<u64, u64, u8>,
+) -> Result<u64, KioError> {
+    // update_progress persists to the store and emits a progress event.
+    job.update_progress(50u8, store.as_ref())?; // 50% done
+    Ok(job.data.unwrap_or_default() * 2)
+}
 ```
 
 ---
