@@ -32,8 +32,8 @@ jobs:
         with:
           command: check
 
-  test:
-    name: Test Suite
+  test_redis:
+    name: Test Suite(Redis Store)
     # env:
     #   REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
     runs-on: blacksmith-4vcpu-ubuntu-2204
@@ -81,10 +81,10 @@ jobs:
       - name: Install cargo nextest
         if: steps.cache-nextest.outputs.cache-hit != 'true'
         uses: taiki-e/install-action@nextest
-      - name: Run tests
+      - name: Run tests with RedisStore
         #env:
         #REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
-        run: cargo nextest run  --locked --config-file ./.config/nextest.toml
+        run: cargo nextest run  --locked --config-file ./.config/nextest.toml --no-default-features --features redis-store
   fmt:
     name: Rustfmt
     env:
@@ -127,3 +127,37 @@ jobs:
         with:
           command: clippy
           args: -- -D warnings
+  test_inmemory_store:
+    name: Test Suite(InMemoryStore)
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    steps:
+      - uses: actions/checkout@v1
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      - name: Cache Cargo
+        uses: buildjet/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Cache cargo-nextest
+        id: cache-nextest
+        uses: buildjet/cache@v3
+        with:
+          id: cache-nextest
+          path: ~/.cargo/bin/cargo-nextest
+          key: nextest-${{ runner.os }}-v0
+
+      - name: Install cargo nextest
+        if: steps.cache-nextest.outputs.cache-hit != 'true'
+        uses: taiki-e/install-action@nextest
+      - name: Run tests
+        #env:
+        #REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+        run: cargo nextest run  --locked --config-file ./.config/nextest.toml
