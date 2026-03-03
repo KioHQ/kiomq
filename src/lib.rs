@@ -43,6 +43,32 @@
 //!
 //! ---
 //!
+//! ### Tokio runtime requirements
+//!
+//! KioMQ is built on **Tokio**.
+//!
+//! - For best throughput and "scale up" behavior, **Tokio's multi-thread runtime is
+//!   recommended** (`rt-multi-thread`).
+//! - You don't need to specify the runtime flavor in most application code—`#[tokio::main]`
+//!   is fine.
+//!
+//! If you configure Tokio in your app, ensure you have:
+//!
+//! ```toml
+//! tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+//! ```
+//!
+//! #### Tests (explicit multi-thread runtime)
+//!
+//! ```rust
+//! #[tokio::test(flavor = "multi_thread")]
+//! async fn my_test() {
+//!     // ...
+//! }
+//! ```
+//!
+//! ---
+//!
 //! ### Installation
 //!
 //! ```toml
@@ -211,14 +237,6 @@
 //!
 //! ---
 //!
-//! ### Tokio runtime
-//!
-//! KioMQ is built on Tokio.  The **multi-thread** runtime is recommended for best
-//! throughput:
-//!
-//! ```toml
-//! tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-//! ```
 #![allow(dead_code, unused)]
 mod error;
 mod events;
