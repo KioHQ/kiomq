@@ -1,5 +1,7 @@
 //! <div align="center">
 //!
+//! <img src="https://raw.githubusercontent.com/KioHQ/kiomq/HEAD/assets/logo-dark.png" alt="KioMQ logo" width="320" />
+//!
 //! ## KioMQ
 //!
 //! **A task-queue and orchestration library for Rust**
