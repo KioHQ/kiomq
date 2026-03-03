@@ -8,6 +8,27 @@ use super::{BackOff, BackOffJobOptions};
 use std::{str::FromStr, sync::Arc};
 
 use croner::{errors::CronError, Cron};
+/// Repeat / scheduling policy for a job.
+///
+/// When a [`Repeat`] is set on a job via [`crate::JobOptions`]'s `repeat` field,
+/// the queue automatically re-enqueues the job after each successful run according to
+/// the policy.
+///
+/// | Variant | Behaviour |
+/// |---------|-----------|
+/// | `WithCron` | Re-run at the next cron-schedule occurrence. |
+/// | `WithBackOff` | Re-run after a backoff-derived delay. |
+/// | `Every { delay_ms, max_attempts }` | Re-run every `delay_ms` ms, up to `max_attempts` times (unlimited if `None`). |
+/// | `Immediately(max_attempts)` | Re-run as quickly as possible until `max_attempts` is reached. |
+///
+/// # Examples
+///
+/// ```rust
+/// use kiomq::Repeat;
+///
+/// // Repeat every 10 seconds, at most 5 times.
+/// let policy = Repeat::Every { delay_ms: 10_000, max_attempts: Some(5) };
+/// ```
 #[derive(Debug, Serialize, Deserialize, Clone, Hash, PartialEq)]
 /// Repeats options for job: either Run immediately, using backoff options or a cron schedule
 pub enum Repeat {

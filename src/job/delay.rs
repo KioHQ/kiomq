@@ -5,6 +5,22 @@ use croner::{errors::CronError, Cron};
 use serde::{Deserialize, Serialize};
 
 use crate::Dt;
+/// Controls when a job becomes eligible to run.
+///
+/// | Variant | Behaviour |
+/// |---------|-----------|
+/// | `TimeMilis(0)` *(default)* | Run immediately. |
+/// | `TimeMilis(n)` | Delay by `n` milliseconds. |
+/// | `FromCron(expr)` | Delay until the next occurrence of the cron schedule. |
+///
+/// # Examples
+///
+/// ```rust
+/// use kiomq::JobOptions;
+///
+/// // Delay by 5 seconds
+/// let opts = JobOptions { delay: 5_000i64.into(), ..Default::default() };
+/// ```
 #[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 #[derive(derive_more::Display)]

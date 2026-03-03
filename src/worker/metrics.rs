@@ -8,6 +8,13 @@ use tokio_metrics::TaskMetrics;
 use uuid::Uuid;
 
 use std::{collections::VecDeque, time::Instant};
+/// Aggregated metrics for a single worker instance.
+///
+/// Persisted to the store periodically (see
+/// [`WorkerOpts::metrics_update_interval`](crate::WorkerOpts::metrics_update_interval))
+/// so that operators can monitor per-worker health across the fleet.
+///
+/// Retrieve via [`Queue::fetch_worker_metrics`](crate::Queue::fetch_worker_metrics).
 #[derive(Deserialize, Serialize, Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub struct WorkerMetrics {
     pub worker_id: Uuid,

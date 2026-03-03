@@ -46,18 +46,68 @@ pub(crate) type ProcessingQueue = TaskTracker;
 use atomig::{Atom, Atomic};
 use derive_more::IsVariant;
 pub use worker_opts::WorkerOpts;
+/// The current lifecycle state of a [`Worker`].
 #[derive(Atom, IsVariant, Default, Debug)]
 #[repr(u8)]
 pub enum WorkerState {
+    /// The worker is actively polling and processing jobs.
     Active,
+    /// The worker is running but has no jobs to process (idle / sleeping).
     #[default]
     Idle,
+    /// The worker has been shut down via [`Worker::close`].
     Closed,
 }
 #[cfg(feature = "tracing")]
 use tracing::{debug, instrument, trace, warn, Instrument, Span};
 
 pub(crate) use worker_opts::MIN_DELAY_MS_LIMIT;
+/// A job processor that consumes jobs from a [`Queue`].
+///
+/// Each `Worker` runs an internal async loop that fetches jobs from the queue
+/// and invokes your processor function.  Multiple workers can be attached to
+/// the same queue to increase throughput.
+///
+/// # Type parameters
+///
+/// | Parameter | Description |
+/// |-----------|-------------|
+/// | `D` | Job input data type |
+/// | `R` | Job return / result type |
+/// | `P` | Job progress type |
+/// | `S` | Backing [`Store`] implementation |
+///
+/// # Lifecycle
+///
+/// 1. Create with [`Worker::new_async`] or [`Worker::new_sync`].
+/// 2. Call [`run`](Worker::run) to start the processing loop.
+/// 3. Call [`close`](Worker::close) to stop the worker (idempotent—calling
+///    `close` on an already-closed worker is a no-op).
+///
+/// # Examples
+///
+/// ```rust
+/// # #[tokio::main]
+/// # async fn main() -> kiomq::KioResult<()> {
+/// use std::sync::Arc;
+/// use kiomq::{InMemoryStore, Job, KioError, Queue, Worker, WorkerOpts};
+///
+/// let store: InMemoryStore<u64, u64, ()> = InMemoryStore::new(None, "worker-demo");
+/// let queue = Queue::new(store, None).await?;
+///
+/// let worker = Worker::new_async(
+///     &queue,
+///     |_store: Arc<_>, job: Job<u64, u64, ()>| async move {
+///         Ok::<u64, KioError>(job.data.unwrap_or_default() * 2)
+///     },
+///     Some(WorkerOpts::default()),
+/// )?;
+///
+/// worker.run()?;
+/// worker.close();
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone, Debug)]
 pub struct Worker<D, R, P, S> {
     pub id: Uuid,
@@ -90,6 +140,39 @@ impl<
         S: Clone + Store<D, R, P> + Send + 'static + Sync,
     > Worker<D, R, P, S>
 {
+    /// Creates a worker with a **sync** (blocking) processor function.
+    ///
+    /// The processor runs on a dedicated OS thread via
+    /// [`tokio::task::spawn_blocking`](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html),
+    /// so heavy CPU-bound or blocking work will not starve Tokio's async executor threads.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the worker cannot be initialised (e.g. if
+    /// `WorkerOpts::autorun` is `true` and the initial [`run`](Worker::run) call
+    /// fails).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # #[tokio::main]
+    /// # async fn main() -> kiomq::KioResult<()> {
+    /// use std::sync::Arc;
+    /// use kiomq::{InMemoryStore, Job, KioError, Queue, Worker, WorkerOpts};
+    ///
+    /// let store: InMemoryStore<u64, u64, ()> = InMemoryStore::new(None, "sync-worker");
+    /// let queue = Queue::new(store, None).await?;
+    ///
+    /// let worker = Worker::new_sync(
+    ///     &queue,
+    ///     |_store: Arc<_>, job: Job<u64, u64, ()>| {
+    ///         Ok::<u64, KioError>(job.data.unwrap_or_default() * 2)
+    ///     },
+    ///     Some(WorkerOpts::default()),
+    /// )?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn new_sync<C, E>(
         queue: &Queue<D, R, P, S>,
         processor: C,
@@ -106,6 +189,37 @@ impl<
     {
         Self::new::<C, SyncFn<C, D, R, P, S, E>, E>(queue, processor, worker_opts)
     }
+    /// Creates a worker with an **async** processor function.
+    ///
+    /// The processor runs directly on the Tokio runtime; it is best suited for
+    /// I/O-bound work.  For CPU-intensive or blocking workloads prefer
+    /// [`new_sync`](Worker::new_sync).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if initialisation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # #[tokio::main]
+    /// # async fn main() -> kiomq::KioResult<()> {
+    /// use std::sync::Arc;
+    /// use kiomq::{InMemoryStore, Job, KioError, Queue, Worker, WorkerOpts};
+    ///
+    /// let store: InMemoryStore<u64, u64, ()> = InMemoryStore::new(None, "async-worker");
+    /// let queue = Queue::new(store, None).await?;
+    ///
+    /// let worker = Worker::new_async(
+    ///     &queue,
+    ///     |_store: Arc<_>, job: Job<u64, u64, ()>| async move {
+    ///         Ok::<u64, KioError>(job.data.unwrap_or_default() * 2)
+    ///     },
+    ///     None,
+    /// )?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn new_async<C, Fut, E>(
         queue: &Queue<D, R, P, S>,
         processor: C,
@@ -198,17 +312,53 @@ impl<
         Ok(worker)
     }
 
+    /// Returns `true` if the worker is actively processing jobs.
     pub fn is_running(&self) -> bool {
         self.state
             .load(std::sync::atomic::Ordering::Acquire)
             .is_active()
             && !self.cancellation_token.is_cancelled()
     }
+    /// Returns `true` if the worker is idle (started but waiting for work).
     pub fn is_idle(&self) -> bool {
         self.state
             .load(std::sync::atomic::Ordering::Acquire)
             .is_idle()
     }
+    /// Starts the worker's job-processing loop.
+    ///
+    /// # Errors
+    ///
+    /// | Condition | Error |
+    /// |-----------|-------|
+    /// | Worker is already running | `WorkerAlreadyRunning` |
+    /// | Worker has been closed | `WorkerAlreadyClosed` |
+    ///
+    /// Calling `run` on a closed worker (after [`close`](Worker::close)) is an
+    /// error; create a new worker instead.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # #[tokio::main]
+    /// # async fn main() -> kiomq::KioResult<()> {
+    /// use std::sync::Arc;
+    /// use kiomq::{InMemoryStore, Job, KioError, Queue, Worker};
+    ///
+    /// let store: InMemoryStore<u64, u64, ()> = InMemoryStore::new(None, "run-demo");
+    /// let queue = Queue::new(store, None).await?;
+    /// let worker = Worker::new_async(
+    ///     &queue,
+    ///     |_: Arc<_>, job: Job<u64, u64, ()>| async move { Ok::<u64, KioError>(0) },
+    ///     None,
+    /// )?;
+    ///
+    /// worker.run()?;
+    /// assert!(worker.is_running());
+    /// worker.close();
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn run(&self) -> KioResult<()> {
         let prev = self.state.compare_exchange(
             WorkerState::Idle,
@@ -264,6 +414,7 @@ impl<
         self.main_task.swap(Some(main_task.into()));
         Ok(())
     }
+    /// Returns `true` if the worker has been closed (cancelled).
     pub fn closed(&self) -> bool {
         self.cancellation_token.is_cancelled()
             || self
@@ -273,7 +424,17 @@ impl<
     }
 
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
-    /// Stops the worker from running (adding more jobs to run)
+    /// Stops the worker's processing loop.
+    ///
+    /// Signals the internal cancellation token and waits for the main loop
+    /// task to finish.  Already-running jobs are allowed to complete.
+    ///
+    /// Calling `close` on a worker that is not running is a no-op (idempotent).
+    ///
+    /// # Note
+    ///
+    /// After calling `close` the worker **cannot** be restarted.  Create a new
+    /// worker if you need to resume processing.
     pub fn close(&self) {
         if !self.is_running() {
             return;
@@ -305,6 +466,10 @@ impl<
         }
     }
 
+    /// Registers a listener for a specific job-state event on the underlying queue.
+    ///
+    /// This is a convenience wrapper around [`Queue::on`].  Returns a listener
+    /// ID that can be passed to [`remove_event_listener`](Worker::remove_event_listener).
     pub fn on<F, C>(&self, event: JobState, callback: C) -> Uuid
     where
         C: Fn(EventParameters<R, P>) -> F + Send + Sync + 'static,
@@ -312,6 +477,9 @@ impl<
     {
         self.queue.on(event, callback)
     }
+    /// Registers a listener for **all** job-state events on the underlying queue.
+    ///
+    /// This is a convenience wrapper around [`Queue::on_all_events`].
     pub fn on_all_events<F, C>(&self, callback: C) -> Uuid
     where
         C: Fn(EventParameters<R, P>) -> F + Send + Sync + 'static,
@@ -319,6 +487,9 @@ impl<
     {
         self.queue.on_all_events(callback)
     }
+    /// Removes a previously registered event listener from the underlying queue.
+    ///
+    /// Returns the listener ID if found and removed, or `None` otherwise.
     pub fn remove_event_listener(&self, id: Uuid) -> Option<Uuid> {
         self.queue.remove_event_listener(id)
     }

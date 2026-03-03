@@ -3,6 +3,36 @@ use derive_more::Debug;
 #[cfg(feature = "redis-store")]
 use redis::AsyncCommands;
 use uuid::Uuid;
+/// The payload delivered to event listeners registered on a [`Queue`](crate::Queue).
+///
+/// Each variant corresponds to a [`JobState`](crate::JobState) transition or
+/// observability event.  Subscribe via [`Queue::on`](crate::Queue::on) or
+/// [`Queue::on_all_events`](crate::Queue::on_all_events).
+///
+/// # Examples
+///
+/// ```rust
+/// # #[tokio::main]
+/// # async fn main() -> kiomq::KioResult<()> {
+/// use kiomq::{EventParameters, InMemoryStore, JobState, Queue};
+///
+/// let store: InMemoryStore<u64, u64, ()> = InMemoryStore::new(None, "evt-demo");
+/// let queue = Queue::new(store, None).await?;
+///
+/// queue.on_all_events(|evt: EventParameters<u64, ()>| async move {
+///     match evt {
+///         EventParameters::Completed { job_id, .. } => {
+///             println!("job {job_id} completed");
+///         }
+///         EventParameters::Failed { job_id, reason, .. } => {
+///             println!("job {job_id} failed: {}", reason.reason);
+///         }
+///         _ => {}
+///     }
+/// });
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone, Debug)]
 pub enum EventParameters<R, P> {
     Prioritized {

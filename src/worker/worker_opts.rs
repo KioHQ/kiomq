@@ -2,26 +2,49 @@ use derive_more::Debug;
 
 use crate::Dt;
 pub(crate) const MIN_DELAY_MS_LIMIT: u64 = 50;
+/// Configuration options for a [`Worker`](crate::Worker).
+///
+/// All durations are in **milliseconds** unless otherwise noted.
+///
+/// # Examples
+///
+/// ```rust
+/// use kiomq::WorkerOpts;
+///
+/// let opts = WorkerOpts {
+///     concurrency: 8,
+///     lock_duration: 60_000,
+///     lock_renew_time: 30_000,
+///     ..Default::default()
+/// };
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct WorkerOpts {
-    /// Number of milliseconds between stallness checks. Default is 30000
+    /// Interval between stalled-job checks in milliseconds. Default is `30000`.
     pub stalled_interval: u64,
-    /// Durat up by the sdtalled checker and
-    /// move back to wait so that another worker can process it again.
+    /// How long (ms) a job lock is held before the job is considered stalled.
+    /// A stalled job is moved back to the wait state so another worker can pick
+    /// it up.
+    ///
     /// @default 30000
     pub lock_duration: u64,
-    /// The time in milliseconds before the lock is automatically renewed.
-    /// It is not recommended to modify this value, which is by default set to halv the lockDuration value,
+    /// How long before expiry (ms) the lock is automatically renewed.
+    ///
+    /// It is not recommended to modify this value, which is by default set to half the lockDuration value,
     /// which is optimal for most use cases.
     pub lock_renew_time: u64,
-    /// Amount of times a job can be recovered from a stalled stalled_interval to the `wait` state.
-    /// If this is exceeded, the job is moved to `failed`
+    /// Maximum number of times a job may be recovered from a stalled state
+    /// before it is permanently moved to `failed`.
     pub max_stalled_count: u64,
-    /// The numbers of tasks running concurrency with the current executor thread pool.
+    /// Maximum number of jobs the worker processes concurrently.
+    ///
+    /// Defaults to the number of logical CPUs on the host machine.
     pub concurrency: usize,
-    /// The interval to check for delayed jobs or next jobs to schedule
+    /// If `true`, [`Worker::run`](crate::Worker::run) is called automatically
+    /// inside the constructor.
     pub autorun: bool,
-    ///  Number of milliseconds between sending worker_metrics. Default is 100
+    /// How often (ms) per-worker metrics are published to the store.
+    /// Default is `100`.
     pub metrics_update_interval: u64,
 }
 impl Default for WorkerOpts {
