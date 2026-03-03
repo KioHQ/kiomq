@@ -34,6 +34,9 @@ impl Default for JobDelay {
     }
 }
 impl JobDelay {
+    /// Returns the timestamp (in milliseconds since the Unix epoch) at which
+    /// the job should next become eligible to run, or `None` if the delay is
+    /// zero (run immediately).
     pub fn next_occurrance_timestamp_ms(&self) -> Option<i64> {
         let ts = Utc::now();
         match self {
@@ -50,6 +53,11 @@ impl JobDelay {
                 .map(|dt| dt.timestamp_millis()),
         }
     }
+    /// Returns the delay in milliseconds relative to `dt`.
+    ///
+    /// For `TimeMilis`, this is the stored value directly.  For `FromCron`,
+    /// this is the number of milliseconds until the next cron occurrence after
+    /// `dt`.
     pub fn as_diff_ms(&self, dt: Dt) -> i64 {
         match self {
             JobDelay::TimeMilis(ms) => *ms,

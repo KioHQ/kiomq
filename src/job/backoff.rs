@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::sync::Arc;
 type BackoffFn = dyn Fn(i64) -> StoredFn + Send + Sync;
+/// A per-attempt delay function: receives the attempt count and returns the
+/// delay in milliseconds.
 pub type StoredFn = Arc<dyn Fn(i64) -> i64 + Send + Sync>;
 
 /// Detailed backoff configuration.
@@ -50,16 +52,29 @@ pub struct BackOffOptions {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Hash)]
 #[serde(untagged)]
 pub enum BackOffJobOptions {
+    /// Use the `"fixed"` strategy with this constant delay in milliseconds.
     Number(i64),
+    /// Fully configured backoff options including strategy name and base delay.
     Opts(BackOffOptions),
 }
 
+/// Registry of backoff strategies used to schedule job retries.
+///
+/// Two built-in strategies are registered by default:
+///
+/// - `"exponential"` — delay grows as `2^attempt * base_delay_ms`.
+/// - `"fixed"` — constant delay regardless of attempt count.
+///
+/// Additional strategies can be added with [`BackOff::register`].
 #[derive(Clone, Default)]
 pub struct BackOff {
+    /// Map of strategy name → factory function.
     pub builtin_strategies: Arc<SkipMap<String, Arc<BackoffFn>>>,
 }
 
 impl BackOff {
+    /// Creates a new `BackOff` registry pre-loaded with the `"exponential"`
+    /// and `"fixed"` built-in strategies.
     pub fn new() -> Self {
         let mut backoff = BackOff::default();
         backoff.register("exponential", |delay: i64| {
@@ -70,6 +85,11 @@ impl BackOff {
         backoff
     }
 
+    /// Registers a custom backoff strategy under `name`.
+    ///
+    /// The `strategy` factory receives the base delay and returns a
+    /// [`StoredFn`] that maps attempt → delay_ms. If a strategy with the
+    /// same name is already registered it will be overwritten.
     pub fn register(
         &self,
         name: &str,
@@ -78,6 +98,8 @@ impl BackOff {
         self.builtin_strategies
             .insert(name.to_owned(), Arc::new(strategy));
     }
+    /// Normalises a [`BackOffJobOptions`] into a [`BackOffOptions`], returning
+    /// `None` when no backoff is configured or the numeric delay is zero.
     pub fn normalize(backoff: Option<&BackOffJobOptions>) -> Option<BackOffOptions> {
         let backoff = backoff?;
         match backoff {
@@ -95,6 +117,10 @@ impl BackOff {
             _ => None,
         }
     }
+    /// Calculates the delay in milliseconds for the given `attempts` count.
+    ///
+    /// Returns `None` if `backoff_opts` is `None` or no matching strategy is
+    /// found.
     pub fn calculate(
         &self,
         backoff_opts: Option<BackOffOptions>,
@@ -111,10 +137,15 @@ impl BackOff {
         None
     }
 
+    /// Returns `true` if a strategy with the given `key` has been registered.
     pub fn has_strategy(&self, key: &str) -> bool {
         self.builtin_strategies.contains_key(key)
     }
 
+    /// Looks up a [`StoredFn`] for the strategy described by `backoff`.
+    ///
+    /// Falls back to `custom_strategy` when no built-in match is found.
+    /// Returns `None` if neither source provides a strategy.
     pub fn lookup_strategy(
         &self,
         backoff: BackOffOptions,

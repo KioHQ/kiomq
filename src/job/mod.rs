@@ -32,10 +32,15 @@ use std::time::Duration;
 #[derive(Debug, Clone, Copy, Hash, Serialize, Deserialize, Display, Default)]
 #[display("job {id}-#{attempt} , ran for {ran_for:?}, delayed for {delayed_for:?}")]
 pub struct JobMetrics {
+    /// How long the processor function ran.
     pub ran_for: Duration,
+    /// How long the job waited in the delayed state before becoming active.
     pub delayed_for: Duration,
+    /// The attempt number on which the job finished.
     pub attempt: u64,
+    /// The configured delay in milliseconds (0 for non-delayed jobs).
     pub delay: u64,
+    /// The numeric job ID.
     pub id: u64,
 }
 
@@ -43,24 +48,9 @@ pub struct JobMetrics {
 pub(crate) type Dt = DateTime<Utc>;
 /// The lifecycle state of a job within the queue.
 ///
-/// Jobs typically flow through: `Wait` → `Active` → `Completed` or `Failed`.
+/// Jobs typically flow through `Wait` → `Active` → `Completed` or `Failed`.
 /// Other transitions exist for priority queuing, delays, pausing, and stall
 /// detection.
-///
-/// | Variant | Description |
-/// |---------|-------------|
-/// | `Wait` | Ready to be picked up by a worker (default). |
-/// | `Prioritized` | In the priority sorted-set, waiting for a slot. |
-/// | `Stalled` | Worker that held the lock disappeared; pending recovery. |
-/// | `Active` | Currently being processed by a worker. |
-/// | `Paused` | Queue is paused; job is waiting in the paused list. |
-/// | `Resumed` | Queue has resumed; job transitions back to wait. |
-/// | `Completed` | Processor returned successfully. |
-/// | `Failed` | Processor returned an error (or stalled too many times). |
-/// | `Delayed` | Scheduled to run at a future timestamp. |
-/// | `Progress` | A progress update event (not a persistent state). |
-/// | `Obliterated` | Queue was obliterated; job was deleted. |
-/// | `Processing` | Worker has started executing the processor function. |
 #[derive(
     Debug,
     Serialize,
@@ -78,18 +68,30 @@ pub(crate) type Dt = DateTime<Utc>;
 )]
 #[serde(rename_all = "camelCase")]
 pub enum JobState {
+    /// Ready to be picked up by a worker. This is the default state.
     #[default]
     Wait,
+    /// In the priority sorted-set, waiting to be moved to active.
     Prioritized,
+    /// The worker that held the lock disappeared; the job is pending recovery.
     Stalled,
+    /// Currently being processed by a worker.
     Active,
+    /// The queue is paused; the job is waiting in the paused list.
     Paused,
+    /// The queue has resumed; the job is transitioning back to `Wait`.
     Resumed,
+    /// The processor function returned successfully.
     Completed,
+    /// The processor returned an error, or the job stalled too many times.
     Failed,
+    /// Scheduled to run at a future timestamp.
     Delayed,
+    /// A progress-update event (not a persistent job state).
     Progress,
+    /// The queue was obliterated and the job has been deleted.
     Obliterated,
+    /// The worker has started executing the processor function.
     Processing,
 }
 #[cfg(feature = "redis-store")]
@@ -131,26 +133,27 @@ pub struct JobOptions {
     /// Maximum number of attempts before the job is permanently marked as
     /// failed.
     pub attempts: u64,
-    /// total number of attempts to try the job until it completes.
+    /// Retention policy applied when the job *completes* successfully.
+    /// Defaults to `None` (inherit from [`crate::QueueOpts`]).
     pub remove_on_complete: Option<RemoveOnCompletionOrFailure>,
+    /// Retention policy applied when the job *fails* permanently.
+    /// Defaults to `None` (inherit from [`crate::QueueOpts`]).
     pub remove_on_fail: Option<RemoveOnCompletionOrFailure>,
+    /// Per-job backoff strategy, overriding the queue default.
     pub backoff: Option<BackOffJobOptions>,
+    /// Repeat policy; when set the job is re-enqueued after each run.
     pub repeat: Option<Repeat>,
 }
 
-/// Determines whether—and how many—jobs are retained after they finish.
-///
-/// | Variant | Behaviour |
-/// |---------|-----------|
-/// | `Bool(true)` | Remove the job immediately. |
-/// | `Bool(false)` | Keep the job forever (default). |
-/// | `Int(n)` | Keep at most `n` jobs; older ones are removed when the count is exceeded. |
-/// | `Opts(KeepJobs { age, count })` | Apply age **and/or** count retention. |
+/// Controls whether—and how many—completed or failed job records are kept.
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, Hash, PartialEq)]
 #[serde(untagged)]
 pub enum RemoveOnCompletionOrFailure {
-    Bool(bool), // if true, remove the job when it completes
-    Int(i64),   //  number is passed, its specifies the maximum amount of jobs to keeps
+    /// `true` removes the record immediately; `false` retains it forever.
+    Bool(bool),
+    /// Retain at most this many records; older ones are pruned.
+    Int(i64),
+    /// Fine-grained policy controlling both age and count.
     Opts(KeepJobs),
 }
 impl Default for RemoveOnCompletionOrFailure {
@@ -168,15 +171,22 @@ pub struct KeepJobs {
     /// Maximum number of job records to keep.
     pub count: Option<i64>,
 }
+/// A single stack-trace entry captured when a job fails.
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Hash, PartialEq)]
 pub struct Trace {
+    /// The run (attempt) number on which this trace was captured.
     pub run: u64,
+    /// Human-readable failure reason.
     pub reason: String,
+    /// Stack frames collected at the point of failure.
     pub frames: Vec<String>,
 }
+/// Details recorded when a job permanently fails.
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Hash, PartialEq)]
 pub struct FailedDetails {
+    /// The run (attempt) number on which the job finally failed.
     pub run: u64,
+    /// Human-readable failure reason.
     pub reason: String,
 }
 use chrono::serde::{ts_microseconds, ts_microseconds_option};
@@ -186,46 +196,58 @@ use derive_more::Debug;
 /// Jobs are created by [`Queue::add_job`] / [`Queue::bulk_add`] and passed to
 /// your processor function by the [`crate::Worker`].
 ///
-/// # Type parameters
+/// The type parameters `D`, `R`, and `P` represent the job's input data,
+/// return value, and progress type respectively.
 ///
-/// | Parameter | Description |
-/// |-----------|-------------|
-/// | `D` | Input data type |
-/// | `R` | Return / result type |
-/// | `P` | Progress update type |
-///
-/// # Note on data access
-///
-/// `data`, `returned_value`, and `progress` are skipped in `Debug` output
+/// `data`, `returned_value`, and `progress` are omitted from `Debug` output
 /// to avoid accidentally logging sensitive payloads.
 #[derive(Debug, Serialize, Deserialize, Default, Hash, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Job<D, R, P> {
+    /// Unique numeric ID assigned by the store on insertion.
     pub id: Option<u64>,
+    /// Timestamp of when the job was created (microsecond precision).
     #[serde(rename = "timestamp", alias = "timestamp")]
     #[serde(with = "ts_microseconds")]
     pub ts: Dt,
+    /// Human-readable label for the job (does not need to be unique).
     pub name: String,
+    /// Current lifecycle state of the job.
     pub state: JobState,
+    /// Most recent progress value reported by the processor.
     #[debug(skip)]
     pub progress: Option<P>,
+    /// Number of times the processor has been invoked for this job so far.
     pub attempts_made: u64,
+    /// Options that were applied when the job was enqueued.
     pub opts: JobOptions,
+    /// Configured delay in milliseconds (0 for non-delayed jobs).
     pub delay: u64,
+    /// Input payload passed to the processor function.
     #[debug(skip)]
     pub data: Option<D>,
+    /// Value returned by the processor on successful completion.
     #[debug(skip)]
     pub returned_value: Option<R>,
+    /// Stack traces captured on each failed attempt.
     pub stack_trace: Vec<Trace>,
+    /// Failure details from the last (terminal) failed attempt.
     pub failed_reason: Option<FailedDetails>,
+    /// Timestamp of when a worker began processing this job.
     #[serde(with = "ts_microseconds_option")]
     pub processed_on: Option<Dt>,
+    /// Timestamp of when the job reached a terminal state.
     #[serde(with = "ts_microseconds_option")]
     pub finished_on: Option<Dt>,
+    /// Name of the queue this job belongs to.
     pub queue_name: Option<String>,
-    pub token: Option<JobToken>, // job_lock token
+    /// Worker lock token; set while a worker holds the lock on this job.
+    pub token: Option<JobToken>,
+    /// Number of times this job has been moved to the stalled state.
     pub stalled_counter: u64,
+    /// Arbitrary log lines appended during processing.
     pub logs: Vec<String>,
+    /// Scheduling priority (lower value = higher priority).
     pub priority: u64,
 }
 #[cfg(feature = "redis-store")]
@@ -242,6 +264,11 @@ impl FromRedisValue for JobState {
 
 use uuid::Uuid;
 
+/// An opaque lock token that identifies a worker's ownership of a job.
+///
+/// Tokens are issued when a worker picks up a job and must be presented when
+/// completing, failing, or extending the lock on that job.  A token mismatch
+/// means the lock has been taken over by another worker or has expired.
 #[derive(
     Debug,
     derive_more::Display,

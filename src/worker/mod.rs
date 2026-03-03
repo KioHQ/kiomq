@@ -110,6 +110,7 @@ pub(crate) use worker_opts::MIN_DELAY_MS_LIMIT;
 /// ```
 #[derive(Clone, Debug)]
 pub struct Worker<D, R, P, S> {
+    /// Unique identifier for this worker instance.
     pub id: Uuid,
     #[cfg(feature = "tracing")]
     resource_span: Span,
@@ -117,8 +118,10 @@ pub struct Worker<D, R, P, S> {
     jobs_in_progress: JobMap<D, R, P>,
     #[debug(skip)]
     processor: WorkerCallback<D, R, P, S>,
+    /// Configuration options for this worker.
     pub opts: WorkerOpts,
     cancellation_token: CancellationToken,
+    /// Current lifecycle state of the worker.
     pub state: Arc<Atomic<WorkerState>>,
     processing: ProcessingQueue,
     timers: DelayQueueTimer<D, R, P, S>,

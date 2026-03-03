@@ -16,23 +16,32 @@ use redis::{FromRedisValue, RedisResult, ToRedisArgs, Value};
 use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
-/// An envelope representing the result of running the worker's callback
+/// The outcome of a single processor invocation.
 pub enum ProcessedResult<R> {
+    /// The processor returned an error.
     Failed(FailedDetails),
+    /// The processor succeeded, returning a value and timing metrics.
     Success(R, JobMetrics),
 }
-/// Most frequent set fields on a job
+/// A typed field update applied to a job record in the store.
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum JobField<R> {
+    /// Worker lock token.
     Token(JobToken),
+    /// Processor outcome (success value or failure details).
     Payload(ProcessedResult<R>),
+    /// Unix timestamp (µs) when the processor started.
     ProcessedOn(u64),
+    /// Unix timestamp (µs) when the job reached a terminal state.
     FinishedOn(u64),
+    /// New lifecycle state.
     State(JobState),
+    /// Stack-trace entry captured on failure.
     BackTrace(Trace),
 }
 impl<R> JobField<R> {
+    /// Returns the store field name (key) for this variant.
     pub fn name(&self) -> &'static str {
         match self {
             JobField::Token(job_token) => "token",
@@ -53,35 +62,59 @@ impl<R> JobField<R> {
 
 use derive_more::{Debug, Display};
 use uuid::Uuid;
+/// Identifies a named collection (list, set, sorted-set, hash, or key) in the
+/// backing store.
+///
+/// Each queue owns a set of collections whose keys are formed as
+/// `{prefix}:{name}:{suffix}`.  The suffix comes from this enum's `Display`
+/// implementation via [`CollectionSuffix::to_collection_name`].
 #[derive(Display, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
 pub enum CollectionSuffix {
-    Active,    // (list)
-    Completed, //Sorted Set
-    Delayed,   // ZSET
-    Stalled,   // Set
+    /// List of jobs that are ready to be processed.
+    Active,
+    /// Sorted set of completed jobs ordered by finish time.
+    Completed,
+    /// Sorted set of delayed jobs ordered by scheduled time.
+    Delayed,
+    /// Set of jobs whose lock has expired (stalled).
+    Stalled,
+    /// Sorted set of high-priority jobs waiting for a worker slot.
     Prioritized,
-    PriorityCounter, // (hash(number))
-    Id,              // hash(number)
-    Meta,            // key
-    Events,          // stream or pub_sub depending on event_mode
-    Wait,            // LIST
-    Paused,          // LIST
-    Failed,          // ZSET
+    /// Hash storing the monotonically-increasing priority counter.
+    PriorityCounter,
+    /// Hash storing the auto-increment job ID counter.
+    Id,
+    /// Hash storing queue metadata (processing count, pause flag, etc.).
+    Meta,
+    /// The event stream or pub-sub channel for this queue.
+    Events,
+    /// List of jobs waiting to be picked up by a worker.
+    Wait,
+    /// List of jobs held while the queue is paused.
+    Paused,
+    /// Sorted set of permanently failed jobs ordered by failure time.
+    Failed,
+    /// Sentinel marker used internally for queue state signalling.
     Marker,
+    /// The hash that stores all fields for a single job.
     #[display("{_0}")]
     Job(u64),
+    /// The queue's top-level prefix key.
     #[display("")]
     Prefix,
+    /// The distributed lock key for a specific job.
     #[display("{_0}:lock")]
-    /// Lock(job_id)
     Lock(u64),
+    /// Key storing the last stall-check timestamp.
     #[display("stalled_check")]
-    StalledCheck, // key
+    StalledCheck,
+    /// Key storing serialised metrics for a specific worker.
     #[display("worker_metrics:{_0}")]
     WorkerMetrics(Uuid),
 }
 
 impl CollectionSuffix {
+    /// Builds the full collection key as `{prefix}:{name}:{self}` (lowercased).
     pub fn to_collection_name(&self, prefix: &str, name: &str) -> String {
         format!("{}:{}:{}", prefix, name, &self).to_lowercase()
     }
@@ -108,6 +141,11 @@ impl CollectionSuffix {
             Self::WorkerMetrics(_) => 18,
         }
     }
+    /// Encodes this variant as a compact `u64` tag.
+    ///
+    /// The top 8 bits identify the variant and the lower 56 bits hold any
+    /// payload (job ID, UUID fragment, etc.).  Used for O(1) membership checks
+    /// in in-memory sets.
     pub fn tag(&self) -> u64 {
         let top = (self.discriminant() as u64) << 56; // high 8 bits for variant id
         match self {
@@ -133,10 +171,12 @@ impl CollectionSuffix {
             Self::Job(id) | Self::Lock(id) => top | (id & 0x00FF_FFFF_FFFF_FFFF),
         }
     }
+    /// Returns the tag as a big-endian byte array.
     pub fn to_bytes(&self) -> [u8; 8] {
         self.tag().to_be_bytes()
     }
-    /// Decodes a tag back into its enum variant.
+    /// Decodes a tag produced by [`CollectionSuffix::tag`] back into the
+    /// corresponding enum variant, or `None` if the discriminant is unknown.
     pub fn from_tag(tag: u64) -> Option<Self> {
         let disc = (tag >> 56) as u8;
         let payload = tag & 0x00FF_FFFF_FFFF_FFFF;
@@ -193,20 +233,17 @@ impl ToRedisArgs for CollectionSuffix {
         out.write_arg_fmt(self.to_string().to_lowercase());
     }
 }
-/// How events are delivered to listeners.
-///
-/// KioMQ supports two delivery mechanisms:
-///
-/// | Variant | Description |
-/// |---------|-------------|
-/// | [`Stream`](QueueEventMode::Stream) *(default)* | Events are written to a persistent append-only stream.  New listeners can replay past events. |
-/// | [`PubSub`](QueueEventMode::PubSub) | Events are broadcast in real-time.  Listeners that connect after an event is fired miss it. |
+/// Controls how events are published and consumed within a queue.
 ///
 /// Set this via [`QueueOpts::event_mode`].
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, Atom, Eq, PartialEq)]
 #[repr(u8)]
 pub enum QueueEventMode {
+    /// Broadcast-only delivery. Listeners that connect after an event is fired
+    /// will not receive it.
     PubSub = 1,
+    /// Persistent append-only stream (default). New listeners can replay past
+    /// events.
     #[default]
     Stream = 0,
 }
@@ -244,8 +281,13 @@ impl ToRedisArgs for QueueEventMode {
     }
 }
 
+/// Specifies how a job should be retried after a failure or completion.
+///
+/// Passed to [`crate::Queue::retry_job`].
 pub enum RetryOptions<'a> {
+    /// Retry a failed job using the given backoff options.
     Failed(&'a BackOffJobOptions),
+    /// Re-enqueue a job according to a [`Repeat`] policy.
     WithRepeat(&'a Repeat),
 }
 impl<'a> From<&'a BackOffJobOptions> for RetryOptions<'a> {
@@ -316,26 +358,37 @@ fn create_counter(count: u64) -> Counter {
 /// A live snapshot of queue state counts.
 ///
 /// Counters are stored as `Arc<AtomicU64>` so they can be cheaply shared and
-/// updated across threads.  The values are refreshed from the backing store
-/// whenever [`crate::Queue::get_metrics`] is called; between calls the counts may be
-/// slightly stale.
+/// updated across threads. The values are refreshed from the backing store
+/// whenever [`crate::Queue::get_metrics`] is called; between calls the counts
+/// may be slightly stale.
 ///
-/// Use helper methods such as [`all_jobs_completed`](QueueMetrics::all_jobs_completed)
-/// and [`is_idle`](QueueMetrics::is_idle) rather than inspecting individual
-/// fields for common checks.
+/// Prefer the helper methods like [`all_jobs_completed`](QueueMetrics::all_jobs_completed)
+/// and [`is_idle`](QueueMetrics::is_idle) over reading individual fields directly.
 #[derive(Debug, Clone, Default)]
 pub struct QueueMetrics {
+    /// The highest job ID ever assigned in this queue.
     pub last_id: Counter,
+    /// Number of jobs currently being processed by workers.
     pub processing: Counter,
+    /// Number of jobs in the priority sorted-set waiting to become active.
     pub prioritized: Counter,
+    /// Number of jobs currently in the `Active` state.
     pub active: Counter,
+    /// Number of jobs in the `Stalled` state pending recovery.
     pub stalled: Counter,
+    /// Number of jobs scheduled to run in the future.
     pub delayed: Counter,
+    /// Total number of jobs that have completed successfully.
     pub completed: Counter,
+    /// Total number of jobs that have permanently failed.
     pub failed: Counter,
+    /// Number of jobs in the paused list (queue is paused).
     pub paused: Counter,
+    /// Number of jobs waiting to be picked up by a worker.
     pub waiting: Counter,
+    /// Whether the queue is currently in the paused state.
     pub is_paused: Arc<AtomicBool>,
+    /// The active event-delivery mode for this queue.
     pub event_mode: Arc<Atomic<QueueEventMode>>,
 }
 impl QueueMetrics {
@@ -355,6 +408,7 @@ impl QueueMetrics {
             && self.is_idle()
     }
     #[allow(clippy::too_many_arguments)]
+    /// Constructs a `QueueMetrics` from raw counter values read from the store.
     pub fn new(
         last_id: u64,
         processing: u64,
@@ -384,6 +438,7 @@ impl QueueMetrics {
             event_mode: Arc::new(Atomic::new(event_mode)),
         }
     }
+    /// Atomically replaces all counters with the values from `other`.
     pub fn update(&self, other: &Self) {
         self.paused
             .swap(other.paused.load(Ordering::Acquire), Ordering::AcqRel);
@@ -441,6 +496,7 @@ impl QueueMetrics {
             && self.workers_idle()
             && self.last_id.load(Ordering::Acquire) > 0
     }
+    /// Resets all counters to zero (equivalent to a freshly created queue).
     pub fn clear(&self) {
         let default = Self::default();
         self.update(&default);

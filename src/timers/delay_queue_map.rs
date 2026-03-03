@@ -9,12 +9,16 @@ use tokio::time::Duration;
 use tokio_util::time::{delay_queue::Key, DelayQueue};
 use xutex::AsyncMutex;
 
+/// A value together with its optional expiry key in the delay queue.
 #[derive(Debug)]
 pub struct ValueKeyPair<V> {
+    /// The stored value, protected by a mutex for interior mutability.
     pub value: Mutex<V>,
+    /// The delay-queue key associated with this entry's expiry, if any.
     pub key: AtomicCell<Option<Key>>,
 }
 impl<V> ValueKeyPair<V> {
+    /// Wraps `value` with no expiry key assigned yet.
     pub fn new(value: V) -> Self {
         Self {
             value: value.into(),
@@ -23,10 +27,16 @@ impl<V> ValueKeyPair<V> {
     }
 }
 #[derive(derive_more::Debug)]
-/// A map with timed value-eviction
+/// A concurrent map that can automatically evict entries after a configurable TTL.
+///
+/// Entries are inserted either with no expiry ([`insert_constant`](TimedMap::insert_constant))
+/// or with a TTL ([`insert_expirable`](TimedMap::insert_expirable)). Eviction is
+/// lazy: expired keys are removed in batch when [`purge_expired`](TimedMap::purge_expired)
+/// is called.
 pub struct TimedMap<K: Ord, V> {
     #[debug(skip)]
     expiries: AsyncMutex<DelayQueue<K>>,
+    /// The underlying concurrent skip-list storing all key-value pairs.
     pub inner: SkipMap<K, ValueKeyPair<V>>,
     disable_expiration: AtomicBool,
 }
@@ -40,6 +50,10 @@ impl<K: Ord, V> Default for TimedMap<K, V> {
     }
 }
 impl<K: Ord, V> TimedMap<K, V> {
+    /// Toggles whether entries are evicted on expiry.
+    ///
+    /// When expiration is disabled (toggled off) entries inserted with a TTL
+    /// will be kept indefinitely until toggled back on.
     pub fn toggle_expiration(&self) {
         let previous_state = self.disable_expiration.load(Ordering::Acquire);
         let _ = self.disable_expiration.compare_exchange(
@@ -51,13 +65,19 @@ impl<K: Ord, V> TimedMap<K, V> {
     }
 }
 impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
+    /// Creates an empty `TimedMap` with expiration enabled.
     pub fn new() -> Self {
         Self::default()
     }
+    /// Inserts `key → value` with no TTL (the entry never expires).
     pub fn insert_constant(&self, key: K, value: V) {
         let pair = ValueKeyPair::new(value);
         let pair = self.inner.insert(key, pair);
     }
+    /// Inserts `key → value` that expires after `timeout`.
+    ///
+    /// If expiration is currently disabled (see [`toggle_expiration`](TimedMap::toggle_expiration))
+    /// the entry is stored without a TTL.
     pub fn insert_expirable(&self, key: K, value: V, timeout: Duration) {
         let pair = ValueKeyPair::new(value);
         if !self.disable_expiration.load(Ordering::Acquire) {
@@ -80,9 +100,11 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
         }
         self.inner.insert(key, pair);
     }
+    /// Returns the number of entries currently tracked in the expiry queue.
     pub async fn len_expired(&self) -> usize {
         self.expiries.lock().await.len()
     }
+    /// Removes the entry for `key`, cancelling its expiry if one was set.
     pub fn remove(&self, key: &K) {
         if let Some(removed) = self.inner.remove(key) {
             if let Some(expiry_key) = removed.value().key.load() {
@@ -96,6 +118,11 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
             }
         }
     }
+    /// Updates or sets the expiry deadline for the entry at `key`.
+    ///
+    /// If the entry already has an expiry key it is reset to `duration` from
+    /// now; otherwise a new expiry is registered.  Returns the delay-queue key
+    /// on success or `None` if the entry does not exist.
     pub async fn update_expiration_status(&self, key: &K, duration: Duration) -> Option<Key> {
         let mut expiries = self.expiries.lock().await;
         let found = self.inner.get(key)?;
@@ -107,10 +134,12 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
         found.value().key.store(Some(new_key));
         Some(new_key)
     }
+    /// Returns `true` if automatic expiration is currently active.
     pub fn expires_entries(&self) -> bool {
         !self.disable_expiration.load(Ordering::Acquire)
     }
 
+    /// Removes all entries and clears the expiry queue.
     pub fn clear(&self) {
         self.inner.clear();
         // To use async-mutex here, use block_in_place (on rt-multithread) - Subject to
@@ -121,6 +150,10 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
             })
         })
     }
+    /// Removes all entries whose TTL has elapsed.
+    ///
+    /// This is a no-op when expiration is disabled. The method polls the
+    /// delay queue for a short timeout so it doesn't block indefinitely.
     pub async fn purge_expired(&self) {
         if !self.expires_entries() {
             return;

@@ -44,7 +44,9 @@ type ListQueue = SkipMap<i64, u64>;
 /// ```
 #[derive(Clone, Debug)]
 pub struct InMemoryStore<D, R, P> {
+    /// The queue name this store was created for.
     pub name: String,
+    /// The key prefix used to namespace all collections.
     pub prefix: String,
     processing: Counter,
     is_paused: Arc<AtomicBool>,
@@ -121,6 +123,10 @@ impl<D: Clone, R: Clone, P: Clone> InMemoryStore<D, R, P> {
             event_mode: QueueEventMode::PubSub,
         }
     }
+    /// Toggles TTL-based expiration on internal maps (locks, jobs, metrics).
+    ///
+    /// Disabling expiration is useful in tests where you want entries to
+    /// survive beyond their normal TTL.
     pub fn toggle_expiration(&self) {
         self.locks.toggle_expiration();
         self.jobs.toggle_expiration();
