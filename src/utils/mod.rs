@@ -39,7 +39,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::Arc;
 
 #[cfg(feature = "redis-store")]
-// ---------------- REDIS FUNCTION here
+/// Reads the Redis password from the `REDIS_PASSWORD` environment variable.
+///
+/// Loads a `.env` file via `dotenv` if one is present before reading the
+/// variable.  Returns `None` when the variable is unset.
 pub fn fetch_redis_pass() -> Option<String> {
     use dotenv;
     if let Err(err) = dotenv::dotenv() {
@@ -66,6 +69,16 @@ pub fn calculate_next_priority_score(priority: u64, prio_counter: u64) -> u64 {
 
 use crate::{CollectionSuffix, QueueMetrics};
 #[cfg(feature = "redis-store")]
+/// Reads all queue-state counters from Redis in a single atomic pipeline call.
+///
+/// Queries the number of jobs in each state (active, waiting, delayed,
+/// completed, failed, paused, prioritized, stalled) as well as the current
+/// highest job ID and processing count, then returns them as a [`QueueMetrics`]
+/// snapshot.
+///
+/// # Errors
+///
+/// Returns [`KioError`] if the pipeline execution fails.
 pub async fn get_queue_metrics<C: redis::aio::ConnectionLike>(
     prefix: &str,
     name: &str,

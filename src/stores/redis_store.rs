@@ -28,9 +28,33 @@ use uuid::Uuid;
 static START: AtomicU64 = AtomicU64::new(0);
 static PC_COUNTER: AtomicU64 = AtomicU64::new(0);
 use xutex::Mutex;
+/// A [`Store`] implementation backed by Redis.
+///
+/// `RedisStore` uses a deadpool connection pool for async operations and a
+/// separate synchronous `redis::Client` for the small number of blocking
+/// operations that must run outside of async context. Events can be delivered
+/// via either a Redis Stream or Pub/Sub channel depending on the
+/// [`QueueEventMode`] configured on the queue.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use kiomq::{Config, Queue, QueueOpts, RedisStore, fetch_redis_pass};
+///
+/// #[tokio::main]
+/// async fn main() -> kiomq::KioResult<()> {
+///     let mut cfg = Config::from_url("redis://127.0.0.1/");
+///     let store = RedisStore::new(None, "my-queue", &cfg).await?;
+///     let queue: Queue<String, String, (), _> =
+///         Queue::new(store, Some(QueueOpts::default())).await?;
+///     Ok(())
+/// }
+/// ```
 #[derive(Clone, Debug)]
 pub struct RedisStore {
+    /// The key prefix used to namespace all Redis collections for this queue.
     pub prefix: String,
+    /// The name of the queue this store was created for.
     pub name: String,
     consumer_group: String,
     consumer_name: String,
@@ -46,6 +70,22 @@ pub struct RedisStore {
 }
 
 impl RedisStore {
+    /// Creates a new `RedisStore` connected to the Redis instance described by `cfg`.
+    ///
+    /// A deadpool-redis connection pool is created for async use and a consumer
+    /// group is registered on the queue's event stream so that this instance
+    /// can receive events.
+    ///
+    /// # Arguments
+    ///
+    /// * `prefix` – key namespace prefix (defaults to `"{kio}"` when `None`).
+    /// * `name` – queue name; converted to lowercase automatically.
+    /// * `cfg` – deadpool-redis [`Config`] describing the connection URL and pool settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the pool cannot be created or the initial Redis
+    /// connection fails.
     pub async fn new(prefix: Option<&str>, name: &str, cfg: &Config) -> KioResult<Self> {
         let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
         let name = name.to_lowercase();
@@ -80,10 +120,23 @@ impl RedisStore {
             redis_client,
         })
     }
+    /// Returns a synchronous (blocking) Redis connection.
+    ///
+    /// Useful for operations that cannot be performed asynchronously. Prefer
+    /// [`get_connection`](RedisStore::get_connection) for all async code paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the connection cannot be established.
     pub fn get_blocking_connection(&self) -> KioResult<redis::Connection> {
         let conn = self.redis_client.get_connection()?;
         Ok(conn)
     }
+    /// Borrows an async connection from the deadpool connection pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the pool is exhausted or the connection fails.
     pub async fn get_connection(&self) -> KioResult<deadpool_redis::Connection> {
         let conn = self.conn_pool.get().await?;
         Ok(conn)
