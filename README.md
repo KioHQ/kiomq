@@ -22,6 +22,10 @@ Inspired by [BullMQ](https://docs.bullmq.io/)'s ergonomics, implemented as an em
 
 ---
 
+**Contents:** [Key features](#key-features) · [Tokio runtime](#tokio-runtime-requirements) · [Installation](#installation) · [Quick-start](#quick-start) · [Panics & errors](#panics--errors-in-the-processor) · [Configuration](#configuration) · [Events & observability](#events--observability) · [Progress updates](#progress-updates) · [Backends](#backends) · [Benchmarks](#benchmarks) · [Testing](#testing) · [License](#license)
+
+---
+
 ### Key features
 
 * **Async & sync processors** – async for I/O-bound work, sync (`spawn_blocking`) for CPU-bound.
