@@ -18,7 +18,7 @@
 //! - One or more [`Worker`]s to process jobs concurrently.
 //! - Pluggable [`Store`] backends:
 //!   - [`InMemoryStore`] – ephemeral (tests, dev, short-lived tasks).
-//!   - **Redis** (`redis-store` feature, default) – durable, distributed workloads.
+//!   - [`RedisStore`] (`redis-store` feature, default) – durable, distributed workloads.
 //!   - **RocksDB** (`rocksdb-store` feature, *under construction*) – embedded persistence.
 //! - **Scheduling** – delays, cron expressions, repeat policies.
 //! - **Reliability** – retries, backoff strategies, stalled-job detection.
