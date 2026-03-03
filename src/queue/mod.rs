@@ -78,17 +78,25 @@ use redis::{
 pub struct Queue<D, R, P, S> {
     #[cfg(feature = "tracing")]
     resource_span: Span,
+    /// `true` when the queue is in the paused state.
     pub paused: Arc<AtomicBool>,
+    /// Running count of jobs in the active state, maintained in memory.
     pub job_count: Arc<AtomicU64>,
+    /// In-memory snapshot of queue state counts; updated by [`Queue::get_metrics`].
     pub current_metrics: Arc<QueueMetrics>,
+    /// Queue-level configuration supplied at construction time.
     pub opts: QueueOpts,
     pub(crate) event_mode: Arc<Atomic<QueueEventMode>>,
     emitter: EventEmitter<R, P>,
     pub(crate) store: Arc<S>,
     #[debug(skip)]
+    /// Handle to the background task that listens for store events and forwards
+    /// them to registered listeners.
     pub stream_listener: Arc<JoinHandle<KioResult<()>>>,
     pub(crate) backoff: BackOff,
     pub(crate) worker_notifier: Arc<Notify>,
+    /// Atomic flag set to `true` to signal attached workers to pause picking
+    /// up new jobs.
     pub pause_workers: Arc<AtomicBool>,
     _data: PhantomData<D>,
 }
@@ -323,6 +331,16 @@ impl<
         self.store.get_job(id).await
     }
 
+    /// Moves a job from one state to another and persists all associated field
+    /// updates atomically.
+    ///
+    /// This is the central state-machine transition used internally by workers
+    /// when completing, failing, or re-queuing a job. It also publishes the
+    /// corresponding event so that listeners are notified.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the job no longer exists or the store fails.
     pub async fn move_job_to_state(
         &self,
         job_id: u64,
@@ -458,6 +476,18 @@ impl<
         Ok(false)
     }
 
+    /// Checks for stalled jobs and moves them back to the wait state.
+    ///
+    /// A job is considered stalled when its worker lock expires without the
+    /// lock being renewed. This method inspects all active jobs, releases
+    /// expired locks, and either re-queues the job or moves it to `Failed`
+    /// when the stall count exceeds [`WorkerOpts::max_stalled_count`].
+    ///
+    /// Returns `(recovered, failed)` job-ID vectors.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the store cannot be queried.
     pub async fn make_stalled_jobs_wait(
         &self,
         opts: &WorkerOpts,
@@ -539,6 +569,9 @@ impl<
         Ok((failed, stall))
     }
 
+    /// Returns `(is_paused, target_state)` where `target_state` is the list a
+    /// waiting job should be placed on: `Paused` when the queue is paused,
+    /// `Wait` otherwise.
     pub fn get_target_list(&self) -> (bool, JobState) {
         let paused = self.is_paused();
         if paused {
@@ -547,6 +580,15 @@ impl<
         (paused, JobState::Wait)
     }
 
+    /// Pops the next waiting job and atomically moves it to the `Active` state.
+    ///
+    /// Called by workers on each polling cycle. Returns a [`MoveToActiveResult`]
+    /// describing what happened (job ready, queue paused, rate-limited, or
+    /// delayed until a future timestamp).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the store operation fails.
     pub async fn move_to_active(
         &self,
         token: JobToken,
@@ -590,6 +632,13 @@ impl<
         }
         // fetch the next delayed_timestamp;
     }
+    /// Acquires the lock for `job_id`, transitions it to `Active`, and returns
+    /// the populated [`Job`] ready for the processor function.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the job no longer exists or the lock cannot be
+    /// set.
     pub async fn prepare_job_for_processing(
         &self,
         token: JobToken,
@@ -774,6 +823,11 @@ impl<
         Ok(None)
     }
 
+    /// Applies the retention policy in `remove_options` to `job_id` after it
+    /// reaches a terminal state.
+    ///
+    /// Depending on the policy the job record may be deleted immediately, kept
+    /// for a limited age, or pruned once a count threshold is exceeded.
     pub async fn clean_up_job(
         &self,
         job_id: u64,
@@ -837,11 +891,16 @@ impl<
     }
 }
 
+/// The outcome of a single [`Queue::move_to_active`] call.
 #[derive(derive_more::Debug)]
 pub enum MoveToActiveResult<D, R, P> {
+    /// The queue is paused; no job was picked up.
     Paused,
+    /// The queue is rate-limited; retry after the given number of milliseconds.
     RateLimit(u64),
+    /// No job is ready yet; retry after the given Unix timestamp in milliseconds.
     DelayUntil(u64),
+    /// A job is ready to be processed.
     #[debug("ProcessJob({0}) from state{1}", _0.id.unwrap_or_default(), _0.state)]
     ProcessJob(Box<Job<D, R, P>>),
 }
@@ -1005,6 +1064,11 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     pub async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()> {
         self.store.store_worker_metrics(metrics, ttl_ms).await
     }
+    /// Increments or decrements the in-progress counter and publishes a
+    /// `Processing` event so that listeners know a worker has started or
+    /// finished a job.
+    ///
+    /// Returns the updated counter value.
     pub async fn update_processing_count(
         &self,
         increment: bool,

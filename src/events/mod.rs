@@ -35,53 +35,90 @@ use uuid::Uuid;
 /// ```
 #[derive(Clone, Debug)]
 pub enum EventParameters<R, P> {
+    /// A job was moved into the priority sorted-set.
     Prioritized {
+        /// Numeric job ID.
         job_id: u64,
+        /// Job name.
         name: Option<String>,
+        /// Assigned priority score.
         priority: u64,
     },
+    /// A new job was added to the queue.
     Added {
+        /// Numeric job ID.
         job_id: u64,
+        /// Job name.
         name: Option<String>,
     },
+    /// A delayed or stalled job is now waiting to be processed.
     WaitingToRun {
+        /// Numeric job ID.
         job_id: u64,
+        /// The state the job was in before transitioning to wait.
         prev_state: Option<JobState>,
     },
+    /// A job has been moved to the delayed state.
     Delayed {
+        /// Numeric job ID.
         job_id: u64,
+        /// How long the job will wait before becoming eligible.
         delay: Duration,
     },
+    /// A job has been picked up by a worker and is now active.
     Active {
+        /// Numeric job ID.
         job_id: u64,
+        /// The state the job was in before becoming active.
         prev_state: Option<JobState>,
     },
+    /// A job finished successfully.
     Completed {
+        /// Numeric job ID.
         job_id: u64,
+        /// Timing and attempt statistics.
         job_metrics: JobMetrics,
+        /// How far in advance this run was scheduled (0 for non-delayed jobs).
         expected_delay: Duration,
+        /// The state the job was in before completing.
         prev_state: Option<JobState>,
+        /// The value returned by the processor.
         #[debug(skip)]
         result: R,
     },
-    Void, // drained, closed,
+    /// A placeholder event with no meaningful payload (e.g. queue drained).
+    Void,
+    /// A progress update reported by the processor.
     Progress {
+        /// Numeric job ID.
         job_id: u64,
+        /// The progress value emitted by the processor.
         #[debug(skip)]
         data: P,
     },
+    /// A job was detected as stalled and moved for recovery.
     Stalled {
+        /// Numeric job ID.
         job_id: u64,
+        /// The state the job was in before stalling.
         prev_state: JobState,
     },
+    /// A job permanently failed.
     Failed {
+        /// Failure details (reason and run count).
         reason: FailedDetails,
+        /// Numeric job ID.
         job_id: u64,
+        /// The state the job was in before failing.
         prev_state: JobState,
     },
+    /// A worker started or finished processing a job.
     Processing {
+        /// The worker that picked up the job.
         worker_id: Uuid,
+        /// Numeric job ID.
         job_id: u64,
+        /// The job's new state.
         status: JobState,
     },
 }
@@ -97,6 +134,7 @@ pub use redis_events::{QueueStreamEvent, StreamEventId};
 
 use crate::KioResult;
 impl<R: DeserializeOwned, P: DeserializeOwned> EventParameters<R, P> {
+    /// Converts a raw store event into the corresponding typed [`EventParameters`] variant.
     pub async fn from_queue_event(event: QueueStreamEvent<R, P>) -> KioResult<Self> {
         let job_state = event.event;
         let job_id = event.job_id;

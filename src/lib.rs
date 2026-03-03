@@ -215,6 +215,7 @@
 mod error;
 mod events;
 mod job;
+/// Re-exports of test helpers for verifying custom [`Store`] implementations.
 pub mod macros;
 mod queue;
 mod stores;
@@ -235,4 +236,5 @@ pub use timers::{TimedMap, Timer};
 pub use utils::{fetch_redis_pass, get_queue_metrics};
 pub use worker::{Worker, WorkerMetrics, WorkerOpts};
 
+/// Convenience alias for `Result<T, `[`KioError`]`>`.
 pub type KioResult<T> = Result<T, KioError>;

@@ -32,33 +32,48 @@ use croner::{errors::CronError, Cron};
 #[derive(Debug, Serialize, Deserialize, Clone, Hash, PartialEq)]
 /// Repeats options for job: either Run immediately, using backoff options or a cron schedule
 pub enum Repeat {
-    /// use a cron pattern to use;
+    /// Re-run at the next occurrence of a cron schedule.
     WithCron(Box<Cron>),
-    /// Use back opts
+    /// Re-run after a delay calculated by a [`BackOffJobOptions`] strategy.
     WithBackOff(BackOffJobOptions),
-    /// Every (ms, max_attempts)
+    /// Re-run every `delay_ms` milliseconds, at most `max_attempts` times
+    /// (unlimited when `None`).
     Every {
+        /// Delay between runs in milliseconds.
         delay_ms: i64,
+        /// Maximum number of repetitions; `None` means unlimited.
         max_attempts: Option<u64>,
     },
-    /// Repeat Immediately if attempts are less than specified max_attempts
+    /// Re-run as fast as possible until `max_attempts` is reached.
     Immediately(u64),
 }
 impl Repeat {
+    /// Constructs a [`Repeat::WithCron`] from a cron expression string.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`CronError`] if `pattern` is not a valid cron expression.
     pub fn from_cron_str(pattern: &str) -> Result<Self, CronError> {
         let cron = Cron::from_str(pattern)?;
         Ok(Self::WithCron(Box::new(cron)))
     }
+    /// Constructs a [`Repeat::WithBackOff`] from the given options.
     pub fn from_back_off(opts: BackOffJobOptions) -> Self {
         Self::WithBackOff(opts)
     }
+    /// Constructs a [`Repeat::Every`] that fires every `every_ms` milliseconds,
+    /// stopping after `max_attempts` runs (unlimited when `None`).
     pub fn repeat_every_for_times(every_ms: i64, max_attempts: Option<u64>) -> Self {
         Self::Every {
             delay_ms: every_ms,
             max_attempts,
         }
     }
-    /// returns the next delayed in time from now in timestamp_mills
+    /// Returns the Unix timestamp in milliseconds at which the job should next
+    /// run, or `None` when the policy has been exhausted.
+    ///
+    /// A return value of `0` is a sentinel meaning "move to the wait list
+    /// immediately" (used by [`Repeat::Immediately`]).
     pub fn next_occurrence(&self, backoff: &BackOff, attempts: u64) -> Option<i64> {
         let now = Utc::now();
         match self {

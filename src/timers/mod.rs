@@ -14,19 +14,32 @@ pub use delay_queue_map::TimedMap;
 pub(crate) use delay_queue_timer::{DelayQueueTimer, TimerType};
 pub type EmptyCb = dyn Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static;
 use tokio_util::sync::CancellationToken;
+/// A repeating async timer that fires a callback at a fixed interval.
+///
+/// Create one with [`Timer::new`], then call [`Timer::run`] to start it.
+/// While running the callback is invoked after each interval tick. Use
+/// [`Timer::pause`] / [`Timer::resume`] to suspend and resume without
+/// stopping the timer entirely, and [`Timer::stop`] to cancel it permanently.
 #[derive(Clone, Debug)]
 pub struct Timer {
     interval: Duration,
     #[debug(skip)]
     callback: Arc<EmptyCb>,
     is_active: Arc<AtomicBool>,
+    /// `true` when the timer has been suspended via [`Timer::pause`].
     pub paused: Arc<AtomicBool>,
+    /// `true` after [`Timer::should_skip_first_tick`] has been called; causes
+    /// the callback to fire before the first interval tick.
     pub skip_first_tick: Arc<AtomicBool>,
+    /// Notifier used to wake the timer loop when [`Timer::resume`] is called.
     pub notifier: Arc<Notify>,
     cancel: CancellationToken,
 }
 
 impl Timer {
+    /// Creates a new `Timer` that will call `cb` every `delay_ms` milliseconds.
+    ///
+    /// The timer is not started until [`Timer::run`] is called.
     pub fn new<C, F>(delay_ms: u64, cb: C) -> Self
     where
         C: Fn() -> F + Send + Sync + 'static,
@@ -48,6 +61,11 @@ impl Timer {
             skip_first_tick: Arc::default(),
         }
     }
+    /// Marks the timer so that the very first interval tick is skipped,
+    /// causing the callback to fire immediately on the first poll cycle.
+    ///
+    /// Returns `true` the first time it is called, then `false` for all
+    /// subsequent calls (the flag is set atomically).
     pub fn should_skip_first_tick(&self) -> bool {
         self.skip_first_tick
             .compare_exchange(
@@ -59,6 +77,9 @@ impl Timer {
             .unwrap_or_default()
     }
 
+    /// Suspends the timer until [`Timer::resume`] is called.
+    ///
+    /// If the timer is already paused or not running, this is a no-op.
     pub fn pause(&self) {
         self.paused.compare_exchange(
             false,
@@ -75,6 +96,10 @@ impl Timer {
         );
     }
 
+    /// Starts the timer loop in a background Tokio task.
+    ///
+    /// Returns `Some(JoinHandle)` on success, or `None` if the timer is
+    /// already running (idempotent).
     pub fn run(&self) -> Option<JoinHandle<()>> {
         if self.is_running() {
             return None;
@@ -106,6 +131,10 @@ impl Timer {
         Some(task)
     }
 
+    /// Permanently cancels the timer.
+    ///
+    /// Once stopped the timer cannot be restarted; create a new `Timer`
+    /// if you need to run again.
     pub fn stop(&self) {
         self.cancel.cancel();
         if self.cancel.is_cancelled() {
@@ -113,9 +142,13 @@ impl Timer {
                 .store(false, std::sync::atomic::Ordering::Relaxed);
         }
     }
+    /// Returns `true` if the timer is currently ticking (not paused or stopped).
     pub fn is_running(&self) -> bool {
         self.is_active.load(std::sync::atomic::Ordering::Relaxed)
     }
+    /// Resumes a previously paused timer.
+    ///
+    /// If the timer is already running or has been stopped, this is a no-op.
     pub fn resume(&self) {
         if self.is_running() || !self.paused.load(std::sync::atomic::Ordering::Relaxed) {
             return;
