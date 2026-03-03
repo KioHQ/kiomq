@@ -343,6 +343,8 @@ macro_rules! worker_store_suite {
                 let jobs = queue.bulk_add(job_iterator).await?;
                 while completed.len() < count as usize {}
                 worker.close();
+                 // allow some time to pass and clean up happens
+                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
                 // Store-generic cleanup assertion
                 let ids: Vec<u64> = jobs.iter().filter_map(|j| j.id).collect();
