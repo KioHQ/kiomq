@@ -1,8 +1,16 @@
-//! # KioMQ
+//! <div align="center">
 //!
-//! **KioMQ** is a task-queue and orchestration library for Rust, built on top of
-//! [Tokio](https://tokio.rs).  It provides the core building blocks to run background
-//! work inside your Tokio services:
+//! ## KioMQ
+//!
+//! **A task-queue and orchestration library for Rust**
+//!
+//! Built for [Tokio](https://tokio.rs) · Scale up (many workers per machine) · Scale out (Redis + workers across machines)
+//!
+//! </div>
+//!
+//! ---
+//!
+//! **KioMQ** provides the core building blocks to run background work inside your Tokio services:
 //!
 //! - A [`Queue`] to enqueue tasks/jobs.
 //! - One or more [`Worker`]s to process jobs concurrently.
@@ -19,7 +27,7 @@
 //!
 //! ---
 //!
-//! ## Key features
+//! ### Key features
 //!
 //! * **Async & sync processors** – async for I/O-bound work, sync (via
 //!   `spawn_blocking`) for CPU-bound work.
@@ -33,26 +41,24 @@
 //!
 //! ---
 //!
-//! ## Installation
+//! ### Installation
 //!
 //! ```toml
 //! [dependencies]
 //! kiomq = "0.1"
 //! ```
 //!
-//! ### Cargo features
+//! #### Cargo features
 //!
-//! | Feature | Description |
-//! |---------|-------------|
-//! | `redis-store` *(default)* | Redis backend |
-//! | `rocksdb-store` | RocksDB backend *(under construction)* |
-//! | `tracing` | [`tracing`](https://docs.rs/tracing) instrumentation |
+//! - `redis-store` *(default)* – Redis backend
+//! - `rocksdb-store` – RocksDB backend *(under construction)*
+//! - `tracing` – [`tracing`](https://docs.rs/tracing) instrumentation
 //!
 //! ---
 //!
-//! ## Quick-start
+//! ### Quick-start
 //!
-//! ### Async worker
+//! #### Async worker
 //!
 //! ```rust
 //! # #[tokio::main]
@@ -77,7 +83,7 @@
 //! # }
 //! ```
 //!
-//! ### Sync worker
+//! #### Sync worker
 //!
 //! Sync processors run on a dedicated blocking thread via
 //! [`tokio::task::spawn_blocking`](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html),
@@ -109,9 +115,9 @@
 //!
 //! ---
 //!
-//! ## Configuration
+//! ### Configuration
 //!
-//! ### Queue options ([`QueueOpts`])
+//! #### Queue options ([`QueueOpts`])
 //!
 //! ```rust
 //! use kiomq::{BackOffJobOptions, BackOffOptions, KeepJobs, QueueEventMode, QueueOpts,
@@ -132,7 +138,7 @@
 //! };
 //! ```
 //!
-//! ### Per-job options ([`JobOptions`])
+//! #### Per-job options ([`JobOptions`])
 //!
 //! ```rust
 //! use kiomq::JobOptions;
@@ -140,7 +146,7 @@
 //! let opts = JobOptions { attempts: 5, ..Default::default() };
 //! ```
 //!
-//! ### Worker options ([`WorkerOpts`])
+//! #### Worker options ([`WorkerOpts`])
 //!
 //! ```rust
 //! use kiomq::WorkerOpts;
@@ -150,7 +156,7 @@
 //!
 //! ---
 //!
-//! ## Events & observability
+//! ### Events & observability
 //!
 //! Subscribe to job-state events on the queue or directly on a worker:
 //!
@@ -181,14 +187,14 @@
 //!
 //! ---
 //!
-//! ## Backends
+//! ### Backends
 //!
-//! ### In-memory
+//! #### In-memory
 //!
 //! [`InMemoryStore`] is ideal for ephemeral workloads: tests, development, and
 //! short-lived tasks.  No external dependencies required.
 //!
-//! ### Redis *(default feature)*
+//! #### Redis *(default feature)*
 //!
 //! The Redis store enables durable, distributed workloads spanning multiple
 //! machines.  Requires a running Redis instance:
@@ -197,13 +203,13 @@
 //! docker run --rm -p 6379:6379 redis:latest
 //! ```
 //!
-//! ### RocksDB *(under construction)*
+//! #### RocksDB *(under construction)*
 //!
 //! The RocksDB store is a work-in-progress embedded-persistence backend.
 //!
 //! ---
 //!
-//! ## Tokio runtime
+//! ### Tokio runtime
 //!
 //! KioMQ is built on Tokio.  The **multi-thread** runtime is recommended for best
 //! throughput:
