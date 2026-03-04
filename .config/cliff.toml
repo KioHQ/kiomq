@@ -1,0 +1,56 @@
+[changelog]
+header = """
+# Changelog
+
+All notable changes to this project will be documented in this file.
+"""
+body = """
+{% if version %}## {{ version }} ({{ timestamp | date(format="%Y-%m-%d") }})
+{% else %}## Unreleased
+{% endif %}
+
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group }}
+{% for commit in commits %}
+- {{ commit.message | trim }}{% if commit.scope %} (**{{ commit.scope }}**){% endif %}
+{% endfor %}
+{% endfor %}
+"""
+trim = true
+footer = ""
+
+[git]
+# Plain semver tags like: 0.1.0, 1.2.3, 1.2.3-rc.1
+tag_pattern = "^[0-9]+\\.[0-9]+\\.[0-9]+.*$"
+
+# Prefer Conventional Commits when available, but keep non-standard commits too.
+conventional_commits = true
+filter_unconventional = false
+
+# You're using "Rebase and merge", so merge commits are rare, but these filters help:
+# - drop merge commits if any exist
+# - drop fixup!/squash! commits (from interactive rebase) if they slipped in
+# - drop WIP commits
+# - drop release/version-bump noise if you create those commits
+skip_commit_regex = "^(Merge pull request #|Merge branch |Merge remote-tracking branch |fixup! |squash! |WIP: |wip: |Bump version |Release )"
+
+commit_parsers = [
+  { message = "^feat(\\(.+\\))?:", group = "Features" },
+  { message = "^fix(\\(.+\\))?:", group = "Bug Fixes" },
+  { message = "^perf(\\(.+\\))?:", group = "Performance" },
+  { message = "^refactor(\\(.+\\))?:", group = "Refactoring" },
+  { message = "^docs(\\(.+\\))?:", group = "Documentation" },
+  { message = "^test(\\(.+\\))?:", group = "Tests" },
+  { message = "^build(\\(.+\\))?:", group = "Build" },
+  { message = "^ci(\\(.+\\))?:", group = "CI" },
+  { message = "^chore(\\(.+\\))?:", group = "Chores" },
+  { message = "^revert(\\(.+\\))?:", group = "Reverts" },
+
+  # If a commit body contains "BREAKING CHANGE", group it accordingly.
+  { body = "BREAKING CHANGE", group = "Breaking Changes" },
+
+  # Catch-all for non-standard commits that weren't skipped above.
+  { message = ".*", group = "Other" },
+]
+
+sort_commits = "oldest"
