@@ -282,8 +282,15 @@
 //! The RocksDB store is a work-in-progress embedded-persistence backend.
 //!
 //! ---
-//!
-#![allow(dead_code, unused)]
+#![warn(
+    missing_debug_implementations,
+    missing_docs,
+    rust_2018_idioms,
+    unreachable_pub,
+    clippy::pedantic,
+    clippy::nursery
+)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 mod error;
 mod events;
 mod job;
