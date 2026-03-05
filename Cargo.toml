@@ -2,7 +2,16 @@
 name = "kiomq"
 version = "0.1.0"
 edition = "2021"
-[package.metadata.cargo-commands]
+authors = ["Spencer Najib"]
+keywords = ["async-rust", "task-queue", "task-orchestration", "tokio", "server-side"]
+description  = "An all-in-one task-queue and orchestration library for Rust"
+license = "MIT"
+repository = "https://github.com/KioHQ/kiomq"
+homepage = "https://github.com/KioHQ/kiomq"
+categories = ["asynchronous", "server-side", "task-orchestration"]
+readme ="./README.md"
+
+[package.metadata.cabrgo-commands]
 exclude-examples = true
 [lib]
 bench = false
