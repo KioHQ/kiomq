@@ -1,4 +1,4 @@
-name: CD
+name: CD (new release)
 
 on:
   push:
@@ -64,8 +64,47 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
 
-  job2:
+  job3:
     needs: job1
+    name: Create GitHub Release (from tag)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (full history for git-cliff)
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Get tag (strip v)
+        id: tag
+        uses: dawidd6/action-get-tag@v1
+        with:
+          strip_v: true
+
+      - name: Get current date (UTC)
+        id: date
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release notes for this tag (with version + date heading)
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: .config/cliff.toml
+          args: --verbose --latest --template .config/release-notes.md.j2
+        env:
+          OUTPUT: RELEASE_NOTES.md
+          GITHUB_REPO: ${{ github.repository }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "${{ steps.tag.outputs.tag }} - ${{ steps.date.outputs.date }}"
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: ${{ contains(steps.tag.outputs.tag, '-') }}
+
+  job2:
+    needs: job3
     name: Publish to crates.io
     runs-on: ubuntu-latest
 
