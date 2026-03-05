@@ -1,0 +1,86 @@
+name: CD
+
+on:
+  push:
+    tags:
+      - v*
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  job1:
+    name: fetch tag, update Cargo.toml, generate changelog, and open PR
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout files
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Get tag
+        id: tag
+        uses: dawidd6/action-get-tag@v1
+        with:
+          strip_v: true
+
+      - name: Generate CHANGELOG.md
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: .config/cliff.toml
+          args: --verbose
+        env:
+          OUTPUT: CHANGELOG.md
+          GITHUB_REPO: ${{ github.repository }}
+
+      - name: Update version in Cargo.toml
+        uses: colathro/toml-editor@1.1.1
+        with:
+          file: Cargo.toml
+          key: package.version
+          value: ${{ steps.tag.outputs.tag }}
+
+      - name: Commit changes (open PR)
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore(release): ${{ steps.tag.outputs.tag }}"
+          title: "chore(release): ${{ steps.tag.outputs.tag }}"
+          body: |
+            Update version to ${{ steps.tag.outputs.tag }} and regenerate CHANGELOG.md.
+
+            Triggered by tag: ${{ github.ref_name }}
+          branch: update-release-${{ steps.tag.outputs.tag }}
+          base: main
+          signoff: true
+          draft: false
+
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+
+  job2:
+    needs: job1
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v3
+        with:
+          ref: update-release-${{ needs.job1.outputs.tag }}
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - uses: katyo/publish-crates@v2
+        with:
+          registry-token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          args: --allow-dirty
