@@ -169,7 +169,7 @@ mod tests {
     #[tokio::test]
     async fn runs_and_stops() {
         let timer = Timer::new(100, || async { println!("hello") });
-        timer.run();
+        let _ = timer.run();
         assert!(timer.is_running());
 
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -188,8 +188,8 @@ mod tests {
                 counter_clone.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             }
         });
-        timer.should_skip_first_tick();
-        timer.run();
+        let _ = timer.should_skip_first_tick();
+        let _ = timer.run();
         assert!(timer
             .skip_first_tick
             .load(std::sync::atomic::Ordering::Acquire));
@@ -210,8 +210,8 @@ mod tests {
                 counter_clone.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             }
         });
-        timer.should_skip_first_tick();
-        timer.run();
+        let _ = timer.should_skip_first_tick();
+        let _ = timer.run();
         assert!(timer
             .skip_first_tick
             .load(std::sync::atomic::Ordering::Acquire));

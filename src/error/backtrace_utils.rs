@@ -120,6 +120,7 @@ impl BacktraceCatcher {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unused_async)]
     use super::*;
     use std::io::Error as IoError;
 
