@@ -1,10 +1,7 @@
 [changelog]
-# No big header; GitHub Release body should start with the release heading.
 header = ""
-
-# Ensure the top line is "## <version> (<date>)"
 body = """
-## {{ version }} ({{ timestamp | date(format="%Y-%m-%d") }})
+## {{ version }}
 
 {% for group, commits in commits | group_by(attribute="group") %}
 ### {{ group }}
@@ -13,7 +10,6 @@ body = """
 {% endfor %}
 {% endfor %}
 """
-
 trim = true
 footer = ""
 
