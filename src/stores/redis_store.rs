@@ -326,7 +326,7 @@ where
                     .group(&self.consumer_group, &self.consumer_name)
                     .noack();
                 if let Some(b_internal) = block_interval {
-                    options = options.block(b_internal as usize);
+                    options = options.block(usize::try_from(b_internal).unwrap_or(usize::MAX));
                 }
                 let reply: StreamReadReply = connection
                     .xread_options(&[&self.stream_key], &[">"], &options)
@@ -620,7 +620,7 @@ where
                 if list_len > 0 {
                     let end = end.map_or(list_len, |value| value + 1);
 
-                    let items: Vec<u64> = conn.zrange(key, start as isize, end as isize)?;
+                    let items: Vec<u64> = conn.zrange(key, start.cast_signed(), end.cast_signed())?;
                     return Ok(VecDeque::from_iter(items));
                 }
             }
@@ -638,7 +638,7 @@ where
                 let list_len: usize = conn.llen(&key)?;
                 if list_len > 0 {
                     let end = end.map_or(list_len, |value| value + 1);
-                    let items: Vec<u64> = conn.lrange(key, start as isize, end as isize)?;
+                    let items: Vec<u64> = conn.lrange(key, start.cast_signed(), end.cast_signed())?;
                     return Ok(VecDeque::from_iter(items));
                 }
             }
@@ -671,7 +671,7 @@ where
     async fn clear_collections(&self) -> KioResult<()> {
         let mut conn = self.conn_pool.get().await?;
         let mut pipeline = redis::pipe();
-        [
+        for name in [
             CollectionSuffix::Delayed,
             CollectionSuffix::Wait,
             CollectionSuffix::Active,
@@ -686,12 +686,10 @@ where
             CollectionSuffix::PriorityCounter,
             CollectionSuffix::Meta,
             CollectionSuffix::Paused,
-        ]
-        .iter()
-        .for_each(|name| {
+        ] {
             let key = name.to_collection_name(&self.prefix, &self.name);
             pipeline.del(key);
-        });
+        }
         let _: () = pipeline.query_async(&mut conn).await?;
         Ok(())
     }

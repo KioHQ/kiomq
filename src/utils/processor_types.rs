@@ -7,7 +7,7 @@ use std::marker::PhantomData;
 
 use crate::{Job, KioResult};
 use std::sync::Arc;
-pub(crate) type SharedStore<S> = Arc<S>;
+pub type SharedStore<S> = Arc<S>;
 type SyncCallback<D, R, P, S> =
     dyn Fn(SharedStore<S>, Job<D, R, P>) -> KioResult<R> + Send + Sync + 'static;
 type AsyncCallback<D, R, P, S> = dyn Fn(SharedStore<S>, Job<D, R, P>) -> BoxFuture<'static, KioResult<R>>
@@ -17,12 +17,12 @@ type AsyncCallback<D, R, P, S> = dyn Fn(SharedStore<S>, Job<D, R, P>) -> BoxFutu
 
 /// An enum representing both sync and async processors
 #[derive(Clone)]
-pub(crate) enum Callback<D, R, P, S> {
+pub enum Callback<D, R, P, S> {
     Async(Arc<AsyncCallback<D, R, P, S>>),
     Sync(Arc<SyncCallback<D, R, P, S>>),
 }
-pub(crate) struct SyncFn<F, D, R, S, P, E>(pub F, PhantomData<(D, R, P, S, E)>);
-pub(crate) struct AsyncFn<F, D, R, P, S, E>(pub F, PhantomData<(D, R, P, S, E)>);
+pub struct SyncFn<F, D, R, P, S, E>(pub F, PhantomData<(D, R, P, S, E)>);
+pub struct AsyncFn<F, D, R, P, S, E>(pub F, PhantomData<(D, R, P, S, E)>);
 
 impl<F, D, R, P, S, E> From<SyncFn<F, D, R, P, S, E>> for Callback<D, R, P, S>
 where

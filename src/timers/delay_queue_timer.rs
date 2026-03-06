@@ -14,7 +14,7 @@ use tokio_util::time::DelayQueue;
 // model the timers (stall_check_locck  and extend_lock) as a tokio_util::DelayQueue
 
 #[derive(Debug, Clone, Copy, derive_more::Display)]
-pub(crate) enum TimerType {
+pub enum TimerType {
     #[display("StalledCheck after {:#?}", _0.elapsed())]
     #[debug("StalledCheck")]
     StalledCheck(Instant),
@@ -100,6 +100,7 @@ impl<
         }
     }
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    #[allow(clippy::future_not_send)]
     pub(crate) async fn insert(&self, timer: TimerType) {
         let next_duration = self.next_duration(timer);
         let key = self.delay_queue.lock().await.insert(timer, next_duration);
@@ -112,12 +113,11 @@ impl<
     }
     fn set_key(&self, timer: TimerType, key: Key) {
         match timer {
-            TimerType::StalledCheck(_) => self.keys[1].swap(Some(key)),
-            TimerType::ExtendLock(_) => self.keys[0].swap(Some(key)),
-            TimerType::PromotedDelayed(_) => self.keys[0].swap(Some(key)),
-            TimerType::CollectMetrics => self.keys[1].swap(Some(key)),
+            TimerType::StalledCheck(_) | TimerType::CollectMetrics => self.keys[1].swap(Some(key)),
+            TimerType::ExtendLock(_) | TimerType::PromotedDelayed(_) => self.keys[0].swap(Some(key)),
         };
     }
+    #[allow(clippy::future_not_send)]
     pub(crate) async fn pause(&self) {
         if let Some(key) = self.keys[0].load().as_ref() {
             if let Some(expired) = self.delay_queue.lock().await.try_remove(key) {
@@ -150,6 +150,7 @@ impl<
             }
         }
     }
+    #[allow(clippy::future_not_send)]
     pub(crate) async fn resume(&self) {
         while let Some(PausedTimerState { timer, deadline }) = self.pause_state.pop() {
             self.delay_queue.lock().await.insert_at(timer, deadline);
@@ -160,12 +161,14 @@ impl<
         self.close_now
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
+    #[allow(clippy::future_not_send)]
     pub(crate) async fn start_timers(&self) {
         let instant = Instant::now();
         self.insert(TimerType::ExtendLock(instant)).await;
         self.insert(TimerType::StalledCheck(instant)).await;
         self.insert(TimerType::CollectMetrics).await;
     }
+    #[allow(clippy::future_not_send)]
     pub(crate) async fn clear(&self) {
         self.delay_queue.lock().await.clear();
     }
@@ -175,10 +178,11 @@ impl<
             TimerType::StalledCheck(_) => Duration::from_millis(self.opts.stalled_interval),
             TimerType::ExtendLock(_) => Duration::from_millis(self.opts.lock_duration),
             TimerType::CollectMetrics => Duration::from_millis(self.opts.metrics_update_interval),
-            _ => Duration::from_millis(MIN_DELAY_MS_LIMIT),
+            TimerType::PromotedDelayed(_) => Duration::from_millis(MIN_DELAY_MS_LIMIT),
         }
     }
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self, _job_queue)))]
+    #[allow(clippy::future_not_send)]
     pub(crate) async fn run(&self, _job_queue: &SegQueue<u64>) -> KioResult<()> {
         use futures::StreamExt;
         use tokio_util::time::FutureExt;

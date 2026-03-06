@@ -8,8 +8,8 @@ use tokio::task::{self, JoinHandle};
 mod delay_queue_map;
 mod delay_queue_timer;
 pub use delay_queue_map::TimedMap;
-pub(crate) use delay_queue_timer::{DelayQueueTimer, TimerType};
-pub(crate) type EmptyCb = dyn Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static;
+pub use delay_queue_timer::{DelayQueueTimer, TimerType};
+pub type EmptyCb = dyn Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static;
 use tokio_util::sync::CancellationToken;
 /// A repeating async timer that fires a callback at a fixed interval.
 ///
@@ -54,7 +54,7 @@ impl Timer {
             is_active,
             interval,
             callback: Arc::new(parsed_cb),
-            cancel: Default::default(),
+            cancel: CancellationToken::default(),
             skip_first_tick: Arc::default(),
         }
     }

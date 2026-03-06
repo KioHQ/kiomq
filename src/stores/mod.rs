@@ -44,10 +44,18 @@ pub trait Store<D, R, P> {
     /// Returns the key prefix used to namespace all store collections.
     fn queue_prefix(&self) -> &str;
     /// Fetches a batch of jobs by their IDs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioResult`] error if any job lookup fails.
     fn fetch_jobs(&self, ids: &[u64]) -> KioResult<VecDeque<Job<D, R, P>>>;
     /// Removes entries whose TTL has elapsed (no-op for backends without TTL support).
     async fn purge_expired(&self) {}
     /// Returns per-worker metric snapshots stored with a TTL.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioResult`] error if the store lookup fails.
     fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>>;
     /// Persists a worker's metrics with a time-to-live of `ttl_ms` milliseconds.
     async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()>;
@@ -58,6 +66,10 @@ pub trait Store<D, R, P> {
     /// Persists the event-delivery mode to the store.
     async fn set_event_mode(&self, event_mode: QueueEventMode) -> KioResult<()>;
     /// Returns the IDs of jobs in the given `state`, optionally paginated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioResult`] error if the store lookup fails.
     fn get_job_ids_in_state(
         &self,
         state: JobState,
@@ -115,6 +127,10 @@ pub trait Store<D, R, P> {
     /// Returns the current state of the job with the given `id`.
     async fn get_state(&self, id: u64) -> Option<JobState>;
     /// Writes a progress update for `job` to the store in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioResult`] error if the store write fails.
     fn update_job_progress(&self, job: &mut Job<D, R, P>, value: P) -> KioResult<()>;
     /// Inserts `item` into the sorted collection `col` with the given optional
     /// `score`. Pass `append = true` to push to the tail of a list.
@@ -164,6 +180,10 @@ pub trait Store<D, R, P> {
     /// Removes `item` from the sorted/list collection `col`.
     async fn remove_item(&self, col: CollectionSuffix, item: u64) -> KioResult<()>;
     /// Deletes the entire collection identified by `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioResult`] error if the store operation fails.
     fn remove(&self, key: CollectionSuffix) -> KioResult<()>;
     /// Drops all auxiliary collections (active, waiting, delayed, etc.) but
     /// leaves job records intact.

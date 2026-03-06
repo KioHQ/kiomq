@@ -68,6 +68,7 @@ impl TaskInfo {
 /// Tokio runtime statistics captured for a single in-flight task.
 ///
 /// Values mirror the fields exposed by [`tokio_metrics::TaskMetrics`].
+#[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskStats {
     /// Total number of times the task was polled.
