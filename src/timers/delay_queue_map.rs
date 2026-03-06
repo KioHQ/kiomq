@@ -64,6 +64,7 @@ impl<K: Ord, V> TimedMap<K, V> {
 }
 impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
     /// Creates an empty `TimedMap` with expiration enabled.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -111,7 +112,7 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
                 tokio::task::block_in_place(|| {
                     Handle::current().block_on(async {
                         self.expiries.lock().await.remove(&expiry_key);
-                    })
+                    });
                 });
             }
         }
@@ -145,8 +146,8 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
         tokio::task::block_in_place(|| {
             Handle::current().block_on(async {
                 self.expiries.lock().await.clear();
-            })
-        })
+            });
+        });
     }
     /// Removes all entries whose TTL has elapsed.
     ///

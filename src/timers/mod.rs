@@ -63,6 +63,7 @@ impl Timer {
     ///
     /// Returns `true` the first time it is called, then `false` for all
     /// subsequent calls (the flag is set atomically).
+    #[must_use]
     pub fn should_skip_first_tick(&self) -> bool {
         self.skip_first_tick
             .compare_exchange(
@@ -97,6 +98,7 @@ impl Timer {
     ///
     /// Returns `Some(JoinHandle)` on success, or `None` if the timer is
     /// already running (idempotent).
+    #[must_use]
     pub fn run(&self) -> Option<JoinHandle<()>> {
         if self.is_running() {
             return None;
@@ -139,6 +141,7 @@ impl Timer {
         }
     }
     /// Returns `true` if the timer is currently ticking (not paused or stopped).
+    #[must_use]
     pub fn is_running(&self) -> bool {
         self.is_active.load(std::sync::atomic::Ordering::Relaxed)
     }

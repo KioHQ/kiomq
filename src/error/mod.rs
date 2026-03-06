@@ -6,11 +6,11 @@ use thiserror::Error;
 use tokio::task::JoinError;
 use uuid::Uuid;
 mod backtrace_utils;
-pub(crate) use backtrace_utils::{BacktraceCatcher, CaughtError, CaughtPanicInfo};
+pub use backtrace_utils::{BacktraceCatcher, CaughtError, CaughtPanicInfo};
 use croner::errors::CronError;
-/// The top-level error type returned by most KioMQ operations.
+/// The top-level error type returned by most `KioMQ` operations.
 ///
-/// Wraps errors from the underlying store backend (Redis, RocksDB), serialization
+/// Wraps errors from the underlying store backend (Redis, `RocksDB`), serialization
 /// failures, and domain-specific errors from the queue, job, and worker layers.
 #[derive(Debug, Error)]
 pub enum KioError {

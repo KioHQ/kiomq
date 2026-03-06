@@ -29,11 +29,11 @@ use crate::{EventEmitter, EventParameters};
 use atomig::Atomic;
 use derive_more::Debug;
 pub use options::{CollectionSuffix, QueueEventMode, QueueMetrics, QueueOpts, RetryOptions};
-pub(crate) use options::{Counter, JobField, ProcessedResult};
+pub use options::{Counter, JobField, ProcessedResult};
 
 /// A task queue that holds and manages jobs.
 ///
-/// `Queue` is the central hub of KioMQ.  It stores jobs, drives state
+/// `Queue` is the central hub of `KioMQ`.  It stores jobs, drives state
 /// transitions (waiting → active → completed / failed), emits events, and
 /// coordinates with [`crate::Worker`]s.
 ///
@@ -374,7 +374,7 @@ impl<
         if let Some(data) = value {
             match data {
                 ProcessedResult::Failed(failed_details) => {
-                    event.failed_reason = Some(failed_details)
+                    event.failed_reason = Some(failed_details);
                 }
                 ProcessedResult::Success(value, metrics) => {
                     event.returned_value = Some(value);
@@ -589,21 +589,20 @@ impl<
 
             Ok::<_, KioError>((job, prev_state))
         };
-        match job_id {
-            Some(job_id) => Ok(MoveToActiveResult::from_job_state_pair(
+        if let Some(job_id) = job_id {
+            Ok(MoveToActiveResult::from_job_state_pair(
                 prepare_job(job_id).await?,
-            )),
-            None => {
-                if let Some(id) = self.move_job_from_priorty_to_active().await? {
-                    let (job, _state) = prepare_job(id).await?;
-                    return Ok(MoveToActiveResult::ProcessJob(job.boxed()));
-                }
-
-                let mut next_delay = 1;
-                next_delay /= 0x1000;
-
-                Ok(MoveToActiveResult::DelayUntil(next_delay))
+            ))
+        } else {
+            if let Some(id) = self.move_job_from_priorty_to_active().await? {
+                let (job, _state) = prepare_job(id).await?;
+                return Ok(MoveToActiveResult::ProcessJob(job.boxed()));
             }
+
+            let mut next_delay = 1;
+            next_delay /= 0x1000;
+
+            Ok(MoveToActiveResult::DelayUntil(next_delay))
         }
         // fetch the next delayed_timestamp;
     }
@@ -691,7 +690,7 @@ impl<
     }
     /// Emits an event with the given state and parameters to all registered listeners.
     pub async fn emit(&self, event: JobState, data: EventParameters<R, P>) {
-        self.emitter.emit(event, data).await
+        self.emitter.emit(event, data).await;
     }
     /// Registers a listener for a specific job-state event.
     ///
@@ -735,6 +734,7 @@ impl<
     ///
     /// Returns the listener's [`Uuid`] if it was found and removed, or `None`
     /// if no listener with that ID exists.
+    #[must_use]
     pub fn remove_event_listener(&self, id: Uuid) -> Option<Uuid> {
         self.emitter.remove_listener(id)
     }
@@ -860,10 +860,12 @@ impl<
         self.store.get_job_ids_in_state(state, start, end)
     }
     /// Returns the name of this queue (as provided to the store constructor).
+    #[must_use]
     pub fn name(&self) -> &str {
         self.store.queue_name()
     }
     /// Returns the key prefix used for all collections belonging to this queue.
+    #[must_use]
     pub fn prefix(&self) -> &str {
         self.store.queue_prefix()
     }
@@ -942,7 +944,7 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
                         0 => {
                             self.store
                                 .add_item(CollectionSuffix::Wait, job_id, None, true)
-                                .await?
+                                .await?;
                         }
                         _ => {
                             self.store
@@ -952,9 +954,9 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
                                     Some(next_delayed_timestamp),
                                     true,
                                 )
-                                .await?
+                                .await?;
                         }
-                    };
+                    }
                 }
                 Ok(())
             }
@@ -991,6 +993,7 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     /// This reads the in-memory [`QueueMetrics::is_paused`] flag; it does **not**
     /// perform a store round-trip.  Call [`get_metrics`](Self::get_metrics) first
     /// if you need a fresh value from the store.
+    #[must_use]
     pub fn is_paused(&self) -> bool {
         self.current_metrics.queue_is_paused()
     }

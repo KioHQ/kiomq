@@ -2,7 +2,7 @@
 //!
 //! <img src="https://raw.githubusercontent.com/KioHQ/kiomq/HEAD/assets/logo-dark.png" alt="KioMQ logo" width="320" />
 //!
-//! ## KioMQ
+//! ## `KioMQ`
 //!
 //! **A task-queue and orchestration library for Rust**
 //!
@@ -12,14 +12,14 @@
 //!
 //! ---
 //!
-//! **KioMQ** provides the core building blocks to run background work inside your Tokio services:
+//! **`KioMQ`** provides the core building blocks to run background work inside your Tokio services:
 //!
 //! - A [`Queue`] to enqueue tasks/jobs.
 //! - One or more [`Worker`]s to process jobs concurrently.
 //! - Pluggable [`Store`] backends:
 //!   - [`InMemoryStore`] – ephemeral (tests, dev, short-lived tasks).
 //!   - [`RedisStore`] (`redis-store` feature, default) – durable, distributed workloads.
-//!   - **RocksDB** (`rocksdb-store` feature, *under construction*) – embedded persistence.
+//!   - **`RocksDB`** (`rocksdb-store` feature, *under construction*) – embedded persistence.
 //! - **Scheduling** – delays, cron expressions, repeat policies.
 //! - **Reliability** – retries, backoff strategies, stalled-job detection.
 //! - **Observability** – events, progress updates, per-worker metrics.
@@ -45,7 +45,7 @@
 //!
 //! ### Tokio runtime requirements
 //!
-//! KioMQ is built on **Tokio**.
+//! `KioMQ` is built on **Tokio**.
 //!
 //! - For best throughput and "scale up" behavior, **Tokio's multi-thread runtime is
 //!   recommended** (`rt-multi-thread`).
@@ -79,7 +79,7 @@
 //! #### Cargo features
 //!
 //! - `redis-store` *(default)* – Redis backend
-//! - `rocksdb-store` – RocksDB backend *(under construction)*
+//! - `rocksdb-store` – `RocksDB` backend *(under construction)*
 //! - `tracing` – [`tracing`](https://docs.rs/tracing) instrumentation
 //!
 //! ---
@@ -277,9 +277,9 @@
 //! docker run --rm -p 6379:6379 redis:latest
 //! ```
 //!
-//! #### RocksDB *(under construction)*
+//! #### `RocksDB` *(under construction)*
 //!
-//! The RocksDB store is a work-in-progress embedded-persistence backend.
+//! The `RocksDB` store is a work-in-progress embedded-persistence backend.
 //!
 //! ---
 #![warn(

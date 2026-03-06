@@ -31,8 +31,9 @@ where
     E: std::error::Error + Send + 'static,
 {
     fn from(SyncFn(f, _): SyncFn<F, D, R, P, S, E>) -> Self {
-        let callback =
-            move |store: SharedStore<S>, job: Job<_, _, _>| f(store, job).map_err(|e| e.into());
+        let callback = move |store: SharedStore<S>, job: Job<_, _, _>| {
+            f(store, job).map_err(std::convert::Into::into)
+        };
         Self::Sync(Arc::new(callback))
     }
 }
@@ -47,7 +48,7 @@ where
     fn from(AsyncFn(f, _): AsyncFn<F, D, R, P, S, E>) -> Self {
         let callback = move |store: SharedStore<S>, job: Job<D, R, P>| {
             let fut = async_backtrace::frame!(f(store, job));
-            fut.map_err(|e| e.into()).boxed()
+            fut.map_err(std::convert::Into::into).boxed()
         };
         Self::Async(Arc::new(callback))
     }

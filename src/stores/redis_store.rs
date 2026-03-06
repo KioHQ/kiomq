@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    BTreeMap, CollectionSuffix, EventEmitter, Job, JobField, JobOptions, JobState, JobToken,
+    KioResult, ProcessedResult, QueueEventMode, QueueMetrics, QueueOpts, QueueStreamEvent, Store,
+    Trace, VecDeque, WorkerMetrics,
+};
 use crate::utils::{
     create_listener_handle, prepare_for_insert, process_each_event, query_all_batched,
     update_job_opts,
@@ -101,15 +105,15 @@ impl RedisStore {
         let subscribed = Arc::default();
 
         Ok(Self {
-            stream_key,
-            subscribed,
-            consumer_name,
-            consumer_group,
-            pubsub_sink,
-            pubsub_source,
-            conn_pool,
-            name,
             prefix,
+            name,
+            consumer_group,
+            consumer_name,
+            stream_key,
+            pubsub_source,
+            pubsub_sink,
+            subscribed,
+            conn_pool,
             redis_client,
         })
     }
@@ -237,7 +241,7 @@ where
                     let event = QueueStreamEvent::<R, P> {
                         job_id: id,
                         event: JobState::Progress,
-                        name: Some(self.name.to_owned()),
+                        name: Some(self.name.clone()),
                         progress_data: Some(value.clone()),
                         ..Default::default()
                     };
@@ -248,7 +252,7 @@ where
                         ("event", JobState::Progress.to_string().to_lowercase()),
                         ("job_id", id.to_string()),
                         ("data", progress_str),
-                        ("name", self.name.to_string()),
+                        ("name", self.name.clone()),
                     ];
                     pipeline.xadd(&events_stream_key, "*", &items);
                 }
@@ -334,7 +338,7 @@ where
                     process_each_event::<D, R, P>(event, emitter, self, metrics).await?;
                 }
             }
-        };
+        }
 
         Ok(())
     }
@@ -457,7 +461,7 @@ where
                 &mut pipeline,
             )?;
             job.id = Some(id);
-            result.push(job)
+            result.push(job);
         }
         if is_prioritized {
             pipeline.incr(&priority_counter_key, PC_COUNTER.load(Ordering::Acquire));
@@ -527,7 +531,7 @@ where
         let job_key = CollectionSuffix::Job(job_id).to_collection_name(&self.prefix, &self.name);
         let fields: Vec<_> = fields
             .into_iter()
-            .flat_map(|field| {
+            .filter_map(|field| {
                 let name = field.name();
                 if let JobField::BackTrace(trace) = field {
                     let mut previous: Vec<u8> = blocking_con.hget(&job_key, "stackTrace").ok()?;
@@ -614,7 +618,7 @@ where
             JobState::Prioritized | JobState::Completed | JobState::Failed | JobState::Delayed => {
                 let list_len: usize = conn.zcard(&key)?;
                 if list_len > 0 {
-                    let end = end.map(|value| value + 1).unwrap_or(list_len);
+                    let end = end.map_or(list_len, |value| value + 1);
 
                     let items: Vec<u64> = conn.zrange(key, start as isize, end as isize)?;
                     return Ok(VecDeque::from_iter(items));
@@ -633,7 +637,7 @@ where
             JobState::Active | JobState::Wait | JobState::Paused => {
                 let list_len: usize = conn.llen(&key)?;
                 if list_len > 0 {
-                    let end = end.map(|value| value + 1).unwrap_or(list_len);
+                    let end = end.map_or(list_len, |value| value + 1);
                     let items: Vec<u64> = conn.lrange(key, start as isize, end as isize)?;
                     return Ok(VecDeque::from_iter(items));
                 }
@@ -785,9 +789,10 @@ where
         if conn.exists::<_, bool>(src).await.unwrap_or_default() {
             pipeline.rename(src, dst);
         }
-        match pause {
-            true => pipeline.hset(meta_key, CollectionSuffix::Paused, 1),
-            _ => pipeline.hdel(meta_key, CollectionSuffix::Paused),
+        if pause {
+            pipeline.hset(meta_key, CollectionSuffix::Paused, 1)
+        } else {
+            pipeline.hdel(meta_key, CollectionSuffix::Paused)
         };
         let _: redis::Value = pipeline.query_async(&mut conn).await?;
         Ok(())

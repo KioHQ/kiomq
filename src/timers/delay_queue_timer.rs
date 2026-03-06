@@ -43,9 +43,9 @@ use crate::{worker::JobMap, Queue, Store, WorkerOpts};
 #[cfg(feature = "tracing")]
 use tracing::{info, info_span, instrument, Span};
 use xutex::AsyncMutex;
-/// A Runner for both  the stalled_check and lock_extension timer that requires polling
+/// A Runner for both  the `stalled_check` and `lock_extension` timer that requires polling
 #[derive(Clone, derive_more::Debug)]
-pub(crate) struct DelayQueueTimer<D, R, P, S> {
+pub struct DelayQueueTimer<D, R, P, S> {
     worker_id: uuid::Uuid,
     queue: Arc<Queue<D, R, P, S>>,
     #[debug(skip)]
@@ -167,10 +167,10 @@ impl<
         self.insert(TimerType::CollectMetrics).await;
     }
     pub(crate) async fn clear(&self) {
-        self.delay_queue.lock().await.clear()
+        self.delay_queue.lock().await.clear();
     }
 
-    fn next_duration(&self, timer: TimerType) -> Duration {
+    const fn next_duration(&self, timer: TimerType) -> Duration {
         match timer {
             TimerType::StalledCheck(_) => Duration::from_millis(self.opts.stalled_interval),
             TimerType::ExtendLock(_) => Duration::from_millis(self.opts.lock_duration),

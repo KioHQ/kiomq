@@ -7,7 +7,7 @@
 /// - `$make_store`: an async expression that returns `kiomq::KioResult<S>`
 ///   where `S: kiomq::Store<i32,i32,i32> + Clone + Send + 'static`.
 ///
-/// # Example (InMemory)
+/// # Example (`InMemory`)
 /// ```ignore
 /// use kiomq::macros::worker_store_suite;
 /// use kiomq::InMemoryStore;

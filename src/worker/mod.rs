@@ -251,7 +251,7 @@ impl<
         let id = Uuid::new_v4();
         let opts = worker_opts.unwrap_or_default();
         let jobs = jobs_in_progress.clone();
-        let timers = DelayQueueTimer::new(jobs.clone(), id, opts, queue.clone());
+        let timers = DelayQueueTimer::new(jobs, id, opts, queue.clone());
         let continue_notifier = queue.worker_notifier.clone();
 
         #[cfg(feature = "tracing")]
@@ -297,6 +297,7 @@ impl<
     }
 
     /// Returns `true` if the worker is actively processing jobs.
+    #[must_use]
     pub fn is_running(&self) -> bool {
         self.state
             .load(std::sync::atomic::Ordering::Acquire)
@@ -304,6 +305,7 @@ impl<
             && !self.cancellation_token.is_cancelled()
     }
     /// Returns `true` if the worker is idle (started but waiting for work).
+    #[must_use]
     pub fn is_idle(&self) -> bool {
         self.state
             .load(std::sync::atomic::Ordering::Acquire)
@@ -399,6 +401,7 @@ impl<
         Ok(())
     }
     /// Returns `true` if the worker has been closed (cancelled).
+    #[must_use]
     pub fn closed(&self) -> bool {
         self.cancellation_token.is_cancelled()
             || self
@@ -476,6 +479,7 @@ impl<
     /// Removes a previously registered event listener from the underlying queue.
     ///
     /// Returns the listener ID if found and removed, or `None` otherwise.
+    #[must_use]
     pub fn remove_event_listener(&self, id: Uuid) -> Option<Uuid> {
         self.queue.remove_event_listener(id)
     }

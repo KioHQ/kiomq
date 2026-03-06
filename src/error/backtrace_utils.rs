@@ -5,7 +5,7 @@ use std::sync::{LazyLock, Mutex};
 use tokio::task::JoinError;
 type Backtrace = Option<Box<[LocationTrace]>>;
 #[derive(Debug)]
-pub(crate) enum CaughtError {
+pub enum CaughtError {
     Panic(CaughtPanicInfo),
     Error(Box<dyn std::error::Error + Send>, Backtrace),
     JoinError(JoinError),
@@ -17,7 +17,7 @@ impl From<JoinError> for CaughtError {
 }
 
 #[derive(Debug)]
-pub(crate) struct CaughtPanicInfo {
+pub struct CaughtPanicInfo {
     pub payload: String,
     pub backtrace: Backtrace,
 }
@@ -33,7 +33,7 @@ impl Default for CaughtPanicInfo {
 
 #[derive(Debug, Default, derive_more::Display)]
 #[display("{} at {}:{}", file, line, col)]
-pub(crate) struct PanicLocation {
+pub(super) struct PanicLocation {
     file: String,
     line: u32,
     col: u32,
@@ -48,7 +48,7 @@ impl From<&std::panic::Location<'_>> for PanicLocation {
     }
 }
 #[derive(Clone)]
-pub(crate) struct BacktraceCatcher;
+pub struct BacktraceCatcher;
 
 impl BacktraceCatcher {
     #[async_backtrace::framed]
@@ -57,16 +57,16 @@ impl BacktraceCatcher {
         let payload = info
             .payload()
             .downcast_ref::<String>()
-            .map(|s| s.as_str())
+            .map(std::string::String::as_str)
             .or_else(|| info.payload().downcast_ref::<&'static str>().copied())
             .unwrap_or("Box<Any>");
-        let location: PanicLocation = info.location().map(|l| l.into()).unwrap_or_default();
+        let location: PanicLocation = info
+            .location()
+            .map(std::convert::Into::into)
+            .unwrap_or_default();
         let payload = format!("Panic:{payload} :\n {location}");
 
-        CaughtPanicInfo {
-            payload: payload.clone(),
-            backtrace,
-        }
+        CaughtPanicInfo { payload, backtrace }
     }
     #[async_backtrace::framed]
     pub async fn catch<F, T, E>(f: F) -> Result<T, CaughtError>

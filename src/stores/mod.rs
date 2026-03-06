@@ -27,9 +27,9 @@ enum Lock {
 use crate::events::Emitter;
 use arc_swap::ArcSwapOption;
 type SharedEmitter<R, P> = ArcSwapOption<Emitter<R, P>>;
-/// Backend storage interface implemented by all KioMQ store backends.
+/// Backend storage interface implemented by all `KioMQ` store backends.
 ///
-/// This trait abstracts over Redis, RocksDB, and the in-memory store so that
+/// This trait abstracts over Redis, `RocksDB`, and the in-memory store so that
 /// [`Queue`](crate::Queue) and [`Worker`](crate::Worker) are generic over the
 /// persistence layer. Implementors are responsible for job serialisation, TTL
 /// management, event publishing, and atomic state transitions.
