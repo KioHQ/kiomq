@@ -123,10 +123,10 @@ pub enum EventParameters<R, P> {
 use serde::de::DeserializeOwned;
 use std::{sync::Arc, time::Duration};
 use typed_emitter::TypedEmitter;
-pub(crate) type Emitter<R, P> = TypedEmitter<JobState, EventParameters<R, P>>;
-pub(crate) type EventEmitter<R, P> = Arc<Emitter<R, P>>;
+pub type Emitter<R, P> = TypedEmitter<JobState, EventParameters<R, P>>;
+pub type EventEmitter<R, P> = Arc<Emitter<R, P>>;
 mod redis_events;
-pub(crate) use redis_events::QueueStreamEvent;
+pub use redis_events::QueueStreamEvent;
 
 use crate::KioResult;
 impl<R: DeserializeOwned, P: DeserializeOwned> EventParameters<R, P> {

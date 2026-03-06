@@ -791,6 +791,7 @@ impl<
         self.store.clear_collections().await?;
         Ok(())
     }
+    #[allow(clippy::future_not_send)]
     async fn delete_all_jobs(&self) -> KioResult<()> {
         let last_id = self.current_metrics.last_id.load(Ordering::Acquire);
         self.store.clear_jobs(last_id).await
@@ -808,6 +809,7 @@ impl<
     }
 
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    #[allow(clippy::future_not_send)]
     async fn move_job_from_priorty_to_active(&self) -> KioResult<Option<u64>> {
         let mut min_priority_job: Vec<(u64, u64)> = self
             .store
@@ -1000,6 +1002,7 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
         }
     }
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    #[allow(clippy::future_not_send)]
     async fn retry_failed(
         &self,
         job_id: u64,
