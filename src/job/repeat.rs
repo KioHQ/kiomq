@@ -82,7 +82,7 @@ impl Repeat {
             Self::WithBackOff(opts) => {
                 let opts = BackOff::normalize(Some(opts))?;
                 let delay_fn = backoff.lookup_strategy(opts, None)?;
-                let next_delay_ms = delay_fn(attempts as i64);
+                let next_delay_ms = delay_fn(attempts.cast_signed());
                 let next_dt = now + TimeDelta::milliseconds(next_delay_ms);
                 Some(next_dt.timestamp_millis())
             }

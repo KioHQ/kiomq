@@ -131,7 +131,15 @@ pub(crate) use redis_events::QueueStreamEvent;
 use crate::KioResult;
 impl<R: DeserializeOwned, P: DeserializeOwned> EventParameters<R, P> {
     /// Converts a raw store event into the corresponding typed [`EventParameters`] variant.
-    pub async fn from_queue_event(event: QueueStreamEvent<R, P>) -> KioResult<Self> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`](crate::KioError) if the event payload cannot be decoded.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a `Completed` event has no returned value, or a `Progress` event has no data.
+    pub fn from_queue_event(event: QueueStreamEvent<R, P>) -> KioResult<Self> {
         let job_state = event.event;
         let job_id = event.job_id;
         let parameter = match job_state {
@@ -156,8 +164,7 @@ impl<R: DeserializeOwned, P: DeserializeOwned> EventParameters<R, P> {
                 job_id,
                 prev_state: event.prev,
             },
-            JobState::Paused => Self::Void,
-            JobState::Resumed => Self::Void,
+            JobState::Paused | JobState::Resumed | JobState::Obliterated => Self::Void,
             JobState::Completed => {
                 let job_metrics = event.metrics.unwrap_or_default();
                 Self::Completed {
@@ -186,7 +193,6 @@ impl<R: DeserializeOwned, P: DeserializeOwned> EventParameters<R, P> {
                 job_id: event.job_id,
                 status: event.prev.unwrap_or_default(),
             },
-            JobState::Obliterated => Self::Void,
         };
 
         Ok(parameter)

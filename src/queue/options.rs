@@ -209,11 +209,9 @@ impl From<JobState> for CollectionSuffix {
     fn from(val: JobState) -> Self {
         match val {
             JobState::Wait => Self::Wait,
-            JobState::Stalled => Self::Paused,
-            JobState::Active => Self::Active,
-            JobState::Paused => Self::Paused,
+            JobState::Stalled | JobState::Paused => Self::Paused,
+            JobState::Active | JobState::Resumed => Self::Active,
             JobState::Completed => Self::Completed,
-            JobState::Resumed => Self::Active,
             JobState::Failed => Self::Failed,
             JobState::Delayed => Self::Delayed,
             JobState::Progress => Self::Prefix,
@@ -345,8 +343,8 @@ impl Default for QueueOpts {
     fn default() -> Self {
         Self {
             event_mode: Some(QueueEventMode::default()),
-            remove_on_fail: Default::default(),
-            remove_on_complete: Default::default(),
+            remove_on_fail: Option::default(),
+            remove_on_complete: Option::default(),
             repeat: None,
             attempts: 1,
             default_backoff: None,
@@ -354,6 +352,7 @@ impl Default for QueueOpts {
     }
 }
 
+/// A shared atomic counter used to track job IDs and other queue counters.
 pub type Counter = Arc<AtomicU64>;
 fn create_counter(count: u64) -> Counter {
     Counter::new(count.into())

@@ -6,8 +6,11 @@ use tokio::task::JoinError;
 type Backtrace = Option<Box<[LocationTrace]>>;
 #[derive(Debug)]
 pub enum CaughtError {
+    /// A panic was caught.
     Panic(CaughtPanicInfo),
+    /// An error was returned from the future.
     Error(Box<dyn std::error::Error + Send>, Backtrace),
+    /// A Tokio task join error occurred.
     JoinError(JoinError),
 }
 impl From<JoinError> for CaughtError {
@@ -16,9 +19,12 @@ impl From<JoinError> for CaughtError {
     }
 }
 
+/// Information captured about a panic.
 #[derive(Debug)]
 pub struct CaughtPanicInfo {
+    /// A human-readable description of the panic, including the source location.
     pub payload: String,
+    /// Async backtrace at the point the panic was caught, if available.
     pub backtrace: Backtrace,
 }
 
@@ -26,7 +32,7 @@ impl Default for CaughtPanicInfo {
     fn default() -> Self {
         Self {
             payload: "Panic occurred but failed to capture backtrace".to_string(),
-            backtrace: Default::default(),
+            backtrace: Option::default(),
         }
     }
 }
@@ -47,7 +53,9 @@ impl From<&std::panic::Location<'_>> for PanicLocation {
         }
     }
 }
-#[derive(Clone)]
+/// Installs a panic hook and drives a future to completion, catching both
+/// panics and errors.
+#[derive(Clone, Debug)]
 pub struct BacktraceCatcher;
 
 impl BacktraceCatcher {
@@ -68,6 +76,13 @@ impl BacktraceCatcher {
 
         CaughtPanicInfo { payload, backtrace }
     }
+    /// Drives the given future to completion, catching both panics and `Err`
+    /// results.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CaughtError::Panic`] if the future panics, [`CaughtError::Error`]
+    /// if it returns `Err`, or [`CaughtError::JoinError`] if a join fails.
     #[async_backtrace::framed]
     pub async fn catch<F, T, E>(f: F) -> Result<T, CaughtError>
     where

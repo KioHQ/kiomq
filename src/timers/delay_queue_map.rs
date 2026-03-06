@@ -42,7 +42,7 @@ impl<K: Ord, V> Default for TimedMap<K, V> {
     fn default() -> Self {
         Self {
             expiries: AsyncMutex::new(DelayQueue::default()),
-            inner: Default::default(),
+            inner: SkipMap::default(),
             disable_expiration: AtomicBool::default(),
         }
     }
@@ -100,6 +100,7 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
         self.inner.insert(key, pair);
     }
     /// Returns the number of entries currently tracked in the expiry queue.
+    #[allow(clippy::future_not_send)]
     pub async fn len_expired(&self) -> usize {
         self.expiries.lock().await.len()
     }
@@ -122,6 +123,7 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
     /// If the entry already has an expiry key it is reset to `duration` from
     /// now; otherwise a new expiry is registered.  Returns the delay-queue key
     /// on success or `None` if the entry does not exist.
+    #[allow(clippy::future_not_send)]
     pub async fn update_expiration_status(&self, key: &K, duration: Duration) -> Option<Key> {
         let mut expiries = self.expiries.lock().await;
         let found = self.inner.get(key)?;
@@ -153,12 +155,13 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
     ///
     /// This is a no-op when expiration is disabled. The method polls the
     /// delay queue for a short timeout so it doesn't block indefinitely.
+    #[allow(clippy::future_not_send)]
     pub async fn purge_expired(&self) {
+        use futures::StreamExt;
+        use tokio_util::time::FutureExt;
         if !self.expires_entries() {
             return;
         }
-        use futures::StreamExt;
-        use tokio_util::time::FutureExt;
         let timeout = Duration::from_micros(10);
         let mut expiries = self.expiries.lock().await;
         // clean any queued for deletion;

@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, info_span};
 use uuid::Uuid;
 
-pub(crate) mod processor_types;
+pub mod processor_types;
 use crate::KioResult;
 use crate::MoveToActiveResult;
 use crate::{Job, ProcessedResult, Queue};
@@ -43,7 +43,7 @@ pub fn fetch_redis_pass() -> Option<String> {
     std::env::var("REDIS_PASSWORD").ok()
 }
 
-pub(crate) fn serialize_into_pairs<V: Serialize>(item: &V) -> Vec<(String, String)> {
+pub fn serialize_into_pairs<V: Serialize>(item: &V) -> Vec<(String, String)> {
     use simd_json::BorrowedValue;
     if let Ok(BorrowedValue::Object(obj)) = simd_json::serde::to_borrowed_value(item) {
         return obj
@@ -55,7 +55,7 @@ pub(crate) fn serialize_into_pairs<V: Serialize>(item: &V) -> Vec<(String, Strin
     }
     vec![]
 }
-pub(crate) const fn calculate_next_priority_score(priority: u64, prio_counter: u64) -> u64 {
+pub const fn calculate_next_priority_score(priority: u64, prio_counter: u64) -> u64 {
     (priority << 32) + (prio_counter & 0xffff_ffff_ffff)
 }
 
@@ -152,7 +152,9 @@ pub async fn get_queue_metrics<C: redis::aio::ConnectionLike>(
 
 // ---- UTIL FUNCTIONS for the worker
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn process_job<D, R, P, S>(
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::future_not_send)]
+pub async fn process_job<D, R, P, S>(
     job: Job<D, R, P>,
     token: JobToken,
     jobs_in_progress: JobMap<D, R, P>,
@@ -307,7 +309,8 @@ where
     }
     Ok(())
 }
-pub(crate) async fn get_next_job<D, R, P, S>(
+#[allow(clippy::future_not_send)]
+pub async fn get_next_job<D, R, P, S>(
     queue: &Queue<D, R, P, S>,
     token: JobToken,
     _block_delay: u64,
@@ -326,7 +329,7 @@ where
         return Ok(None);
     }
     if let Some(job_id) = passed_id {
-        let ts = Utc::now().timestamp_micros() as u64;
+        let ts = Utc::now().timestamp_micros().cast_unsigned();
         let prev_state = JobState::Wait;
         let job = queue
             .prepare_job_for_processing(token, job_id, ts, opts, prev_state)
@@ -373,9 +376,10 @@ type MainLoopParams<D, R, P, S> = (
     DelayQueueTimer<D, R, P, S>,
 );
 use tokio::task::JoinHandle;
-pub(crate) type JobQueue = Arc<SegQueue<u64>>;
+pub type JobQueue = Arc<SegQueue<u64>>;
 #[async_backtrace::framed]
-pub(crate) async fn main_loop<D, R, P, S>(params: MainLoopParams<D, R, P, S>) -> KioResult<()>
+#[allow(clippy::future_not_send)]
+pub async fn main_loop<D, R, P, S>(params: MainLoopParams<D, R, P, S>) -> KioResult<()>
 where
     D: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
     R: Clone + DeserializeOwned + 'static + Serialize + Send + Sync,
@@ -444,7 +448,7 @@ where
         while !cancel_token.is_cancelled() {
             // promote jobs here;
             let date_time = Utc::now();
-            let interval_ms = (MIN_DELAY_MS_LIMIT) as i64;
+            let interval_ms = i64::from(MIN_DELAY_MS_LIMIT as u32);
             if queue_clone.current_metrics.has_delayed() {
                 queue_clone
                     .promote_delayed_jobs(date_time, interval_ms, &timers)
@@ -595,7 +599,8 @@ where
 use crate::Dt;
 use chrono::TimeDelta;
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn promote_jobs<D, R, P, S: Store<D, R, P> + Send + 'static + Clone>(
+#[allow(clippy::future_not_send)]
+pub async fn promote_jobs<D, R, P, S: Store<D, R, P> + Send + 'static + Clone>(
     queue: &Queue<D, R, P, S>,
     date_time: Dt,
     interval_ms: i64,
@@ -651,7 +656,7 @@ where
 #[cfg(feature = "redis-store")]
 #[allow(clippy::too_many_arguments)]
 /// Utilily function for pipelining
-pub(crate) fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
+pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
     queue_name: &str,
     event_mode: QueueEventMode,
     is_paused: bool,
@@ -674,7 +679,7 @@ pub(crate) fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
     } = opts;
     let dt = Utc::now();
     let expected_dt_ts = delay.next_occurrance_timestamp_ms();
-    let delay = delay.as_diff_ms(dt) as u64;
+    let delay = delay.as_diff_ms(dt).cast_unsigned();
     job.add_opts(opts);
     if delay > 0 && delay < MIN_DELAY_MS_LIMIT {
         return Err(QueueError::DelayBelowAllowedLimit {
@@ -757,15 +762,16 @@ pub(crate) fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
     Ok(())
 }
 
-pub(crate) type ReadStreamArgs<'a, R, P> = (
+pub type ReadStreamArgs<'a, R, P> = (
     QueueEventMode,
     usize,
     &'a EventEmitter<R, P>,
     Arc<QueueMetrics>,
 );
 // Helper function to process events from our queue-redis-stream
-pub(crate) async fn process_queue_events<'a, D, R, P, S: Store<D, R, P> + Send>(
-    (event_mode, block_interval, emitter, metrics): ReadStreamArgs<'a, R, P>,
+#[allow(clippy::future_not_send)]
+pub async fn process_queue_events<D, R, P, S: Store<D, R, P> + Send>(
+    (event_mode, block_interval, emitter, metrics): ReadStreamArgs<'_, R, P>,
     store: &S,
 ) -> KioResult<()>
 where
@@ -774,10 +780,11 @@ where
     P: DeserializeOwned + Clone + Send + Sync + 'static,
 {
     store
-        .listen_to_events(event_mode, Some(block_interval as u64), emitter, &metrics)
+        .listen_to_events(event_mode, Some(u64::try_from(block_interval).unwrap_or(u64::MAX)), emitter, &metrics)
         .await
 }
-pub(crate) async fn process_each_event<D, R, P>(
+#[allow(clippy::future_not_send)]
+pub async fn process_each_event<D, R, P>(
     event: QueueStreamEvent<R, P>,
     emitter: &EventEmitter<R, P>,
     store: &(impl Store<D, R, P> + Send),
@@ -789,14 +796,14 @@ where
     P: DeserializeOwned + Clone + Send + Sync + 'static,
 {
     let state = event.event;
-    let param = EventParameters::<R, P>::from_queue_event(event).await?;
+    let param = EventParameters::<R, P>::from_queue_event(event)?;
     emitter.emit(state, param).await;
     if let Ok(updated) = store.get_metrics().await {
         metrics.update(&updated);
     }
     Ok(())
 }
-pub(crate) fn resume_helper(
+pub fn resume_helper(
     current_metrics: &QueueMetrics,
     pause_workers: &AtomicBool,
     worker_notifier: &Notify,
@@ -830,7 +837,7 @@ fn split_pipeline(mut p: Pipeline, chunk_size: usize) -> Vec<Pipeline> {
         .collect()
 }
 #[cfg(feature = "redis-store")]
-pub(crate) async fn query_all_batched(
+pub async fn query_all_batched(
     conn: deadpool_redis::Connection,
     p: Pipeline,
 ) -> redis::RedisResult<()>
@@ -847,7 +854,7 @@ where
     }
     Ok(())
 }
-pub(crate) fn update_job_opts(queue_opts: &QueueOpts, opts: &mut JobOptions) {
+pub fn update_job_opts(queue_opts: &QueueOpts, opts: &mut JobOptions) {
     if opts.remove_on_complete.is_none() {
         opts.remove_on_complete = queue_opts.remove_on_complete;
     }
@@ -865,7 +872,7 @@ pub(crate) fn update_job_opts(queue_opts: &QueueOpts, opts: &mut JobOptions) {
     }
 }
 /// utily function to create `stream_handles`
-pub(crate) async fn create_listener_handle<D, R, P, S>(
+pub async fn create_listener_handle<D, R, P, S>(
     store: &S,
     emitter: EventEmitter<R, P>,
     notifier: Arc<Notify>,
@@ -915,7 +922,7 @@ where
     );
     Ok(task)
 }
-pub(crate) fn pause_or_resume_workers(
+pub fn pause_or_resume_workers(
     notifier: &Notify,
     metrics: &QueueMetrics,
     pause_workers: &AtomicBool,

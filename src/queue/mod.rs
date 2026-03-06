@@ -117,14 +117,12 @@ impl<
     /// # Ok(())
     /// # }
     /// ```
+    #[allow(clippy::future_not_send)]
     pub async fn new(store: S, queue_opts: Option<QueueOpts>) -> KioResult<Self> {
         use typed_emitter::TypedEmitter;
         let opts = queue_opts.unwrap_or_default();
         let emitter = Arc::new(TypedEmitter::new());
-        let mut metrics = QueueMetrics::default();
-        if let Ok(current_metrics) = store.get_metrics().await {
-            metrics = current_metrics;
-        }
+        let metrics = store.get_metrics().await.unwrap_or_default();
         let events_mode_exits: bool = store.metadata_field_exists("event_mode").await?;
         let event_mode = metrics.event_mode.clone();
         if let Some(passed_mode) = opts.event_mode {
@@ -189,6 +187,12 @@ impl<
     ///
     /// See also [`bulk_add_only`](Self::bulk_add_only) if you don't need the
     /// returned jobs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the underlying store fails.
+    #[allow(clippy::future_not_send)]
+    #[allow(clippy::future_not_send)]
     pub async fn bulk_add<I: Iterator<Item = (String, Option<JobOptions>, D)> + Send + 'static>(
         &self,
         iter: I,
@@ -204,6 +208,10 @@ impl<
     /// Identical to [`bulk_add`](Self::bulk_add) but avoids allocating the
     /// returned `Vec` when you only care about side effects (fire-and-forget).
     ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the underlying store fails.
+    ///
     /// # Examples
     ///
     /// ```rust
@@ -218,6 +226,8 @@ impl<
     /// # Ok(())
     /// # }
     /// ```
+    #[allow(clippy::future_not_send)]
+    #[allow(clippy::future_not_send)]
     pub async fn bulk_add_only<
         I: Iterator<Item = (String, Option<JobOptions>, D)> + Send + 'static,
     >(
@@ -258,6 +268,12 @@ impl<
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if the store returns an empty job list (should never happen in practice).
+    #[allow(clippy::future_not_send)]
+    #[allow(clippy::future_not_send)]
     pub async fn add_job(
         &self,
         name: &str,
@@ -300,6 +316,7 @@ impl<
     /// # Ok(())
     /// # }
     /// ```
+    #[allow(clippy::future_not_send)]
     pub async fn get_job(&self, id: u64) -> Option<Job<D, R, P>> {
         self.store.get_job(id).await
     }
@@ -315,6 +332,7 @@ impl<
     ///
     /// Returns [`KioError`] if the job no longer exists or the store fails.
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    #[allow(clippy::future_not_send)]
     pub(crate) async fn move_job_to_state(
         &self,
         job_id: u64,
@@ -397,6 +415,7 @@ impl<
     ///
     /// Returns [`KioError`] if the underlying store operation fails.
     /// pauses the queue if not resumed and vice-versa
+    #[allow(clippy::future_not_send)]
     pub async fn pause_or_resume(&self) -> Result<(), KioError> {
         // if its paused
         let pause = !self.is_paused();
@@ -430,6 +449,7 @@ impl<
     /// * `lock_duration` – the new lock lifetime in **milliseconds**.
     /// * `token` – the [`JobToken`] originally granted to this worker.
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    #[allow(clippy::future_not_send)]
     pub(crate) async fn extend_lock(
         &self,
         job_id: u64,
@@ -464,6 +484,7 @@ impl<
     ///
     /// Returns [`KioError`] if the store cannot be queried.
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    #[allow(clippy::future_not_send)]
     pub(crate) async fn make_stalled_jobs_wait(
         &self,
         opts: &WorkerOpts,
@@ -564,6 +585,7 @@ impl<
     ///
     /// Returns [`KioError`] if the store operation fails.
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    #[allow(clippy::future_not_send)]
     pub(crate) async fn move_to_active(
         &self,
         token: JobToken,
@@ -581,7 +603,7 @@ impl<
                 .prepare_job_for_processing(
                     token,
                     id,
-                    ts as u64,
+                    ts.cast_unsigned(),
                     opts,
                     prev_state.unwrap_or_default(),
                 )
@@ -614,6 +636,7 @@ impl<
     /// Returns [`KioError`] if the job no longer exists or the lock cannot be
     /// set.
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    #[allow(clippy::future_not_send)]
     pub(crate) async fn prepare_job_for_processing(
         &self,
         token: JobToken,
@@ -644,6 +667,7 @@ impl<
     }
 
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    #[allow(clippy::future_not_send)]
     pub(crate) async fn move_job_to_finished_or_failed(
         &self,
         job_id: u64,
@@ -689,6 +713,7 @@ impl<
         Ok(job)
     }
     /// Emits an event with the given state and parameters to all registered listeners.
+    #[allow(clippy::future_not_send)]
     pub async fn emit(&self, event: JobState, data: EventParameters<R, P>) {
         self.emitter.emit(event, data).await;
     }
@@ -748,6 +773,7 @@ impl<
     /// # Errors
     ///
     /// Returns [`KioError`] if the store fails to clear collections.
+    #[allow(clippy::future_not_send)]
     pub async fn obliterate(&self) -> KioResult<()> {
         self.delete_all_jobs().await?;
         // delete all other grouped collections;
@@ -771,6 +797,7 @@ impl<
     }
 
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self, timers)))]
+    #[allow(clippy::future_not_send)]
     pub(crate) async fn promote_delayed_jobs(
         &self,
         date_time: Dt,
@@ -806,6 +833,7 @@ impl<
     /// Depending on the policy the job record may be deleted immediately, kept
     /// for a limited age, or pruned once a count threshold is exceeded.
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    #[allow(clippy::future_not_send)]
     pub(crate) async fn clean_up_job(
         &self,
         job_id: u64,
@@ -820,7 +848,7 @@ impl<
                     }
                 }
                 RemoveOnCompletionOrFailure::Int(max_to_keep) => {
-                    if max_to_keep.is_positive() && (id as i64) > max_to_keep {
+                    if max_to_keep.is_positive() && i64::try_from(id).unwrap_or(i64::MAX) > max_to_keep {
                         self.store.remove(CollectionSuffix::Job(job_id))?;
                     }
                 }
@@ -831,7 +859,7 @@ impl<
                             .await?;
                     }
                     if let Some(max_to_keep) = count {
-                        if max_to_keep.is_positive() && (id as i64) > max_to_keep {
+                        if max_to_keep.is_positive() && i64::try_from(id).unwrap_or(i64::MAX) > max_to_keep {
                             self.store.remove(CollectionSuffix::Job(job_id))?;
                         }
                     }
@@ -844,6 +872,10 @@ impl<
     ///
     /// Jobs that no longer exist (e.g. removed by retention policies) are
     /// silently omitted from the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the store lookup fails.
     pub fn fetch_jobs(&self, ids: &[u64]) -> KioResult<VecDeque<Job<D, R, P>>> {
         self.store.fetch_jobs(ids)
     }
@@ -851,6 +883,10 @@ impl<
     ///
     /// Use `start` and `end` to paginate large result sets; pass `None` for
     /// both to retrieve all IDs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the store lookup fails.
     pub fn get_job_ids_in_state(
         &self,
         state: JobState,
@@ -925,6 +961,7 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     /// [`Repeat`] (for repeat-scheduling).  The job is moved to the delayed or
     /// wait state as appropriate.
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self, opts)))]
+    #[allow(clippy::future_not_send)]
     pub(crate) async fn retry_job<'a, T: Into<RetryOptions<'a>>>(
         &self,
         job_id: u64,
@@ -971,7 +1008,7 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     ) -> KioResult<()> {
         let ts = Utc::now();
 
-        if let Some(next_delay) = self.calculate_next_delay_ms(backoff_job_opts, attempts as i64) {
+        if let Some(next_delay) = self.calculate_next_delay_ms(backoff_job_opts, attempts.cast_signed()) {
             let expected_active_time = ts + TimeDelta::milliseconds(next_delay);
             self.store
                 .add_item(
@@ -1030,6 +1067,7 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     ///
     /// For a cheap in-memory read (no store round-trip), read `queue.current_metrics`
     /// directly.  Keep in mind it may be slightly stale between `get_metrics` calls.
+    #[allow(clippy::future_not_send)]
     pub async fn get_metrics(&self) -> KioResult<QueueMetrics> {
         let updated = self.store.get_metrics().await?;
         self.current_metrics.update(&updated);
@@ -1038,6 +1076,10 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     /// Retrieves per-worker metrics stored in the backing store.
     ///
     /// Returns a map from worker [`Uuid`] to [`WorkerMetrics`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the store lookup fails.
     pub fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
         self.store.fetch_worker_metrics()
     }
@@ -1046,6 +1088,11 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     /// Workers call this periodically (controlled by
     /// [`WorkerOpts::metrics_update_interval`]) so that operators can monitor
     /// per-worker task health.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the store write fails.
+    #[allow(clippy::future_not_send)]
     pub async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()> {
         self.store.store_worker_metrics(metrics, ttl_ms).await
     }
@@ -1055,6 +1102,7 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     ///
     /// Returns the updated counter value.
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    #[allow(clippy::future_not_send)]
     pub(crate) async fn update_processing_count(
         &self,
         increment: bool,
