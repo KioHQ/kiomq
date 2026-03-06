@@ -114,7 +114,9 @@ impl<
     fn set_key(&self, timer: TimerType, key: Key) {
         match timer {
             TimerType::StalledCheck(_) | TimerType::CollectMetrics => self.keys[1].swap(Some(key)),
-            TimerType::ExtendLock(_) | TimerType::PromotedDelayed(_) => self.keys[0].swap(Some(key)),
+            TimerType::ExtendLock(_) | TimerType::PromotedDelayed(_) => {
+                self.keys[0].swap(Some(key))
+            }
         };
     }
     #[allow(clippy::future_not_send)]
