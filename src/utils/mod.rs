@@ -34,6 +34,7 @@ use std::sync::Arc;
 ///
 /// Loads a `.env` file via `dotenv` if one is present before reading the
 /// variable.  Returns `None` when the variable is unset.
+#[must_use]
 pub fn fetch_redis_pass() -> Option<String> {
     use dotenv;
     if let Err(_err) = dotenv::dotenv() {
@@ -54,7 +55,7 @@ pub(crate) fn serialize_into_pairs<V: Serialize>(item: &V) -> Vec<(String, Strin
     }
     vec![]
 }
-pub(crate) fn calculate_next_priority_score(priority: u64, prio_counter: u64) -> u64 {
+pub(crate) const fn calculate_next_priority_score(priority: u64, prio_counter: u64) -> u64 {
     (priority << 32) + (prio_counter & 0xffff_ffff_ffff)
 }
 
@@ -247,7 +248,7 @@ where
                 CaughtError::JoinError(join_error) => (join_error.to_string(), None),
             };
             let backtrace: Option<Vec<String>> =
-                backtrace.map(|trace| trace.iter().map(|loc| loc.to_string()).collect());
+                backtrace.map(|trace| trace.iter().map(std::string::ToString::to_string).collect());
             let reason = failed_reason.clone();
             let frames = backtrace.map(|frames| Trace {
                 run: attempts_made,
@@ -619,7 +620,7 @@ where
         let queue_clone = queue.clone();
         let ts = date_time.timestamp_micros();
         let move_to_state = JobState::Failed;
-        for job_id in missed_deadline.iter() {
+        for job_id in &missed_deadline {
             let mut reason = FailedDetails {
                 run: 0,
                 reason: JobError::MissedDelayDeadline.to_string(),
@@ -681,15 +682,15 @@ pub(crate) fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
             current_ms: delay,
         }
         .into());
-    };
+    }
     //queue.job_count.
     let job_key = format!("{queue_name}:{id}");
     let events_keys = format!("{queue_name}:events");
 
-    let waiting_or_paused = if !is_paused {
-        CollectionSuffix::Wait
-    } else {
+    let waiting_or_paused = if is_paused {
         CollectionSuffix::Paused
+    } else {
+        CollectionSuffix::Wait
     };
     let to_delay = delay > 0;
     let to_priorize = priority > 0 && !to_delay;
@@ -731,7 +732,7 @@ pub(crate) fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
                 ..Default::default()
             };
             if to_delay {
-                event.delay = Some(delay)
+                event.delay = Some(delay);
             }
             if to_priorize {
                 event.priority = Some(priority);
@@ -815,7 +816,7 @@ fn split_pipeline(mut p: Pipeline, chunk_size: usize) -> Vec<Pipeline> {
     // Take ownership of the internal command list
     let cmds = unsafe {
         // Access private field via raw pointer trick
-        let cmds_ptr = &mut p as *mut Pipeline as *mut Vec<redis::Cmd>;
+        let cmds_ptr = (&raw mut p).cast::<Vec<redis::Cmd>>();
         std::mem::take(&mut *cmds_ptr)
     };
     cmds.chunks(chunk_size)
@@ -863,7 +864,7 @@ pub(crate) fn update_job_opts(queue_opts: &QueueOpts, opts: &mut JobOptions) {
         opts.repeat = queue_opts.repeat.clone();
     }
 }
-/// utily function to create stream_handles
+/// utily function to create `stream_handles`
 pub(crate) async fn create_listener_handle<D, R, P, S>(
     store: &S,
     emitter: EventEmitter<R, P>,

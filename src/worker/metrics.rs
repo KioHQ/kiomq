@@ -25,7 +25,8 @@ pub struct WorkerMetrics {
 }
 impl WorkerMetrics {
     /// Creates a new `WorkerMetrics` snapshot.
-    pub fn new(worker_id: Uuid, active_len: usize, tasks: Vec<TaskInfo>) -> Self {
+    #[must_use]
+    pub const fn new(worker_id: Uuid, active_len: usize, tasks: Vec<TaskInfo>) -> Self {
         Self {
             worker_id,
             active_len,
@@ -81,7 +82,7 @@ pub struct TaskStats {
     pub total_scheduled_duration: Duration,
 }
 impl TaskStats {
-    fn from_metrics(metrics: TaskMetrics) -> Self {
+    const fn from_metrics(metrics: TaskMetrics) -> Self {
         Self {
             total_poll_count: metrics.total_poll_count,
             total_slow_poll_count: metrics.total_slow_poll_count,

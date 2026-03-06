@@ -40,14 +40,14 @@ impl JobDelay {
     pub fn next_occurrance_timestamp_ms(&self) -> Option<i64> {
         let ts = Utc::now();
         match self {
-            JobDelay::TimeMilis(ms) => {
+            Self::TimeMilis(ms) => {
                 if *ms <= 0 {
                     return None;
                 }
                 let next = ts + TimeDelta::milliseconds(*ms);
                 Some(next.timestamp_millis())
             }
-            JobDelay::FromCron(cron) => cron
+            Self::FromCron(cron) => cron
                 .find_next_occurrence(&ts, false)
                 .ok()
                 .map(|dt| dt.timestamp_millis()),
@@ -60,8 +60,8 @@ impl JobDelay {
     /// `dt`.
     pub fn as_diff_ms(&self, dt: Dt) -> i64 {
         match self {
-            JobDelay::TimeMilis(ms) => *ms,
-            JobDelay::FromCron(cron) => {
+            Self::TimeMilis(ms) => *ms,
+            Self::FromCron(cron) => {
                 let next_dt = cron.find_next_occurrence(&dt, false).expect("failed");
                 (next_dt - dt).num_milliseconds()
             }

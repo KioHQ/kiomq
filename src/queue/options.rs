@@ -40,20 +40,20 @@ pub enum JobField<R> {
 }
 impl<R> JobField<R> {
     /// Returns the store field name (key) for this variant.
-    pub fn name(&self) -> &'static str {
+    pub const fn name(&self) -> &'static str {
         match self {
-            JobField::Token(_) => "token",
-            JobField::Payload(processed_result) => {
+            Self::Token(_) => "token",
+            Self::Payload(processed_result) => {
                 if let ProcessedResult::Success(_, _) = processed_result {
                     "returnedValue"
                 } else {
                     "failedReason"
                 }
             }
-            JobField::ProcessedOn(_) => "processedOn",
-            JobField::FinishedOn(_) => "finishedOn",
-            JobField::State(_) => "state",
-            JobField::BackTrace(_) => "stackTrace",
+            Self::ProcessedOn(_) => "processedOn",
+            Self::FinishedOn(_) => "finishedOn",
+            Self::State(_) => "state",
+            Self::BackTrace(_) => "stackTrace",
         }
     }
 }
@@ -113,11 +113,12 @@ pub enum CollectionSuffix {
 
 impl CollectionSuffix {
     /// Builds the full collection key as `{prefix}:{name}:{self}` (lowercased).
+    #[must_use]
     pub fn to_collection_name(&self, prefix: &str, name: &str) -> String {
         format!("{}:{}:{}", prefix, name, &self).to_lowercase()
     }
     /// create an identifier for this enum
-    fn discriminant(&self) -> u8 {
+    const fn discriminant(&self) -> u8 {
         match self {
             Self::Active => 1,
             Self::Completed => 2,
@@ -144,8 +145,9 @@ impl CollectionSuffix {
     /// The top 8 bits identify the variant and the lower 56 bits hold any
     /// payload (job ID, UUID fragment, etc.).  Used for O(1) membership checks
     /// in in-memory sets.
+    #[must_use]
     pub fn tag(&self) -> u64 {
-        let top = (self.discriminant() as u64) << 56; // high 8 bits for variant id
+        let top = u64::from(self.discriminant()) << 56; // high 8 bits for variant id
         match self {
             // Fieldless variants → just top bits
             Self::Active
@@ -170,12 +172,14 @@ impl CollectionSuffix {
         }
     }
     /// Returns the tag as a big-endian byte array.
+    #[must_use]
     pub fn to_bytes(&self) -> [u8; 8] {
         self.tag().to_be_bytes()
     }
     /// Decodes a tag produced by [`CollectionSuffix::tag`] back into the
     /// corresponding enum variant, or `None` if the discriminant is unknown.
-    pub fn from_tag(tag: u64) -> Option<Self> {
+    #[must_use]
+    pub const fn from_tag(tag: u64) -> Option<Self> {
         let disc = (tag >> 56) as u8;
         let payload = tag & 0x00FF_FFFF_FFFF_FFFF;
 
@@ -204,18 +208,18 @@ impl CollectionSuffix {
 impl From<JobState> for CollectionSuffix {
     fn from(val: JobState) -> Self {
         match val {
-            JobState::Wait => CollectionSuffix::Wait,
-            JobState::Stalled => CollectionSuffix::Paused,
-            JobState::Active => CollectionSuffix::Active,
-            JobState::Paused => CollectionSuffix::Paused,
-            JobState::Completed => CollectionSuffix::Completed,
-            JobState::Resumed => CollectionSuffix::Active,
-            JobState::Failed => CollectionSuffix::Failed,
-            JobState::Delayed => CollectionSuffix::Delayed,
-            JobState::Progress => CollectionSuffix::Prefix,
-            JobState::Prioritized => CollectionSuffix::Prioritized,
-            JobState::Processing => CollectionSuffix::Meta,
-            JobState::Obliterated => CollectionSuffix::Events,
+            JobState::Wait => Self::Wait,
+            JobState::Stalled => Self::Paused,
+            JobState::Active => Self::Active,
+            JobState::Paused => Self::Paused,
+            JobState::Completed => Self::Completed,
+            JobState::Resumed => Self::Active,
+            JobState::Failed => Self::Failed,
+            JobState::Delayed => Self::Delayed,
+            JobState::Progress => Self::Prefix,
+            JobState::Prioritized => Self::Prioritized,
+            JobState::Processing => Self::Meta,
+            JobState::Obliterated => Self::Events,
         }
     }
 }
@@ -250,8 +254,8 @@ impl TryFrom<u8> for QueueEventMode {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            1 => Ok(QueueEventMode::PubSub),
-            0 => Ok(QueueEventMode::Stream),
+            1 => Ok(Self::PubSub),
+            0 => Ok(Self::Stream),
             _ => Err(QueueError::UnKnownEventMode),
         }
     }
@@ -259,7 +263,7 @@ impl TryFrom<u8> for QueueEventMode {
 #[cfg(feature = "redis-store")]
 impl FromRedisValue for QueueEventMode {
     fn from_redis_value(v: &Value) -> RedisResult<Self> {
-        let value = if let Value::Nil = v {
+        let value = if matches!(v, Value::Nil) {
             0
         } else {
             u8::from_redis_value(v)?
@@ -350,7 +354,7 @@ impl Default for QueueOpts {
     }
 }
 
-pub(crate) type Counter = Arc<AtomicU64>;
+pub type Counter = Arc<AtomicU64>;
 fn create_counter(count: u64) -> Counter {
     Counter::new(count.into())
 }
@@ -399,6 +403,7 @@ impl QueueMetrics {
     /// - `active == 0`, and
     /// - the queue is otherwise idle (no waiting, delayed, stalled, or
     ///   prioritized jobs and no in-flight workers).
+    #[must_use]
     pub fn all_jobs_completed(&self) -> bool {
         let last_id = self.last_id.load(Ordering::Acquire);
         last_id > 0
@@ -408,6 +413,7 @@ impl QueueMetrics {
     }
     #[allow(clippy::too_many_arguments)]
     /// Constructs a `QueueMetrics` from raw counter values read from the store.
+    #[must_use]
     pub fn new(
         last_id: u64,
         processing: u64,
@@ -463,10 +469,12 @@ impl QueueMetrics {
             .swap(other.event_mode.load(Ordering::Acquire), Ordering::AcqRel);
     }
     /// Returns `true` if there are delayed jobs ready or waiting to run.
+    #[must_use]
     pub fn has_delayed(&self) -> bool {
         self.delayed.load(Ordering::Acquire) > 0
     }
     /// Returns `true` if there are jobs waiting to be picked up by a worker.
+    #[must_use]
     pub fn queue_has_work(&self) -> bool {
         self.waiting.load(Ordering::Acquire) > 0
             || self.delayed.load(Ordering::Acquire) > 0
@@ -474,14 +482,17 @@ impl QueueMetrics {
             || self.prioritized.load(Ordering::Acquire) > 0
     }
     /// Returns `true` if the queue is currently in the paused state.
+    #[must_use]
     pub fn queue_is_paused(&self) -> bool {
         self.is_paused.load(Ordering::Acquire)
     }
     /// Returns `true` when no workers are currently processing a job.
+    #[must_use]
     pub fn workers_idle(&self) -> bool {
         self.processing.load(Ordering::Acquire) == 0
     }
     /// Returns `true` if at least one job is in the active state.
+    #[must_use]
     pub fn has_active_jobs(&self) -> bool {
         self.active.load(Ordering::Acquire) > 0
     }
@@ -489,6 +500,7 @@ impl QueueMetrics {
     /// no work waiting, no active jobs, and no workers are processing.
     ///
     /// Also requires that `last_id > 0` (i.e. at least one job was ever enqueued).
+    #[must_use]
     pub fn is_idle(&self) -> bool {
         !self.queue_has_work()
             && !self.has_active_jobs()

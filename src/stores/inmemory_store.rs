@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    Arc, ArcSwapOption, AtomicBool, BTreeMap, CollectionSuffix, EventEmitter, Job, JobField,
+    JobOptions, JobState, JobToken, JoinHandle, KioResult, Lock, Notify, QueueEventMode,
+    QueueMetrics, QueueOpts, QueueStreamEvent, SharedEmitter, Store, WorkerMetrics,
+};
 use crate::timers::TimedMap;
 use crate::utils::{
     calculate_next_priority_score, pause_or_resume_workers, process_each_event, update_job_opts,
@@ -85,6 +89,7 @@ impl<D: Clone, R: Clone, P: Clone> InMemoryStore<D, R, P> {
     ///
     /// let store: InMemoryStore<u64, u64, ()> = InMemoryStore::new(None, "my-queue");
     /// ```
+    #[must_use]
     pub fn new(prefix: Option<&str>, name: &str) -> Self {
         let prefix = prefix.unwrap_or("kio").to_lowercase();
         let name = name.to_lowercase();
@@ -165,13 +170,13 @@ where
                 limit_ms: MIN_DELAY_MS_LIMIT,
                 current_ms: delay,
             }));
-        };
+        }
         let mut event = JobState::Wait;
-        let waiting_or_paused = if !is_paused {
-            CollectionSuffix::Wait
-        } else {
+        let waiting_or_paused = if is_paused {
             event = JobState::Paused;
             CollectionSuffix::Paused
+        } else {
+            CollectionSuffix::Wait
         };
 
         let to_delay = delay > 0;
@@ -207,7 +212,7 @@ where
             ..Default::default()
         };
         if to_delay {
-            event.delay = Some(delay)
+            event.delay = Some(delay);
         }
         if to_priorize {
             event.priority = Some(priority);
@@ -339,9 +344,9 @@ where
         pause_workers: Arc<AtomicBool>,
         _event_mode: QueueEventMode,
     ) -> KioResult<JoinHandle<KioResult<()>>> {
-        self.events.store(Some(emitter.clone()));
-        self.notifier.store(Some(notifier.clone()));
-        self.pause_workers.store(Some(pause_workers.clone()));
+        self.events.store(Some(emitter));
+        self.notifier.store(Some(notifier));
+        self.pause_workers.store(Some(pause_workers));
         // set our stored_metrics to the queue's metrics;
         self.stored_metrics.store(Some(metrics));
         let task = tokio::spawn(async move { Ok(()) });
@@ -767,7 +772,7 @@ where
                     JobField::Token(token) => job.token = Some(token),
                     JobField::Payload(processed_result) => match processed_result {
                         ProcessedResult::Failed(failed_details) => {
-                            job.failed_reason = Some(failed_details)
+                            job.failed_reason = Some(failed_details);
                         }
                         ProcessedResult::Success(result, _) => job.returned_value = Some(result),
                     },
@@ -815,7 +820,7 @@ where
                     let mut next = 0;
                     if let Some(pair) = self.jobs.inner.get(&key.tag()) {
                         let job = &mut pair.value().value.lock();
-                        next = update_job(job)
+                        next = update_job(job);
                     }
                     return Ok(next);
                 }

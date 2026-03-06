@@ -119,7 +119,7 @@ impl<R: DeserializeOwned, P: DeserializeOwned> TryFrom<&mut StreamId> for QueueS
             id: value.id.parse()?,
             ..Default::default()
         };
-        for (key, val) in value.map.iter_mut() {
+        for (key, val) in &mut value.map {
             if let redis::Value::BulkString(bytes) = val {
                 match key.to_lowercase().as_str() {
                     "job_id" | "jobid" => event.job_id = u64::from_redis_value(val)?,
@@ -132,10 +132,10 @@ impl<R: DeserializeOwned, P: DeserializeOwned> TryFrom<&mut StreamId> for QueueS
                     "data" => event.progress_data = simd_json::from_slice(bytes)?,
 
                     "returnedvalue" | "returned_value" => {
-                        event.returned_value = simd_json::from_slice(bytes)?
+                        event.returned_value = simd_json::from_slice(bytes)?;
                     }
                     "failedreason" | "failed_reason" => {
-                        event.failed_reason = simd_json::from_slice(bytes)?
+                        event.failed_reason = simd_json::from_slice(bytes)?;
                     }
 
                     "event" => {

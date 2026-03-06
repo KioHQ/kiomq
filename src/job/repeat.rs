@@ -53,12 +53,14 @@ impl Repeat {
         Ok(Self::WithCron(Box::new(cron)))
     }
     /// Constructs a [`Repeat::WithBackOff`] from the given options.
-    pub fn from_back_off(opts: BackOffJobOptions) -> Self {
+    #[must_use]
+    pub const fn from_back_off(opts: BackOffJobOptions) -> Self {
         Self::WithBackOff(opts)
     }
     /// Constructs a [`Repeat::Every`] that fires every `every_ms` milliseconds,
     /// stopping after `max_attempts` runs (unlimited when `None`).
-    pub fn repeat_every_for_times(every_ms: i64, max_attempts: Option<u64>) -> Self {
+    #[must_use]
+    pub const fn repeat_every_for_times(every_ms: i64, max_attempts: Option<u64>) -> Self {
         Self::Every {
             delay_ms: every_ms,
             max_attempts,
@@ -69,21 +71,22 @@ impl Repeat {
     ///
     /// A return value of `0` is a sentinel meaning "move to the wait list
     /// immediately" (used by [`Repeat::Immediately`]).
+    #[must_use]
     pub fn next_occurrence(&self, backoff: &BackOff, attempts: u64) -> Option<i64> {
         let now = Utc::now();
         match self {
-            Repeat::WithCron(cron) => cron
+            Self::WithCron(cron) => cron
                 .find_next_occurrence(&now, false)
                 .ok()
                 .map(|dt| dt.timestamp_millis()),
-            Repeat::WithBackOff(opts) => {
+            Self::WithBackOff(opts) => {
                 let opts = BackOff::normalize(Some(opts))?;
                 let delay_fn = backoff.lookup_strategy(opts, None)?;
                 let next_delay_ms = delay_fn(attempts as i64);
                 let next_dt = now + TimeDelta::milliseconds(next_delay_ms);
                 Some(next_dt.timestamp_millis())
             }
-            Repeat::Every {
+            Self::Every {
                 delay_ms,
                 max_attempts,
             } => {
@@ -95,7 +98,7 @@ impl Repeat {
                 let next_dt = now + TimeDelta::milliseconds(*delay_ms);
                 Some(next_dt.timestamp_millis())
             }
-            Repeat::Immediately(max_attempts) => {
+            Self::Immediately(max_attempts) => {
                 if attempts >= *max_attempts {
                     return None;
                 }
