@@ -285,7 +285,6 @@
 #![warn(
     missing_debug_implementations,
     missing_docs,
-    unreachable_pub,
     clippy::pedantic,
     clippy::nursery
 )]
