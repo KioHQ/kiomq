@@ -14,13 +14,13 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::{BTreeMap, VecDeque};
 use std::marker::PhantomData;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 #[cfg(feature = "tracing")]
-use tracing::{debug_span, Instrument, Span};
+use tracing::{debug_span, instrument, Instrument, Span};
 use uuid::Uuid;
 mod options;
 use crate::stores::Store;
@@ -64,8 +64,6 @@ pub struct Queue<D, R, P, S> {
     resource_span: Span,
     /// `true` when the queue is in the paused state.
     pub paused: Arc<AtomicBool>,
-    /// Running count of jobs in the active state, maintained in memory.
-    pub job_count: Arc<AtomicU64>,
     /// In-memory snapshot of queue state counts; updated by [`Queue::get_metrics`].
     pub current_metrics: Arc<QueueMetrics>,
     /// Queue-level configuration supplied at construction time.
@@ -176,7 +174,6 @@ impl<
             opts,
             current_metrics,
             stream_listener,
-            job_count: Arc::default(),
             emitter,
             paused: Arc::new(AtomicBool::new(is_paused)),
             _data: PhantomData,
@@ -279,14 +276,6 @@ impl<
         let job = jobs.pop().expect("failed to insert");
         Ok(job)
     }
-    /// Returns the number of jobs currently being processed by workers.
-    ///
-    /// This is an in-memory counter maintained by the queue itself (not a
-    /// store round-trip).  Use [`get_metrics`](Self::get_metrics) for a full
-    /// snapshot of all state counts.
-    pub fn current_jobs(&self) -> u64 {
-        self.job_count.load(std::sync::atomic::Ordering::Acquire)
-    }
     /// Retrieves a job by its numeric ID, or `None` if it no longer exists.
     ///
     /// Jobs may be absent because they were removed according to
@@ -325,7 +314,8 @@ impl<
     /// # Errors
     ///
     /// Returns [`KioError`] if the job no longer exists or the store fails.
-    pub async fn move_job_to_state(
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    pub(crate) async fn move_job_to_state(
         &self,
         job_id: u64,
         from: JobState,
@@ -439,7 +429,8 @@ impl<
     /// * `job_id` – the numeric ID of the job whose lock you want to extend.
     /// * `lock_duration` – the new lock lifetime in **milliseconds**.
     /// * `token` – the [`JobToken`] originally granted to this worker.
-    pub async fn extend_lock(
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    pub(crate) async fn extend_lock(
         &self,
         job_id: u64,
         lock_duration: u64,
@@ -472,7 +463,8 @@ impl<
     /// # Errors
     ///
     /// Returns [`KioError`] if the store cannot be queried.
-    pub async fn make_stalled_jobs_wait(
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    pub(crate) async fn make_stalled_jobs_wait(
         &self,
         opts: &WorkerOpts,
     ) -> KioResult<(Vec<u64>, Vec<u64>)> {
@@ -554,7 +546,7 @@ impl<
     /// Returns `(is_paused, target_state)` where `target_state` is the list a
     /// waiting job should be placed on: `Paused` when the queue is paused,
     /// `Wait` otherwise.
-    pub fn get_target_list(&self) -> (bool, JobState) {
+    pub(crate) fn get_target_list(&self) -> (bool, JobState) {
         let paused = self.is_paused();
         if paused {
             return (paused, JobState::Paused);
@@ -571,7 +563,8 @@ impl<
     /// # Errors
     ///
     /// Returns [`KioError`] if the store operation fails.
-    pub async fn move_to_active(
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    pub(crate) async fn move_to_active(
         &self,
         token: JobToken,
         opts: &WorkerOpts,
@@ -621,7 +614,8 @@ impl<
     ///
     /// Returns [`KioError`] if the job no longer exists or the lock cannot be
     /// set.
-    pub async fn prepare_job_for_processing(
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    pub(crate) async fn prepare_job_for_processing(
         &self,
         token: JobToken,
         job_id: u64,
@@ -650,6 +644,7 @@ impl<
         Ok(job)
     }
 
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
     pub(crate) async fn move_job_to_finished_or_failed(
         &self,
         job_id: u64,
@@ -775,6 +770,7 @@ impl<
         self.store.clear_jobs(last_id).await
     }
 
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self, timers)))]
     pub(crate) async fn promote_delayed_jobs(
         &self,
         date_time: Dt,
@@ -784,6 +780,7 @@ impl<
         promote_jobs(self, date_time, interval_ms, timers).await
     }
 
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
     async fn move_job_from_priorty_to_active(&self) -> KioResult<Option<u64>> {
         let mut min_priority_job: Vec<(u64, u64)> = self
             .store
@@ -808,7 +805,8 @@ impl<
     ///
     /// Depending on the policy the job record may be deleted immediately, kept
     /// for a limited age, or pruned once a count threshold is exceeded.
-    pub async fn clean_up_job(
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    pub(crate) async fn clean_up_job(
         &self,
         job_id: u64,
         remove_options: Option<RemoveOnCompletionOrFailure>,
@@ -911,7 +909,7 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     ///
     /// Returns `None` if the backoff options don't produce a valid delay for
     /// the given attempt count (e.g. the max attempts have been exceeded).
-    pub fn calculate_next_delay_ms(
+    pub(crate) fn calculate_next_delay_ms(
         &self,
         backoff_job_opts: &BackOffJobOptions,
         attempts: i64,
@@ -924,7 +922,8 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     /// Accepts either a [`BackOffJobOptions`] (for failed-job backoff) or a
     /// [`Repeat`] (for repeat-scheduling).  The job is moved to the delayed or
     /// wait state as appropriate.
-    pub async fn retry_job<'a, T: Into<RetryOptions<'a>>>(
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self, opts)))]
+    pub(crate) async fn retry_job<'a, T: Into<RetryOptions<'a>>>(
         &self,
         job_id: u64,
         opts: T,
@@ -961,6 +960,7 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
             }
         }
     }
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
     async fn retry_failed(
         &self,
         job_id: u64,
@@ -998,13 +998,15 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     ///
     /// This sets an atomic flag that workers poll; jobs already being processed
     /// continue to completion.
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
     pub fn pause_active_workers(&self) {
         self.pause_workers.store(true, Ordering::Release);
     }
     /// Allows workers to resume picking up new jobs after a pause.
     ///
     /// Wakes any workers that are sleeping on the notifier.
-    pub fn resume_workers(&self) {
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    pub(crate) fn resume_workers(&self) {
         resume_helper(
             &self.current_metrics,
             &self.pause_workers,
@@ -1049,7 +1051,8 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     /// finished a job.
     ///
     /// Returns the updated counter value.
-    pub async fn update_processing_count(
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    pub(crate) async fn update_processing_count(
         &self,
         increment: bool,
         worker_id: Uuid,
