@@ -165,7 +165,6 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn runs_and_stops() {
-        let now = tokio::time::Instant::now();
         let timer = Timer::new(100, || async { println!("hello") });
         timer.run();
         assert!(timer.is_running());
@@ -173,12 +172,10 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(300)).await;
         timer.stop();
         assert!(!timer.is_running());
-        println!("{:?}", now.elapsed());
     }
     #[tokio::test]
     async fn skips_first_ticks() {
         // without the first_tick, timer runs immediately and wait for n ms, so our counter is always going to be one a head
-        let now = tokio::time::Instant::now();
         let counter: Arc<AtomicUsize> = Arc::default();
         let counter_clone = counter.clone();
         let timer = Timer::new(100, move || {
@@ -201,7 +198,6 @@ mod tests {
     }
     #[tokio::test]
     async fn can_pause_and_resume() {
-        let now = tokio::time::Instant::now();
         let counter: Arc<AtomicUsize> = Arc::default();
         let counter_clone = counter.clone();
         let timer = Timer::new(100, move || {
