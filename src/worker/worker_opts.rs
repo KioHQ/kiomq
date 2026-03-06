@@ -1,5 +1,6 @@
 use derive_more::Debug;
-pub(crate) const MIN_DELAY_MS_LIMIT: u64 = 50;
+/// Minimum acceptable delay in milliseconds
+pub const MIN_DELAY_MS_LIMIT: u64 = 50;
 /// Configuration options for a [`Worker`](crate::Worker).
 ///
 /// All durations are in **milliseconds** unless otherwise noted.
