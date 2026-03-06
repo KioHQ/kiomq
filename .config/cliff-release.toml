@@ -1,0 +1,41 @@
+[changelog]
+# No big header; GitHub Release body should start with the release heading.
+header = ""
+
+# Ensure the top line is "## <version> (<date>)"
+body = """
+## {{ version }} ({{ timestamp | date(format="%Y-%m-%d") }})
+
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group }}
+{% for commit in commits %}
+- {{ commit.message | trim }}{% if commit.scope %} (**{{ commit.scope }}**){% endif %}
+{% endfor %}
+{% endfor %}
+"""
+
+trim = true
+footer = ""
+
+[git]
+tag_pattern = "^[0-9]+\\.[0-9]+\\.[0-9]+.*$"
+conventional_commits = true
+filter_unconventional = false
+skip_commit_regex = "^(Merge pull request #|Merge branch |Merge remote-tracking branch |fixup! |squash! |WIP: |wip: |Bump version |Release )"
+
+commit_parsers = [
+  { message = "^feat(\\(.+\\))?:", group = "Features" },
+  { message = "^fix(\\(.+\\))?:", group = "Bug Fixes" },
+  { message = "^perf(\\(.+\\))?:", group = "Performance" },
+  { message = "^refactor(\\(.+\\))?:", group = "Refactoring" },
+  { message = "^docs(\\(.+\\))?:", group = "Documentation" },
+  { message = "^test(\\(.+\\))?:", group = "Tests" },
+  { message = "^build(\\(.+\\))?:", group = "Build" },
+  { message = "^ci(\\(.+\\))?:", group = "CI" },
+  { message = "^chore(\\(.+\\))?:", group = "Chores" },
+  { message = "^revert(\\(.+\\))?:", group = "Reverts" },
+  { body = "BREAKING CHANGE", group = "Breaking Changes" },
+  { message = ".*", group = "Other" },
+]
+
+sort_commits = "oldest"

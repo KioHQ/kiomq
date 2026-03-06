@@ -1,4 +1,4 @@
-name: CD (new release)
+name: CD (Release)
 
 on:
   push:
@@ -88,8 +88,8 @@ jobs:
       - name: Generate release notes for this tag (with version + date heading)
         uses: orhun/git-cliff-action@v4
         with:
-          config: .config/cliff.toml
-          args: --verbose --latest --template .config/release-notes.md.j2
+          config: .config/cliff-release.toml
+          args: --verbose --latest
         env:
           OUTPUT: RELEASE_NOTES.md
           GITHUB_REPO: ${{ github.repository }}
