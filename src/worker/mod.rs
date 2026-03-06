@@ -45,7 +45,7 @@ pub enum WorkerState {
     Closed,
 }
 #[cfg(feature = "tracing")]
-use tracing::{debug, instrument, trace, warn, Instrument, Span};
+use tracing::{debug, instrument, warn, Instrument, Span};
 
 pub(crate) use worker_opts::MIN_DELAY_MS_LIMIT;
 /// A job processor that consumes jobs from a [`Queue`].
@@ -207,6 +207,7 @@ impl<
     /// # Ok(())
     /// # }
     /// ```
+    #[track_caller]
     pub fn new_async<C, Fut, E>(
         queue: &Queue<D, R, P, S>,
         processor: C,
@@ -225,6 +226,7 @@ impl<
         use processor_types::AsyncFn;
         Self::new::<C, AsyncFn<C, D, R, P, S, E>, E>(queue, processor, worker_opts)
     }
+    #[track_caller]
     fn new<C, F, E>(
         queue: &Queue<D, R, P, S>,
         processor: C,
@@ -252,12 +254,12 @@ impl<
         let continue_notifier = queue.worker_notifier.clone();
 
         #[cfg(feature = "tracing")]
-        {
+        let resource_span = {
             let callback_type = match &callback {
                 Callback::Async(_) => "Async",
                 Callback::Sync(_) => "Sync",
             };
-            let resource_span = {
+            {
                 let location = std::panic::Location::caller();
                 let queue_name = queue.name();
                 let worker_type = format!(
@@ -265,8 +267,8 @@ impl<
                     callback_type,
                     id.as_u64_pair().0,
                 );
-                tracing::info_span!(parent:None, "",worker_type)
-            };
+                tracing::info_span!(parent:None, "",worker_type, ?location)
+            }
         };
         let main_task = Arc::default();
         let worker = Self {

@@ -17,7 +17,7 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio_metrics::TaskMonitor;
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
-use tracing::{debug, info, info_span, Instrument};
+use tracing::{debug, info, info_span};
 use uuid::Uuid;
 
 pub(crate) mod processor_types;
@@ -430,10 +430,13 @@ where
     let pause_schedular = to_pause.clone();
     let worker_state_clone = worker_state.clone();
     #[cfg(feature = "tracing")]
-    timers
-        .start_timers()
-        .instrument(resource_span.clone())
-        .await;
+    {
+        use tracing::Instrument;
+        timers
+            .start_timers()
+            .instrument(resource_span.clone())
+            .await;
+    }
     #[cfg(not(feature = "tracing"))]
     timers.start_timers().await;
     let t_task = async move {
@@ -478,7 +481,10 @@ where
     #[cfg(feature = "tracing")]
     let sub_span = info_span!(parent: &resource_span, "timer_and_clean_up_task");
     #[cfg(feature = "tracing")]
-    let timers_and_clean_up_task = tokio::spawn(t_task.instrument(sub_span).boxed());
+    let timers_and_clean_up_task = {
+        use tracing::Instrument;
+        tokio::spawn(t_task.instrument(sub_span).boxed())
+    };
     #[cfg(not(feature = "tracing"))]
     let timers_and_clean_up_task = tokio::spawn(t_task.boxed());
     let semaphore = Arc::new(Semaphore::new(opts.concurrency));
