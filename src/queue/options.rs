@@ -11,17 +11,18 @@ use atomig::{Atom, Atomic};
 #[cfg(feature = "redis-store")]
 use redis::{FromRedisValue, RedisResult, ToRedisArgs, Value};
 use serde::{Deserialize, Serialize};
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(untagged)]
 /// The outcome of a single processor invocation.
 pub enum ProcessedResult<R> {
     /// The processor returned an error.
     Failed(FailedDetails),
+    #[debug("{_1:?}")]
     /// The processor succeeded, returning a value and timing metrics.
     Success(R, JobMetrics),
 }
 /// A typed field update applied to a job record in the store.
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(untagged)]
 pub enum JobField<R> {
     /// Worker lock token.
@@ -281,6 +282,7 @@ impl ToRedisArgs for QueueEventMode {
 /// Specifies how a job should be retried after a failure or completion.
 ///
 /// Passed to [`crate::Queue::retry_job`].
+#[derive(Clone, Debug)]
 pub enum RetryOptions<'a> {
     /// Retry a failed job using the given backoff options.
     Failed(&'a BackOffJobOptions),

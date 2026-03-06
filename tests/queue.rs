@@ -1,9 +1,9 @@
 use kiomq::macros::queue_store_suite;
-use uuid::Uuid;
 
 #[cfg(any(feature = "default", not(feature = "redis-store")))]
 queue_store_suite!(queue_inmemory_store, async {
     use kiomq::InMemoryStore;
+    use uuid::Uuid;
     let name = Uuid::new_v4().to_string();
     Ok::<_, kiomq::KioError>(InMemoryStore::<i32, i32, i32>::new(None, &name))
 });
@@ -24,6 +24,7 @@ mod queue_redis {
     });
 
     queue_store_suite!(redis_store, async {
+        use uuid::Uuid;
         let name = Uuid::new_v4().to_string();
         RedisStore::new(None, &name, &CONFIG).await
     });
