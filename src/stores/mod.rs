@@ -1,19 +1,17 @@
 use std::{
     collections::BTreeMap,
-    ops::RangeBounds,
     sync::{atomic::AtomicBool, Arc},
 };
 
 use crate::{
-    events::QueueStreamEvent, worker::WorkerMetrics, BackOffJobOptions, CollectionSuffix,
-    EventEmitter, Job, JobField, JobOptions, JobState, JobToken, KioResult, ProcessedResult,
-    QueueEventMode, QueueMetrics, QueueOpts, RemoveOnCompletionOrFailure, Trace, WorkerOpts,
+    events::QueueStreamEvent, worker::WorkerMetrics, CollectionSuffix, EventEmitter, Job, JobField,
+    JobOptions, JobState, JobToken, KioResult, ProcessedResult, QueueEventMode, QueueMetrics,
+    QueueOpts, Trace,
 };
 use std::collections::VecDeque;
 mod inmemory_store;
 #[cfg(feature = "rocksdb-store")]
 mod rocksdb_store;
-use async_trait::async_trait;
 pub use inmemory_store::InMemoryStore;
 #[cfg(feature = "redis-store")]
 mod redis_store;

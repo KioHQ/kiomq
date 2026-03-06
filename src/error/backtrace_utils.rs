@@ -1,15 +1,11 @@
 use async_backtrace::Location as LocationTrace;
 use futures::future::{Future, FutureExt};
-use std::cell::RefCell;
-use std::panic::Location;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::LazyLock;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use tokio::task::JoinError;
 type Backtrace = Option<Box<[LocationTrace]>>;
-use thiserror::Error;
 #[derive(Debug)]
-pub enum CaughtError {
+pub(crate) enum CaughtError {
     Panic(CaughtPanicInfo),
     Error(Box<dyn std::error::Error + Send>, Backtrace),
     JoinError(JoinError),
@@ -21,22 +17,15 @@ impl From<JoinError> for CaughtError {
 }
 
 #[derive(Debug)]
-pub struct CaughtPanicInfo {
+pub(crate) struct CaughtPanicInfo {
     pub payload: String,
-    pub location: PanicLocation,
     pub backtrace: Backtrace,
-}
-impl CaughtPanicInfo {
-    pub fn contains(&self, sub_str: &str) -> bool {
-        self.payload.contains(sub_str)
-    }
 }
 
 impl Default for CaughtPanicInfo {
     fn default() -> Self {
         Self {
             payload: "Panic occurred but failed to capture backtrace".to_string(),
-            location: Default::default(),
             backtrace: Default::default(),
         }
     }
@@ -44,7 +33,7 @@ impl Default for CaughtPanicInfo {
 
 #[derive(Debug, Default, derive_more::Display)]
 #[display("{} at {}:{}", file, line, col)]
-pub struct PanicLocation {
+pub(crate) struct PanicLocation {
     file: String,
     line: u32,
     col: u32,
@@ -59,7 +48,7 @@ impl From<&std::panic::Location<'_>> for PanicLocation {
     }
 }
 #[derive(Clone)]
-pub struct BacktraceCatcher;
+pub(crate) struct BacktraceCatcher;
 
 impl BacktraceCatcher {
     #[async_backtrace::framed]
@@ -71,13 +60,11 @@ impl BacktraceCatcher {
             .map(|s| s.as_str())
             .or_else(|| info.payload().downcast_ref::<&'static str>().copied())
             .unwrap_or("Box<Any>");
-        let mut location = info.location().map(|l| l.into()).unwrap_or_default();
-
+        let location: PanicLocation = info.location().map(|l| l.into()).unwrap_or_default();
         let payload = format!("Panic:{payload} :\n {location}");
 
         CaughtPanicInfo {
-            payload: payload.to_owned(),
-            location,
+            payload: payload.clone(),
             backtrace,
         }
     }
@@ -107,7 +94,7 @@ impl BacktraceCatcher {
                 let backtrace = async_backtrace::backtrace();
                 Err(CaughtError::Error(Box::new(error), backtrace))
             }
-            Err(reason) => {
+            Err(_reason) => {
                 let panic_info = PANIC_INFO.lock().unwrap().take();
                 Err(CaughtError::Panic(panic_info.unwrap_or_default()))
             }
@@ -118,13 +105,10 @@ impl BacktraceCatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        io::{Error as IoError, ErrorKind},
-        time::Duration,
-    };
+    use std::io::Error as IoError;
 
     #[tokio::test]
-    #[ignore]
+    #[ignore = "this is  flaky tests but function"]
     async fn test_catch_panic() {
         async fn panicking_function() -> Result<(), IoError> {
             panic!("Test panic");
@@ -133,8 +117,8 @@ mod tests {
         let result = BacktraceCatcher::catch(panicking_function()).await;
         assert!(matches!(result, Err(CaughtError::Panic(_))));
         if let Err(CaughtError::Panic(info)) = result {
-            assert!(info.contains("Test panic"));
-            assert!(info.contains("Backtrace:"));
+            assert!(info.payload.contains("Test panic"));
+            assert!(info.payload.contains("Backtrace:"));
         }
     }
     #[tokio::test]

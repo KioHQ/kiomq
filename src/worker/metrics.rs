@@ -7,7 +7,6 @@ use std::time::Duration;
 use tokio_metrics::TaskMetrics;
 use uuid::Uuid;
 
-use std::{collections::VecDeque, time::Instant};
 /// Aggregated metrics for a single worker instance.
 ///
 /// Persisted to the store periodically (see
@@ -58,7 +57,8 @@ impl TaskInfo {
             last_updated: Utc::now(),
         }
     }
-
+    #[allow(dead_code)]
+    // No: method to be used later
     fn update(&mut self, metrics: TaskMetrics) {
         self.metrics = TaskStats::from_metrics(metrics);
         self.last_updated = Utc::now();
@@ -97,7 +97,7 @@ impl FromRedisValue for WorkerMetrics {
     fn from_redis_value(v: &redis::Value) -> RedisResult<Self> {
         use std::sync::Arc;
         let mut bytes: Arc<[u8]> = redis::from_redis_value(v)?;
-        let mut bytes = Arc::make_mut(&mut bytes);
+        let bytes = Arc::make_mut(&mut bytes);
         let metrics = simd_json::from_slice(bytes).map_err(std::io::Error::other)?;
         Ok(metrics)
     }

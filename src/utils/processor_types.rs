@@ -5,8 +5,7 @@ use futures::{
 };
 use std::marker::PhantomData;
 
-use crate::stores::Store;
-use crate::{worker::WorkerCallback, Job, KioResult};
+use crate::{Job, KioResult};
 use std::sync::Arc;
 pub(crate) type SharedStore<S> = Arc<S>;
 type SyncCallback<D, R, P, S> =

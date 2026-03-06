@@ -1,4 +1,4 @@
-use crate::worker::{TaskInfo, TaskStats, WorkerMetrics, MIN_DELAY_MS_LIMIT};
+use crate::worker::{TaskInfo, WorkerMetrics, MIN_DELAY_MS_LIMIT};
 use crate::KioResult;
 use crossbeam::atomic::AtomicCell;
 use crossbeam::queue::{ArrayQueue, SegQueue};
@@ -9,7 +9,6 @@ use std::{
     marker::PhantomData,
     sync::{atomic::AtomicBool, Arc},
 };
-use tokio::sync::Mutex;
 use tokio_util::time::DelayQueue;
 
 // model the timers (stall_check_locck  and extend_lock) as a tokio_util::DelayQueue
@@ -38,7 +37,6 @@ struct PausedTimerState {
     deadline: Instant,
 }
 
-use arc_swap::ArcSwapOption;
 use tokio_util::time::delay_queue::Key;
 
 use crate::{worker::JobMap, Queue, Store, WorkerOpts};
@@ -71,7 +69,7 @@ impl<
         S: Clone + Store<D, R, P> + Send + 'static,
     > DelayQueueTimer<D, R, P, S>
 {
-    pub fn new(
+    pub(crate) fn new(
         jobs: JobMap<D, R, P>,
         worker_id: uuid::Uuid,
         opts: WorkerOpts,
@@ -102,13 +100,15 @@ impl<
         }
     }
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
-    pub async fn insert(&self, timer: TimerType) {
+    pub(crate) async fn insert(&self, timer: TimerType) {
         let next_duration = self.next_duration(timer);
         let key = self.delay_queue.lock().await.insert(timer, next_duration);
         self.set_key(timer, key);
-        let duration = self.next_duration(timer);
         #[cfg(feature = "tracing")]
-        info!("Started {timer:?} timer running every {duration:?}");
+        {
+            let duration = self.next_duration(timer);
+            info!("Started {timer:?} timer running every {duration:?}");
+        }
     }
     fn set_key(&self, timer: TimerType, key: Key) {
         match timer {
@@ -118,7 +118,7 @@ impl<
             TimerType::CollectMetrics => self.keys[1].swap(Some(key)),
         };
     }
-    pub async fn pause(&self) {
+    pub(crate) async fn pause(&self) {
         if let Some(key) = self.keys[0].load().as_ref() {
             if let Some(expired) = self.delay_queue.lock().await.try_remove(key) {
                 let deadline = expired.deadline();
@@ -150,23 +150,23 @@ impl<
             }
         }
     }
-    pub async fn resume(&self) {
+    pub(crate) async fn resume(&self) {
         while let Some(PausedTimerState { timer, deadline }) = self.pause_state.pop() {
             self.delay_queue.lock().await.insert_at(timer, deadline);
         }
     }
 
-    pub fn close(&self) {
+    pub(crate) fn close(&self) {
         self.close_now
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
-    pub async fn start_timers(&self) {
+    pub(crate) async fn start_timers(&self) {
         let instant = Instant::now();
         self.insert(TimerType::ExtendLock(instant)).await;
         self.insert(TimerType::StalledCheck(instant)).await;
         self.insert(TimerType::CollectMetrics).await;
     }
-    pub async fn clear(&self) {
+    pub(crate) async fn clear(&self) {
         self.delay_queue.lock().await.clear()
     }
 
@@ -178,8 +178,8 @@ impl<
             _ => Duration::from_millis(MIN_DELAY_MS_LIMIT),
         }
     }
-    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self, job_queue)))]
-    pub async fn run(&self, job_queue: &SegQueue<u64>) -> KioResult<()> {
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self, _job_queue)))]
+    pub(crate) async fn run(&self, _job_queue: &SegQueue<u64>) -> KioResult<()> {
         use futures::StreamExt;
         use tokio_util::time::FutureExt;
         if self.close_now.load(std::sync::atomic::Ordering::SeqCst) {
@@ -199,13 +199,12 @@ impl<
                 }
                 TimerType::ExtendLock(_) => {
                     for pair in self.jobs.iter() {
-                        let (job, token, handle, _) = pair.value();
+                        let (job, token, _handle, _) = pair.value();
 
                         if let Some(id) = job.id {
-                            let done = self
-                                .queue
+                            self.queue
                                 .extend_lock(id, self.opts.lock_duration, *token)
-                                .await;
+                                .await?;
                             next_key.replace(key);
                         }
                     }

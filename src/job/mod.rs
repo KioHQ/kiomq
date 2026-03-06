@@ -1,27 +1,16 @@
-use std::{collections::HashMap, error::Error, fmt::format, str::FromStr};
-
+use crate::stores::Store;
 use chrono::{DateTime, Utc};
 #[cfg(feature = "redis-store")]
-use deadpool_redis::{redis::ToRedisArgs, Connection};
+use deadpool_redis::redis::ToRedisArgs;
 use derive_more::{Display, FromStr};
 #[cfg(feature = "redis-store")]
-use redis::{
-    from_redis_value, AsyncCommands, ConnectionLike, FromRedisValue, Pipeline, RedisError,
-    RedisResult, Value,
-};
-use serde::{
-    de::{self, DeserializeOwned},
-    Deserialize, Serialize,
-};
-
-use crate::stores::Store;
+use redis::{FromRedisValue, RedisResult, Value};
+use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 mod backoff;
 mod delay;
 mod repeat;
-use crate::{
-    events::QueueStreamEvent, job::delay::JobDelay, queue::Queue, CollectionSuffix, KioError,
-    KioResult,
-};
+use crate::{job::delay::JobDelay, KioError};
 pub use backoff::{BackOff, BackOffJobOptions, BackOffOptions, StoredFn};
 pub use repeat::Repeat;
 use std::time::Duration;
@@ -404,7 +393,7 @@ where
         use std::io::Error;
         let other = Error::other;
         let mut job: Job<D, R, P> = Job::new("", None, None, None);
-        let mut map = v
+        let map = v
             .as_map_iter()
             .ok_or(std::io::Error::other("failed to extract map"))?;
         for (key, value) in map {

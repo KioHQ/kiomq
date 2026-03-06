@@ -6,23 +6,14 @@ use crate::worker::{
     JobMap, ProcessingQueue, TaskHandle, WorkerCallback, WorkerState, MIN_DELAY_MS_LIMIT,
 };
 use crate::{
-    utils, EventEmitter, EventParameters, FailedDetails, JobMetrics, JobOptions, JobState,
-    JobToken, KioError, QueueEventMode, QueueOpts, Trace, WorkerOpts,
+    EventEmitter, EventParameters, FailedDetails, JobOptions, JobState, JobToken, KioError,
+    QueueEventMode, QueueOpts, Trace, WorkerOpts,
 };
-use chrono::{Month, Utc};
-use crossbeam::queue::{ArrayQueue, SegQueue};
-use futures::future::OkInto;
-use futures::{FutureExt, StreamExt};
-#[cfg(feature = "redis-store")]
-use redis::aio::PubSubStream;
-#[cfg(feature = "redis-store")]
-use redis::streams::{StreamReadOptions, StreamReadReply};
-use serde::ser;
+use chrono::Utc;
+use crossbeam::queue::SegQueue;
+use futures::FutureExt;
 use serde::{de::DeserializeOwned, Serialize};
-use std::fmt::{format, Write};
-use std::num::NonZero;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
-use tokio::task_local;
 use tokio_metrics::TaskMonitor;
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
@@ -45,13 +36,13 @@ use std::sync::Arc;
 /// variable.  Returns `None` when the variable is unset.
 pub fn fetch_redis_pass() -> Option<String> {
     use dotenv;
-    if let Err(err) = dotenv::dotenv() {
+    if let Err(_err) = dotenv::dotenv() {
         // dothing; continue
     }
     std::env::var("REDIS_PASSWORD").ok()
 }
 
-pub fn serialize_into_pairs<V: Serialize>(item: &V) -> Vec<(String, String)> {
+pub(crate) fn serialize_into_pairs<V: Serialize>(item: &V) -> Vec<(String, String)> {
     use simd_json::BorrowedValue;
     if let Ok(BorrowedValue::Object(obj)) = simd_json::serde::to_borrowed_value(item) {
         return obj
@@ -63,8 +54,8 @@ pub fn serialize_into_pairs<V: Serialize>(item: &V) -> Vec<(String, String)> {
     }
     vec![]
 }
-pub fn calculate_next_priority_score(priority: u64, prio_counter: u64) -> u64 {
-    (priority << 32) + (prio_counter & 0xffffffffffff)
+pub(crate) fn calculate_next_priority_score(priority: u64, prio_counter: u64) -> u64 {
+    (priority << 32) + (prio_counter & 0xffff_ffff_ffff)
 }
 
 use crate::{CollectionSuffix, QueueMetrics};
@@ -84,7 +75,7 @@ pub async fn get_queue_metrics<C: redis::aio::ConnectionLike>(
     name: &str,
     conn: &mut C,
 ) -> KioResult<QueueMetrics> {
-    let [job_id_key, stalled_key, active_key, completed_key, meta_key, delayed_key, priority_counter_key, waiting_key, paused_key, prioritized_key, failed_key] =
+    let [job_id_key, stalled_key, active_key, completed_key, meta_key, delayed_key, _priority_counter_key, waiting_key, paused_key, prioritized_key, failed_key] =
         [
             CollectionSuffix::Id,
             CollectionSuffix::Stalled,
@@ -166,7 +157,7 @@ pub(crate) async fn process_job<D, R, P, S>(
     jobs_in_progress: JobMap<D, R, P>,
     queue: Arc<Queue<D, R, P, S>>,
     callback: WorkerCallback<D, R, P, S>,
-    permit: OwnedSemaphorePermit,
+    _permit: OwnedSemaphorePermit,
     worker_id: Uuid,
     current_job_current: Arc<AtomicUsize>,
 ) -> KioResult<()>
@@ -245,17 +236,13 @@ where
                 }
                 let stored_handle = handle.load_full();
                 if let Some(handle) = stored_handle {
-                    let handle_id = task_queue.replace((handle.id(), job_id, move_to_state));
+                    let _handle_id = task_queue.replace((handle.id(), job_id, move_to_state));
                 }
             }
         }
         Err(err) => {
             let (failed_reason, backtrace) = match err {
-                CaughtError::Panic(CaughtPanicInfo {
-                    backtrace,
-                    payload,
-                    location,
-                }) => (payload, backtrace),
+                CaughtError::Panic(CaughtPanicInfo { backtrace, payload }) => (payload, backtrace),
                 CaughtError::Error(error, backtrace) => (error.to_string(), backtrace),
                 CaughtError::JoinError(join_error) => (join_error.to_string(), None),
             };
@@ -302,27 +289,27 @@ where
 
                 let stored_handle = handle.load_full();
                 if let Some(handle) = stored_handle {
-                    let handle_id = task_queue.replace((handle.id(), job_id, move_to_state));
+                    task_queue.replace((handle.id(), job_id, move_to_state));
                 }
             }
         }
     }
 
-    while let Some((key, job_id, state)) = task_queue.take() {
-        let count = current_job_current.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    while let Some((_key, job_id, state)) = task_queue.take() {
+        let _ = current_job_current.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
         queue
             .update_processing_count(false, worker_id, job_id, state)
             .await?;
 
         #[cfg(feature = "tracing")]
-        debug!("processed job {job_id} in task({key}) to state: {state}");
+        debug!("processed job {job_id} in task({_key}) to state: {state}");
     }
     Ok(())
 }
 pub(crate) async fn get_next_job<D, R, P, S>(
     queue: &Queue<D, R, P, S>,
     token: JobToken,
-    block_delay: u64,
+    _block_delay: u64,
     closed: bool,
     opts: &WorkerOpts,
     passed_id: Option<u64>,
@@ -384,8 +371,7 @@ type MainLoopParams<D, R, P, S> = (
     Arc<Notify>,
     DelayQueueTimer<D, R, P, S>,
 );
-use tokio::task::{Id, JoinHandle};
-type TaskToRemove = ArrayQueue<(Id, u64, JobState)>;
+use tokio::task::JoinHandle;
 pub(crate) type JobQueue = Arc<SegQueue<u64>>;
 #[async_backtrace::framed]
 pub(crate) async fn main_loop<D, R, P, S>(params: MainLoopParams<D, R, P, S>) -> KioResult<()>
@@ -396,7 +382,6 @@ where
     S: Clone + Store<D, R, P> + 'static + Send + Sync,
 {
     use std::sync::atomic::Ordering;
-    use tokio_util::time::FutureExt;
     #[cfg(feature = "tracing")]
     let (
         resource_span,
@@ -438,15 +423,12 @@ where
     let delayed = JobQueue::default();
     let running = processing.clone();
     let cancel_token = cancellation_token.clone();
-    let job_count = active_job_count.clone();
     let queue_clone = queue.clone();
     let job_queue = delayed.clone();
     let notifer = paused_here.clone();
-    let worker_id = id;
     let to_pause = Arc::new(AtomicBool::default());
     let pause_schedular = to_pause.clone();
     let worker_state_clone = worker_state.clone();
-    let current_job_current = active_job_count.clone();
     #[cfg(feature = "tracing")]
     timers
         .start_timers()
@@ -459,7 +441,6 @@ where
             // promote jobs here;
             let date_time = Utc::now();
             let interval_ms = (MIN_DELAY_MS_LIMIT) as i64;
-            let metrics = queue_clone.get_metrics().await?;
             if queue_clone.current_metrics.has_delayed() {
                 queue_clone
                     .promote_delayed_jobs(date_time, interval_ms, &timers)
@@ -500,7 +481,6 @@ where
     let timers_and_clean_up_task = tokio::spawn(t_task.instrument(sub_span).boxed());
     #[cfg(not(feature = "tracing"))]
     let timers_and_clean_up_task = tokio::spawn(t_task.boxed());
-    let now = Instant::now();
     let semaphore = Arc::new(Semaphore::new(opts.concurrency));
     while !cancellation_token.is_cancelled() {
         while !cancellation_token.is_cancelled()
@@ -547,7 +527,7 @@ where
                             .insert(id, (job, token, TaskHandle::default(), monitor.clone()));
                         let task = processing
                             .spawn(monitor.instrument(async_backtrace::frame!(process_fn.boxed())));
-                        if let Some(mut re) = jobs_in_progress.get(&id) {
+                        if let Some(re) = jobs_in_progress.get(&id) {
                             let (_, _, stored_handle, _) = re.value();
 
                             stored_handle.swap(Some(task.into()));
@@ -592,9 +572,9 @@ where
     if cancellation_token.is_cancelled() {
         // wait for all running jobs to finish
         processing.wait().await;
-        timers_and_clean_up_task.await?;
+        let _ = timers_and_clean_up_task.await?;
 
-        worker_state.compare_exchange(
+        let _ = worker_state.compare_exchange(
             WorkerState::Active,
             WorkerState::Closed,
             Ordering::AcqRel,
@@ -607,12 +587,11 @@ where
 }
 use crate::Dt;
 use chrono::TimeDelta;
-use std::time::{Duration, Instant};
 #[allow(clippy::too_many_arguments)]
-pub async fn promote_jobs<D, R, P, S: Store<D, R, P> + Send + 'static + Clone>(
+pub(crate) async fn promote_jobs<D, R, P, S: Store<D, R, P> + Send + 'static + Clone>(
     queue: &Queue<D, R, P, S>,
     date_time: Dt,
-    mut interval_ms: i64,
+    interval_ms: i64,
     timers: &DelayQueueTimer<D, R, P, S>,
 ) -> KioResult<()>
 where
@@ -665,7 +644,7 @@ where
 #[cfg(feature = "redis-store")]
 #[allow(clippy::too_many_arguments)]
 /// Utilily function for pipelining
-pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
+pub(crate) fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
     queue_name: &str,
     event_mode: QueueEventMode,
     is_paused: bool,
@@ -680,15 +659,14 @@ pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
         priority,
         ref delay,
         id: _,
-        attempts,
-        remove_on_fail,
-        remove_on_complete,
-        ref backoff,
+        attempts: _,
+        remove_on_fail: _,
+        remove_on_complete: _,
+        backoff: _,
         repeat: _,
     } = opts;
     let dt = Utc::now();
     let expected_dt_ts = delay.next_occurrance_timestamp_ms();
-    let delay_dt = delay.clone();
     let delay = delay.as_diff_ms(dt) as u64;
     job.add_opts(opts);
     if delay > 0 && delay < MIN_DELAY_MS_LIMIT {
@@ -720,8 +698,6 @@ pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
     }
     // handle prioritized_jobs
     else if to_priorize {
-        let priority_counter_key =
-            format!("{queue_name}:{}", CollectionSuffix::PriorityCounter).to_lowercase();
         let prioritized_key =
             format!("{queue_name}:{}", CollectionSuffix::Prioritized).to_lowercase();
         let score = calculate_next_priority_score(priority, prior_counter);
@@ -781,7 +757,7 @@ pub(crate) type ReadStreamArgs<'a, R, P> = (
     Arc<QueueMetrics>,
 );
 // Helper function to process events from our queue-redis-stream
-pub async fn process_queue_events<'a, D, R, P, S: Store<D, R, P> + Send>(
+pub(crate) async fn process_queue_events<'a, D, R, P, S: Store<D, R, P> + Send>(
     (event_mode, block_interval, emitter, metrics): ReadStreamArgs<'a, R, P>,
     store: &S,
 ) -> KioResult<()>
@@ -794,7 +770,7 @@ where
         .listen_to_events(event_mode, Some(block_interval as u64), emitter, &metrics)
         .await
 }
-pub async fn process_each_event<D, R, P>(
+pub(crate) async fn process_each_event<D, R, P>(
     event: QueueStreamEvent<R, P>,
     emitter: &EventEmitter<R, P>,
     store: &(impl Store<D, R, P> + Send),
@@ -813,7 +789,7 @@ where
     }
     Ok(())
 }
-pub fn resume_helper(
+pub(crate) fn resume_helper(
     current_metrics: &QueueMetrics,
     pause_workers: &AtomicBool,
     worker_notifier: &Notify,
@@ -827,7 +803,7 @@ pub fn resume_helper(
 }
 
 #[cfg(feature = "redis-store")]
-use redis::{Cmd, Pipeline};
+use redis::Pipeline;
 #[cfg(feature = "redis-store")]
 fn split_pipeline(mut p: Pipeline, chunk_size: usize) -> Vec<Pipeline> {
     // Take ownership of the internal command list
@@ -847,15 +823,15 @@ fn split_pipeline(mut p: Pipeline, chunk_size: usize) -> Vec<Pipeline> {
         .collect()
 }
 #[cfg(feature = "redis-store")]
-pub async fn query_all_batched(
+pub(crate) async fn query_all_batched(
     conn: deadpool_redis::Connection,
-    mut p: Pipeline,
+    p: Pipeline,
 ) -> redis::RedisResult<()>
 where
 {
     let chunk_size = 10000;
     let pipelines = split_pipeline(p, chunk_size);
-    let futs = pipelines.into_iter().map(|mut p| {
+    let futs = pipelines.into_iter().map(|p| {
         let mut c = conn.clone();
         async move { p.query_async::<()>(&mut c).await }
     });
@@ -864,7 +840,7 @@ where
     }
     Ok(())
 }
-pub fn update_job_opts(queue_opts: &QueueOpts, opts: &mut JobOptions) {
+pub(crate) fn update_job_opts(queue_opts: &QueueOpts, opts: &mut JobOptions) {
     if opts.remove_on_complete.is_none() {
         opts.remove_on_complete = queue_opts.remove_on_complete;
     }
@@ -882,7 +858,7 @@ pub fn update_job_opts(queue_opts: &QueueOpts, opts: &mut JobOptions) {
     }
 }
 /// utily function to create stream_handles
-pub async fn create_listener_handle<D, R, P, S>(
+pub(crate) async fn create_listener_handle<D, R, P, S>(
     store: &S,
     emitter: EventEmitter<R, P>,
     notifier: Arc<Notify>,
@@ -911,7 +887,7 @@ where
                 pause_or_resume_workers(&notifier, &metrics, &pause_workers, &is_inital);
                 tokio::task::yield_now().await;
             }
-
+            #[allow(unreachable_code)]
             Ok(())
         }
         .boxed(),
@@ -936,5 +912,5 @@ pub(crate) fn pause_or_resume_workers(
     } else {
         resume_helper(metrics, pause_workers, notifier);
     }
-    is_inital.compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire);
+    let _ = is_inital.compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire);
 }

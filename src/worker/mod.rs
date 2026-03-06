@@ -1,25 +1,15 @@
 use crate::{
-    error::{BacktraceCatcher, CaughtError, CaughtPanicInfo},
-    job, queue,
-    stores::Store,
-    timers::DelayQueueTimer,
-    utils::processor_types::SharedStore,
-    worker::processor_types::SyncFn,
-    Job, JobOptions, JobState, JobToken, KioError, KioResult, Queue,
+    stores::Store, timers::DelayQueueTimer, utils::processor_types::SharedStore,
+    worker::processor_types::SyncFn, Job, JobState, JobToken, KioError, KioResult, Queue,
 };
 
-use crate::utils::{get_next_job, main_loop};
-use chrono::Utc;
-use crossbeam::atomic::AtomicCell;
+use crate::utils::main_loop;
 use derive_more::Debug;
-use futures::future::{BoxFuture, Future, FutureExt, Shared, TryFutureExt};
+use futures::future::{Future, FutureExt};
 use serde::{de::DeserializeOwned, Serialize};
-use std::{
-    sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicUsize},
-        Arc,
-    },
-    time::Duration,
+use std::sync::{
+    atomic::{AtomicU64, AtomicUsize},
+    Arc,
 };
 use uuid::Uuid;
 mod metrics;
@@ -27,13 +17,10 @@ mod worker_opts;
 pub use metrics::*;
 
 use crate::error::WorkerError;
-use crate::events::{EventEmitter, EventParameters};
+use crate::events::EventParameters;
 use arc_swap::ArcSwapOption;
 use crossbeam_skiplist::SkipMap;
-use tokio::{
-    sync::Notify,
-    task::{AbortHandle, JoinHandle},
-};
+use tokio::{sync::Notify, task::JoinHandle};
 use tokio_metrics::TaskMonitor;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 type JobMeta<D, R, P> = (Job<D, R, P>, JobToken, TaskHandle, TaskMonitor);
@@ -41,7 +28,6 @@ pub(crate) type JobMap<D, R, P> = Arc<SkipMap<u64, JobMeta<D, R, P>>>;
 type Task = JoinHandle<KioResult<()>>;
 pub(crate) type TaskHandle = ArcSwapOption<Task>;
 pub(crate) type SharedTaskHandle = Arc<TaskHandle>;
-use tokio::task::Id;
 pub(crate) type ProcessingQueue = TaskTracker;
 use atomig::{Atom, Atomic};
 use derive_more::IsVariant;
@@ -126,11 +112,9 @@ pub struct Worker<D, R, P, S> {
     processing: ProcessingQueue,
     timers: DelayQueueTimer<D, R, P, S>,
     block_until: Arc<AtomicU64>,
-    mini_block_timout: u64,
     active_job_count: Arc<AtomicUsize>,
     continue_notifier: Arc<Notify>,
     main_task: SharedTaskHandle,
-    timers_task: SharedTaskHandle,
 }
 use crate::utils::processor_types;
 use processor_types::Callback;
@@ -260,37 +244,32 @@ impl<
         let jobs_in_progress: JobMap<_, _, _> = Arc::new(SkipMap::new());
         let f: F = processor.into();
         let callback = Callback::from(f);
-        let callback_type = match &callback {
-            Callback::Async(_) => "Async",
-            Callback::Sync(_) => "Sync",
-        };
 
         let id = Uuid::new_v4();
-        let mut opts = worker_opts.unwrap_or_default();
-        let queue_clone = queue.clone();
-
+        let opts = worker_opts.unwrap_or_default();
         let jobs = jobs_in_progress.clone();
-        let now = tokio::time::Instant::now();
-        let queue_clone = queue.clone();
-
         let timers = DelayQueueTimer::new(jobs.clone(), id, opts, queue.clone());
         let continue_notifier = queue.worker_notifier.clone();
 
         #[cfg(feature = "tracing")]
-        let resource_span = {
-            let location = std::panic::Location::caller();
-            let queue_name = queue.name();
-            let worker_type = format!(
-                "{}-Worker({},{queue_name})",
-                callback_type,
-                id.as_u64_pair().0,
-            );
-            tracing::info_span!(parent:None, "",worker_type)
+        {
+            let callback_type = match &callback {
+                Callback::Async(_) => "Async",
+                Callback::Sync(_) => "Sync",
+            };
+            let resource_span = {
+                let location = std::panic::Location::caller();
+                let queue_name = queue.name();
+                let worker_type = format!(
+                    "{}-Worker({},{queue_name})",
+                    callback_type,
+                    id.as_u64_pair().0,
+                );
+                tracing::info_span!(parent:None, "",worker_type)
+            };
         };
         let main_task = Arc::default();
-        let timers_task = Arc::default();
         let worker = Self {
-            timers_task,
             main_task,
             #[cfg(feature = "tracing")]
             resource_span,
@@ -305,7 +284,6 @@ impl<
             processor: callback,
             cancellation_token: CancellationToken::new(),
             processing: TaskTracker::new(),
-            mini_block_timout: 10000, // 10s
             active_job_count: Arc::default(),
         };
         if worker.opts.autorun {
@@ -459,11 +437,13 @@ impl<
         // TODO: work on gracefully shutdown later; currently we just cancel the token but
         // don't check whether the main_task has closed too. Handle this later
         let mut main_task = self.main_task.load_full();
-        if let (Some(handle)) = main_task.take() {
+        if let Some(handle) = main_task.take() {
             // wait for handle to finishd
-            let running_tasks = self.processing.len();
             #[cfg(feature = "tracing")]
-            warn!("waiting for all {running_tasks} tasks to complete or abort");
+            {
+                let running_tasks = self.processing.len();
+                warn!("waiting for all {running_tasks} tasks to complete or abort");
+            }
             // wait for the main loop to close
             while !handle.is_finished() {}
         }

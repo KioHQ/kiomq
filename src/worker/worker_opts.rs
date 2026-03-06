@@ -1,6 +1,4 @@
 use derive_more::Debug;
-
-use crate::Dt;
 pub(crate) const MIN_DELAY_MS_LIMIT: u64 = 50;
 /// Configuration options for a [`Worker`](crate::Worker).
 ///

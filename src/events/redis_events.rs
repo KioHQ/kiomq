@@ -2,12 +2,8 @@ use crate::{Dt, JobMetrics};
 use crate::{FailedDetails, JobState, KioError, KioResult};
 use chrono::Utc;
 use derive_more::Debug;
-use serde::{
-    de::{value, DeserializeOwned},
-    Deserialize, Serialize,
-};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::str::FromStr;
-use std::time::Instant;
 use uuid::Uuid;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash, Debug)]
 pub struct StreamEventId(pub Dt, pub u64);

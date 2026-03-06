@@ -1,6 +1,5 @@
 use crossbeam_skiplist::SkipMap;
 use serde::{Deserialize, Serialize};
-use std::any::Any;
 use std::sync::Arc;
 type BackoffFn = dyn Fn(i64) -> StoredFn + Send + Sync;
 /// A per-attempt delay function: receives the attempt count and returns the
@@ -76,7 +75,7 @@ impl BackOff {
     /// Creates a new `BackOff` registry pre-loaded with the `"exponential"`
     /// and `"fixed"` built-in strategies.
     pub fn new() -> Self {
-        let mut backoff = BackOff::default();
+        let backoff = BackOff::default();
         backoff.register("exponential", |delay: i64| {
             Arc::new(move |atempts: i64| -> i64 { 2_i64.pow(atempts as u32) * delay })
         });
@@ -114,7 +113,6 @@ impl BackOff {
                 Some(opts)
             }
             BackOffJobOptions::Opts(opts) => Some(opts.clone()),
-            _ => None,
         }
     }
     /// Calculates the delay in milliseconds for the given `attempts` count.
@@ -152,7 +150,7 @@ impl BackOff {
         custom_strategy: Option<StoredFn>,
     ) -> Option<StoredFn>
 where {
-        if let (Some(t)) = backoff.type_ {
+        if let Some(t) = backoff.type_ {
             if let (Some(entry), Some(delay)) =
                 (self.builtin_strategies.get(t.as_str()), backoff.delay)
             {
@@ -188,7 +186,7 @@ mod tests {
     use super::*;
     #[test]
     fn test_expotential_backoff() {
-        let mut backoff = BackOff::new();
+        let backoff = BackOff::new();
         let strategy_found = backoff.lookup_strategy(
             BackOffOptions {
                 delay: Some(100),
@@ -206,7 +204,7 @@ mod tests {
     }
     #[test]
     fn test_fixed_back() {
-        let mut backoff = BackOff::new();
+        let backoff = BackOff::new();
         let strategy_found = backoff.lookup_strategy(
             BackOffOptions {
                 delay: Some(100),

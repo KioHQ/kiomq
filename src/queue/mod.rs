@@ -1,38 +1,27 @@
-use crate::error::{JobError, KioError, QueueError};
-use crate::events::{QueueStreamEvent, StreamEventId};
+use crate::error::{JobError, KioError};
+use crate::events::QueueStreamEvent;
 use crate::job::{Job, JobState};
 use crate::timers::DelayQueueTimer;
-use crate::utils::{
-    calculate_next_priority_score, process_queue_events, promote_jobs, resume_helper,
-    serialize_into_pairs, update_job_opts, JobQueue, ReadStreamArgs,
+use crate::utils::{promote_jobs, resume_helper};
+use crate::worker::{WorkerMetrics, WorkerOpts};
+use crate::{
+    BackOff, BackOffJobOptions, Dt, FailedDetails, JobOptions, JobToken, KeepJobs, KioResult,
+    RemoveOnCompletionOrFailure, Trace,
 };
-use crossbeam::queue::SegQueue;
+use chrono::{TimeDelta, Utc};
 use futures::future::Future;
-use futures::stream::{FuturesOrdered, FuturesUnordered};
-use futures::{FutureExt, StreamExt};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::collections::{BTreeMap, VecDeque};
-use std::marker::{PhantomData, PhantomPinned};
+use std::marker::PhantomData;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 #[cfg(feature = "tracing")]
 use tracing::{debug_span, Instrument, Span};
 use uuid::Uuid;
-
-use crate::worker::{WorkerMetrics, WorkerOpts, MIN_DELAY_MS_LIMIT};
-use crate::{
-    queue, BackOff, BackOffJobOptions, BackOffOptions, Dt, FailedDetails, JobOptions, JobToken,
-    KeepJobs, KioResult, RemoveOnCompletionOrFailure, Repeat, StoredFn, Trace,
-};
-use async_backtrace::backtrace;
-use chrono::{TimeDelta, Utc};
-#[cfg(feature = "redis-store")]
-use deadpool_redis::{Config, Pool, Runtime};
-use serde::de::{value, DeserializeOwned, Error};
-use serde::{ser, Deserialize, Serialize};
 mod options;
 use crate::stores::Store;
 
@@ -42,11 +31,6 @@ use derive_more::Debug;
 pub use options::{CollectionSuffix, QueueEventMode, QueueMetrics, QueueOpts, RetryOptions};
 pub(crate) use options::{Counter, JobField, ProcessedResult};
 
-#[cfg(feature = "redis-store")]
-use redis::{
-    self, pipe, AsyncCommands, FromRedisValue, JsonAsyncCommands, LposOptions, Pipeline,
-    RedisResult, ToRedisArgs, Value,
-};
 /// A task queue that holds and manages jobs.
 ///
 /// `Queue` is the central hub of KioMQ.  It stores jobs, drives state
@@ -283,7 +267,7 @@ impl<
         data: D,
         opts: Option<JobOptions>,
     ) -> Result<Job<D, R, P>, KioError> {
-        let mut opts = opts.unwrap_or_default();
+        let opts = opts.unwrap_or_default();
         let event_mode = self.event_mode.load(Ordering::Acquire);
         let is_paused = self.is_paused();
         let queue_opts = self.opts.clone();
@@ -460,7 +444,7 @@ impl<
         job_id: u64,
         lock_duration: u64,
         token: JobToken,
-    ) -> KioResult<(bool)> {
+    ) -> KioResult<bool> {
         let previous: Option<JobToken> = self.store.get_token(job_id).await;
         if let Some(prev_token) = previous {
             if prev_token == token {
@@ -492,11 +476,9 @@ impl<
         &self,
         opts: &WorkerOpts,
     ) -> KioResult<(Vec<u64>, Vec<u64>)> {
-        let event_mode = self.event_mode.load(Ordering::Acquire);
-        let (is_paused, target) = self.get_target_list();
+        let (_is_paused, target) = self.get_target_list();
         let mut failed = vec![];
         let mut stall = vec![];
-        let ts = Utc::now().timestamp_micros();
         let stalled_check_key = CollectionSuffix::StalledCheck;
         let check_key_exists = self
             .store
@@ -561,7 +543,7 @@ impl<
                     self.store
                         .add_item(CollectionSuffix::Stalled, id, None, true)
                         .await?;
-                    self.store.remove_item(CollectionSuffix::Active, id);
+                    self.store.remove_item(CollectionSuffix::Active, id).await?;
                 }
             }
         }
@@ -595,12 +577,12 @@ impl<
         opts: &WorkerOpts,
     ) -> KioResult<MoveToActiveResult<D, R, P>> {
         let ts = Utc::now().timestamp_micros();
-        let (is_paused, target_state) = self.get_target_list();
-        let mut job_id: Option<u64> = self
+        let (_is_paused, _target_state) = self.get_target_list();
+        let job_id: Option<u64> = self
             .store
             .pop_back_push_front(CollectionSuffix::Wait, CollectionSuffix::Active)
             .await;
-        let mut prepare_job = |id: u64| async move {
+        let prepare_job = |id: u64| async move {
             let prev_state: Option<JobState> = self.store.get_state(id).await;
             let job = self
                 .prepare_job_for_processing(
@@ -620,7 +602,7 @@ impl<
             )),
             None => {
                 if let Some(id) = self.move_job_from_priorty_to_active().await? {
-                    let (job, state) = prepare_job(id).await?;
+                    let (job, _state) = prepare_job(id).await?;
                     return Ok(MoveToActiveResult::ProcessJob(job.boxed()));
                 }
 
@@ -686,7 +668,7 @@ impl<
             if local != token {
                 return Err(JobError::JobLockMismatch.into());
             }
-            self.store.remove(CollectionSuffix::Lock(job_id));
+            self.store.remove(CollectionSuffix::Lock(job_id))?;
             self.store
                 .remove_item(CollectionSuffix::Stalled, job_id)
                 .await?;
@@ -703,9 +685,7 @@ impl<
             Some(ts),
             backtrace,
         )
-        .await;
-
-        //remove element from stalled set too;
+        .await?;
 
         let job = self
             .store
@@ -798,7 +778,7 @@ impl<
     pub(crate) async fn promote_delayed_jobs(
         &self,
         date_time: Dt,
-        mut interval_ms: i64,
+        interval_ms: i64,
         timers: &DelayQueueTimer<D, R, P, S>,
     ) -> KioResult<()> {
         promote_jobs(self, date_time, interval_ms, timers).await
@@ -810,7 +790,7 @@ impl<
             .pop_set(CollectionSuffix::Prioritized, true)
             .await?;
 
-        if let Some((job_id, score)) = min_priority_job.pop() {
+        if let Some((job_id, _score)) = min_priority_job.pop() {
             let _: () = self
                 .store
                 .add_item(CollectionSuffix::Active, job_id, None, true)
@@ -838,12 +818,12 @@ impl<
             match remove_options {
                 RemoveOnCompletionOrFailure::Bool(remove_immediately) => {
                     if remove_immediately {
-                        self.store.remove(CollectionSuffix::Job(job_id));
+                        self.store.remove(CollectionSuffix::Job(job_id))?;
                     }
                 }
                 RemoveOnCompletionOrFailure::Int(max_to_keep) => {
                     if max_to_keep.is_positive() && (id as i64) > max_to_keep {
-                        self.store.remove(CollectionSuffix::Job(job_id));
+                        self.store.remove(CollectionSuffix::Job(job_id))?;
                     }
                 }
                 RemoveOnCompletionOrFailure::Opts(KeepJobs { age, count }) => {
@@ -854,7 +834,7 @@ impl<
                     }
                     if let Some(max_to_keep) = count {
                         if max_to_keep.is_positive() && (id as i64) > max_to_keep {
-                            self.store.remove(CollectionSuffix::Job(job_id));
+                            self.store.remove(CollectionSuffix::Job(job_id))?;
                         }
                     }
                 }
@@ -905,7 +885,7 @@ pub enum MoveToActiveResult<D, R, P> {
     ProcessJob(Box<Job<D, R, P>>),
 }
 impl<D, R, P> MoveToActiveResult<D, R, P> {
-    fn from_job_state_pair((job, state): (Job<D, R, P>, Option<JobState>)) -> Self {
+    fn from_job_state_pair((job, _state): (Job<D, R, P>, Option<JobState>)) -> Self {
         Self::ProcessJob(job.boxed())
     }
 }
