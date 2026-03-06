@@ -48,7 +48,7 @@ pub enum WorkerState {
 #[cfg(feature = "tracing")]
 use tracing::{debug, instrument, warn, Instrument, Span};
 
-pub use worker_opts::MIN_DELAY_MS_LIMIT;
+pub(crate) use worker_opts::MIN_DELAY_MS_LIMIT;
 /// A job processor that consumes jobs from a [`Queue`].
 ///
 /// Each `Worker` runs an internal async loop that fetches jobs from the queue

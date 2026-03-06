@@ -163,7 +163,7 @@ where
         } = opts;
         let dt = Utc::now();
         let expected_dt_ts = delay.next_occurrance_timestamp_ms();
-        let delay = delay.as_diff_ms(dt) as u64;
+        let delay = delay.as_diff_ms(dt).cast_unsigned();
         job.add_opts(opts);
         if delay > 0 && delay < MIN_DELAY_MS_LIMIT {
             return Err(crate::KioError::from(QueueError::DelayBelowAllowedLimit {
@@ -194,7 +194,7 @@ where
                 event = JobState::Delayed;
             }
         } else if to_priorize {
-            let score = calculate_next_priority_score(priority, pc) as i64;
+            let score = calculate_next_priority_score(priority, pc).cast_signed();
             job.state = JobState::Prioritized;
             self.add_item(CollectionSuffix::Prioritized, id, Some(score), true)
                 .await?;
@@ -238,7 +238,7 @@ where
                 let value = entry.value().value.lock();
                 let metrics =
                     WorkerMetrics::new(value.worker_id, value.active_len, value.tasks.clone());
-
+                drop(value);
                 (worker_id, metrics)
             })
             .collect();
@@ -363,12 +363,11 @@ where
         for (ref name, opts, data) in iter {
             let mut opts = opts.unwrap_or_default();
             update_job_opts(&queue_opts, &mut opts);
-            let mut pc = 0;
-            if opts.priority > 0 {
-                pc = self
-                    .incr(CollectionSuffix::PriorityCounter, 1, None)
-                    .await?;
-            }
+            let pc = if opts.priority > 0 {
+                self.incr(CollectionSuffix::PriorityCounter, 1, None).await?
+            } else {
+                0
+            };
             let queue_name = format!("{}:{}", &self.prefix, &self.name);
             let id = self.incr(CollectionSuffix::Id, 1, None).await?;
             let mut job = Job::<D, R, P>::new(name, Some(data), opts.id, Some(&queue_name));
@@ -388,12 +387,11 @@ where
         for (ref name, opts, data) in iter {
             let mut opts = opts.unwrap_or_default();
             update_job_opts(&queue_opts, &mut opts);
-            let mut pc = 0;
-            if opts.priority > 0 {
-                pc = self
-                    .incr(CollectionSuffix::PriorityCounter, 1, None)
-                    .await?;
-            }
+            let pc = if opts.priority > 0 {
+                self.incr(CollectionSuffix::PriorityCounter, 1, None).await?
+            } else {
+                0
+            };
             let queue_name = format!("{}:{}", &self.prefix, &self.name);
             let id = self.incr(CollectionSuffix::Id, 1, None).await?;
             let mut job = Job::<D, R, P>::new(name, Some(data), opts.id, Some(&queue_name));
@@ -404,9 +402,9 @@ where
     }
 
     async fn get_delayed_at(&self, start: i64, stop: i64) -> KioResult<(Vec<u64>, Vec<u64>)> {
-        let before = (start - 1) as u64;
-        let end = stop as u64;
-        let start = start as u64;
+        let before = (start - 1).cast_unsigned();
+        let end = stop.cast_unsigned();
+        let start = start.cast_unsigned();
         let missed_iter = self.delayed.range(..before);
         let jobs_iter = self.delayed.range(start..end);
         let jobs = jobs_iter
@@ -528,7 +526,7 @@ where
             .get(&lock_key)
             .and_then(|entry| match *entry.value().value.lock() {
                 Lock::Token(token) => Some(token),
-                _ => None,
+                Lock::StallCheck => None,
             })
     }
 
@@ -588,22 +586,22 @@ where
             }
             CollectionSuffix::Completed => {
                 if let Some(score) = score {
-                    self.completed.insert(score as u64, item);
+                    self.completed.insert(score.cast_unsigned(), item);
                 }
             }
             CollectionSuffix::Failed => {
                 if let Some(score) = score {
-                    self.failed.insert(score as u64, item);
+                    self.failed.insert(score.cast_unsigned(), item);
                 }
             }
             CollectionSuffix::Prioritized => {
                 if let Some(score) = score {
-                    self.prioritized.insert(score as u64, item);
+                    self.prioritized.insert(score.cast_unsigned(), item);
                 }
             }
             CollectionSuffix::Delayed => {
                 if let Some(score) = score {
-                    self.delayed.insert(score as u64, item);
+                    self.delayed.insert(score.cast_unsigned(), item);
                 }
             }
             CollectionSuffix::Stalled => {
@@ -638,15 +636,13 @@ where
     ) -> KioResult<()> {
         let lock_key = col.tag();
         let duration = Duration::from_millis(lock_duration);
-        let mut lock = Lock::StallCheck;
-        if let Some(token) = token {
-            lock = Lock::Token(token);
-        }
+        let lock = if let Some(token) = token { Lock::Token(token) } else { Lock::StallCheck };
         self.locks.insert_expirable(lock_key, lock, duration);
 
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     fn get_job_ids_in_state(
         &self,
         state: JobState,
@@ -656,7 +652,7 @@ where
         let start = start.unwrap_or_default();
         match state {
             JobState::Wait => {
-                let end = end.unwrap_or(self.waiting.len().saturating_sub(1));
+                let end = end.unwrap_or_else(|| self.waiting.len().saturating_sub(1));
                 let start = self.waiting.iter().nth(start).map(|entry| *entry.key());
                 let end = self.waiting.iter().nth(end).map(|entry| *entry.key());
                 if let (Some(start_element), Some(last_element)) = (start, end) {
@@ -668,7 +664,7 @@ where
                 }
             }
             JobState::Prioritized => {
-                let end = end.unwrap_or(self.prioritized.len().saturating_sub(1));
+                let end = end.unwrap_or_else(|| self.prioritized.len().saturating_sub(1));
                 let start = self.prioritized.iter().nth(start).map(|entry| *entry.key());
                 let end = self.prioritized.iter().nth(end).map(|entry| *entry.key());
                 if let (Some(start_element), Some(last_element)) = (start, end) {
@@ -680,7 +676,7 @@ where
                 }
             }
             JobState::Stalled => {
-                let end = end.unwrap_or(self.stalled.len().saturating_sub(1));
+                let end = end.unwrap_or_else(|| self.stalled.len().saturating_sub(1));
                 let start = self.stalled.iter().nth(start).map(|entry| *entry.value());
                 let end = self.stalled.iter().nth(end).map(|entry| *entry.value());
                 if let (Some(start_element), Some(last_element)) = (start, end) {
@@ -692,7 +688,7 @@ where
                 }
             }
             JobState::Active => {
-                let end = end.unwrap_or(self.active.len().saturating_sub(1));
+                let end = end.unwrap_or_else(|| self.active.len().saturating_sub(1));
                 let start = self.active.iter().nth(start).map(|entry| *entry.key());
                 let end = self.active.iter().nth(end).map(|entry| *entry.key());
                 if let (Some(start_element), Some(last_element)) = (start, end) {
@@ -704,7 +700,7 @@ where
                 }
             }
             JobState::Paused => {
-                let end = end.unwrap_or(self.paused.len().saturating_sub(1));
+                let end = end.unwrap_or_else(|| self.paused.len().saturating_sub(1));
                 let start = self.paused.iter().nth(start).map(|entry| *entry.key());
                 let end = self.paused.iter().nth(end).map(|entry| *entry.key());
                 if let (Some(start_element), Some(last_element)) = (start, end) {
@@ -716,7 +712,7 @@ where
                 }
             }
             JobState::Completed => {
-                let end = end.unwrap_or(self.completed.len().saturating_sub(1));
+                let end = end.unwrap_or_else(|| self.completed.len().saturating_sub(1));
                 let start = self.completed.iter().nth(start).map(|entry| *entry.key());
                 let end = self.completed.iter().nth(end).map(|entry| *entry.key());
                 if let (Some(start_element), Some(last_element)) = (start, end) {
@@ -728,7 +724,7 @@ where
                 }
             }
             JobState::Failed => {
-                let end = end.unwrap_or(self.failed.len().saturating_sub(1));
+                let end = end.unwrap_or_else(|| self.failed.len().saturating_sub(1));
                 let start = self.failed.iter().nth(start).map(|entry| *entry.key());
                 let end = self.failed.iter().nth(end).map(|entry| *entry.key());
                 if let (Some(start_element), Some(last_element)) = (start, end) {
@@ -740,7 +736,7 @@ where
                 }
             }
             JobState::Delayed => {
-                let end = end.unwrap_or(self.delayed.len().saturating_sub(1));
+                let end = end.unwrap_or_else(|| self.delayed.len().saturating_sub(1));
                 let start = self.delayed.iter().nth(start).map(|entry| *entry.key());
                 let end = self.delayed.iter().nth(end).map(|entry| *entry.key());
                 if let (Some(start_element), Some(last_element)) = (start, end) {
@@ -764,10 +760,10 @@ where
                     JobField::BackTrace(trace) => job.stack_trace.push(trace),
                     JobField::State(state) => job.state = state,
                     JobField::ProcessedOn(ts) => {
-                        job.processed_on = Dt::from_timestamp_micros(ts as i64);
+                        job.processed_on = Dt::from_timestamp_micros(ts.cast_signed());
                     }
                     JobField::FinishedOn(ts) => {
-                        job.finished_on = Dt::from_timestamp_micros(ts as i64);
+                        job.finished_on = Dt::from_timestamp_micros(ts.cast_signed());
                     }
                     JobField::Token(token) => job.token = Some(token),
                     JobField::Payload(processed_result) => match processed_result {
@@ -805,23 +801,22 @@ where
                     let update_job = |job: &mut Job<D, R, P>| -> u64 {
                         match field {
                             "attempts_made" | "attemptsMade" => {
-                                let new = (job.attempts_made as i64 + delta).max(0) as u64;
+                                let new = (job.attempts_made.cast_signed() + delta).max(0).cast_unsigned();
                                 job.attempts_made = new;
                                 new
                             }
                             "stalled_counter" | "stalledCounter" => {
-                                let new = (job.stalled_counter as i64 + delta).max(0) as u64;
+                                let new = (job.stalled_counter.cast_signed() + delta).max(0).cast_unsigned();
                                 job.stalled_counter = new;
                                 new
                             }
                             _ => 0,
                         }
                     };
-                    let mut next = 0;
-                    if let Some(pair) = self.jobs.inner.get(&key.tag()) {
+                    let next = self.jobs.inner.get(&key.tag()).map_or(0, |pair| {
                         let job = &mut pair.value().value.lock();
-                        next = update_job(job);
-                    }
+                        update_job(job)
+                    });
                     return Ok(next);
                 }
 
@@ -974,8 +969,7 @@ where
     fn remove(&self, key: CollectionSuffix) -> KioResult<()> {
         // do thing here
         match key {
-            CollectionSuffix::Active => self.active.clear(),
-            CollectionSuffix::Completed => self.active.clear(),
+            CollectionSuffix::Active | CollectionSuffix::Completed => self.active.clear(),
             CollectionSuffix::Delayed => self.delayed.clear(),
             CollectionSuffix::Stalled => self.stalled.clear(),
             CollectionSuffix::Prioritized => self.prioritized.clear(),
@@ -985,10 +979,7 @@ where
             CollectionSuffix::Job(_) => {
                 self.jobs.remove(&key.tag());
             }
-            CollectionSuffix::Lock(_) => {
-                self.locks.remove(&key.tag());
-            }
-            CollectionSuffix::StalledCheck => {
+            CollectionSuffix::Lock(_) | CollectionSuffix::StalledCheck => {
                 self.locks.remove(&key.tag());
             }
             _ => {}
