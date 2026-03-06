@@ -160,6 +160,7 @@ impl<
     /// # Ok(())
     /// # }
     /// ```
+    #[track_caller]
     pub fn new_sync<C, E>(
         queue: &Queue<D, R, P, S>,
         processor: C,
@@ -260,7 +261,7 @@ impl<
                 Callback::Sync(_) => "Sync",
             };
             {
-                let location = std::panic::Location::caller();
+                let location = std::panic::Location::caller().to_string();
                 let queue_name = queue.name();
                 let worker_type = format!(
                     "{}-Worker({},{queue_name})",

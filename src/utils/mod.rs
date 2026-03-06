@@ -889,8 +889,22 @@ where
             loop {
                 let args: ReadStreamArgs<R, P> =
                     (event_mode, block_interval, &emitter, metrics.clone());
-                process_queue_events(args, &store).await?;
-                pause_or_resume_workers(&notifier, &metrics, &pause_workers, &is_inital);
+                #[cfg(feature = "tracing")]
+                {
+                    use tracing::{info_span, Instrument};
+                    let queue_name = format!("{}:{}", store.queue_prefix(), store.queue_name());
+                    let span = info_span!( parent:None, "", queue_name);
+                    process_queue_events(args, &store)
+                        .instrument(span.clone())
+                        .await?;
+                    let _enter = span.enter();
+                    pause_or_resume_workers(&notifier, &metrics, &pause_workers, &is_inital);
+                }
+                #[cfg(not(feature = "tracing"))]
+                {
+                    process_queue_events(args, &store).await?;
+                    pause_or_resume_workers(&notifier, &metrics, &pause_workers, &is_inital);
+                }
                 tokio::task::yield_now().await;
             }
             #[allow(unreachable_code)]
