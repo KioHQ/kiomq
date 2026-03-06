@@ -1,7 +1,5 @@
-use crate::{FailedDetails, Job, JobError, JobMetrics, JobState};
+use crate::{FailedDetails, JobMetrics, JobState};
 use derive_more::Debug;
-#[cfg(feature = "redis-store")]
-use redis::AsyncCommands;
 use uuid::Uuid;
 /// The payload delivered to event listeners registered on a [`Queue`](crate::Queue).
 ///
@@ -122,15 +120,13 @@ pub enum EventParameters<R, P> {
         status: JobState,
     },
 }
-use std::{sync::Arc, time::Duration};
-pub type Events = JobState;
-use crate::stores::Store;
 use serde::de::DeserializeOwned;
+use std::{sync::Arc, time::Duration};
 use typed_emitter::TypedEmitter;
 pub(crate) type Emitter<R, P> = TypedEmitter<JobState, EventParameters<R, P>>;
 pub(crate) type EventEmitter<R, P> = Arc<Emitter<R, P>>;
 mod redis_events;
-pub use redis_events::{QueueStreamEvent, StreamEventId};
+pub(crate) use redis_events::QueueStreamEvent;
 
 use crate::KioResult;
 impl<R: DeserializeOwned, P: DeserializeOwned> EventParameters<R, P> {

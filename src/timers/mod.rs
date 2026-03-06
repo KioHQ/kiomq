@@ -1,18 +1,15 @@
 use derive_more::Debug;
 use futures::future::{BoxFuture, Future, FutureExt};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
-use std::{cell::RefCell, sync::atomic::AtomicBool};
 use tokio::sync::Notify;
-use tokio::{
-    task::{self, JoinHandle},
-    time::{sleep, Instant},
-};
+use tokio::task::{self, JoinHandle};
 mod delay_queue_map;
 mod delay_queue_timer;
 pub use delay_queue_map::TimedMap;
 pub(crate) use delay_queue_timer::{DelayQueueTimer, TimerType};
-pub type EmptyCb = dyn Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static;
+pub(crate) type EmptyCb = dyn Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static;
 use tokio_util::sync::CancellationToken;
 /// A repeating async timer that fires a callback at a fixed interval.
 ///
@@ -81,14 +78,14 @@ impl Timer {
     ///
     /// If the timer is already paused or not running, this is a no-op.
     pub fn pause(&self) {
-        self.paused.compare_exchange(
+        let _ = self.paused.compare_exchange(
             false,
             true,
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
         );
         // set running to false
-        self.is_active.compare_exchange(
+        let _ = self.is_active.compare_exchange(
             true,
             false,
             std::sync::atomic::Ordering::Relaxed,
@@ -110,10 +107,9 @@ impl Timer {
         let skip_first_tick = self
             .skip_first_tick
             .load(std::sync::atomic::Ordering::Relaxed);
-        let is_active = self.is_active.clone();
         let is_paused = self.paused.clone();
         let notifier = self.notifier.clone();
-        let mut task = task::spawn(async move {
+        let task = task::spawn(async move {
             // wait for the first tick to ensure the initial delay;
             if !skip_first_tick {
                 interval.tick().await;
@@ -164,13 +160,13 @@ impl Timer {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicI8, AtomicUsize};
+    use std::sync::atomic::AtomicUsize;
 
     use super::*;
     #[tokio::test]
     async fn runs_and_stops() {
         let now = tokio::time::Instant::now();
-        let mut timer = Timer::new(100, || async { println!("hello") });
+        let timer = Timer::new(100, || async { println!("hello") });
         timer.run();
         assert!(timer.is_running());
 
@@ -185,7 +181,7 @@ mod tests {
         let now = tokio::time::Instant::now();
         let counter: Arc<AtomicUsize> = Arc::default();
         let counter_clone = counter.clone();
-        let mut timer = Timer::new(100, move || {
+        let timer = Timer::new(100, move || {
             let counter_clone = counter_clone.clone();
             async move {
                 println!("hello");
@@ -208,7 +204,7 @@ mod tests {
         let now = tokio::time::Instant::now();
         let counter: Arc<AtomicUsize> = Arc::default();
         let counter_clone = counter.clone();
-        let mut timer = Timer::new(100, move || {
+        let timer = Timer::new(100, move || {
             let counter_clone = counter_clone.clone();
             async move {
                 println!("hello");

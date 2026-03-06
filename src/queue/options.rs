@@ -1,9 +1,6 @@
-use std::{
-    default,
-    sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
-    },
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc,
 };
 
 use crate::{
@@ -44,7 +41,7 @@ impl<R> JobField<R> {
     /// Returns the store field name (key) for this variant.
     pub fn name(&self) -> &'static str {
         match self {
-            JobField::Token(job_token) => "token",
+            JobField::Token(_) => "token",
             JobField::Payload(processed_result) => {
                 if let ProcessedResult::Success(_, _) = processed_result {
                     "returnedValue"
@@ -54,7 +51,7 @@ impl<R> JobField<R> {
             }
             JobField::ProcessedOn(_) => "processedOn",
             JobField::FinishedOn(_) => "finishedOn",
-            JobField::State(job_state) => "state",
+            JobField::State(_) => "state",
             JobField::BackTrace(_) => "stackTrace",
         }
     }
@@ -469,10 +466,10 @@ impl QueueMetrics {
     }
     /// Returns `true` if there are jobs waiting to be picked up by a worker.
     pub fn queue_has_work(&self) -> bool {
-        (self.waiting.load(Ordering::Acquire) > 0
+        self.waiting.load(Ordering::Acquire) > 0
             || self.delayed.load(Ordering::Acquire) > 0
             || self.stalled.load(Ordering::Acquire) > 0
-            || self.prioritized.load(Ordering::Acquire) > 0)
+            || self.prioritized.load(Ordering::Acquire) > 0
     }
     /// Returns `true` if the queue is currently in the paused state.
     pub fn queue_is_paused(&self) -> bool {

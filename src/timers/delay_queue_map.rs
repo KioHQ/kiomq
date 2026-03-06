@@ -1,9 +1,7 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use crossbeam::atomic::AtomicCell;
-use crossbeam::queue::SegQueue;
 use crossbeam_skiplist::SkipMap;
 use parking_lot::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::runtime::Handle;
 use tokio::time::Duration;
 use tokio_util::time::{delay_queue::Key, DelayQueue};
@@ -72,7 +70,7 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
     /// Inserts `key → value` with no TTL (the entry never expires).
     pub fn insert_constant(&self, key: K, value: V) {
         let pair = ValueKeyPair::new(value);
-        let pair = self.inner.insert(key, pair);
+        self.inner.insert(key, pair);
     }
     /// Inserts `key → value` that expires after `timeout`.
     ///

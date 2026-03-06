@@ -1,4 +1,3 @@
-#![allow(unused)]
 use kiomq::macros::worker_store_suite;
 use uuid::Uuid;
 

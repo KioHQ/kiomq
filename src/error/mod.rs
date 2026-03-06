@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 #[cfg(feature = "redis-store")]
 use deadpool_redis::redis;
 use derive_more::Display;

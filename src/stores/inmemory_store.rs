@@ -1,13 +1,12 @@
 use super::*;
 use crate::timers::TimedMap;
 use crate::utils::{
-    calculate_next_priority_score, create_listener_handle, pause_or_resume_workers,
-    process_each_event, update_job_opts,
+    calculate_next_priority_score, pause_or_resume_workers, process_each_event, update_job_opts,
 };
 use crate::worker::MIN_DELAY_MS_LIMIT;
-use crate::{Counter, Dt, FailedDetails, QueueError};
+use crate::ProcessedResult;
+use crate::{Counter, Dt, QueueError};
 use chrono::Utc;
-use crossbeam::queue::SegQueue;
 use crossbeam_skiplist::{SkipMap, SkipSet};
 use derive_more::Debug;
 use serde::{de::DeserializeOwned, Serialize};
@@ -15,7 +14,6 @@ use std::collections::VecDeque;
 use std::time::Duration;
 use uuid::Uuid;
 type StoredMap = SkipMap<u64, u64>;
-use crate::JobError;
 use std::sync::atomic::Ordering;
 type TimedJobMap<D, R, P> = TimedMap<u64, Job<D, R, P>>;
 type ListQueue = SkipMap<i64, u64>;
@@ -152,15 +150,14 @@ where
             priority,
             ref delay,
             id: _,
-            attempts,
-            remove_on_fail,
-            remove_on_complete,
-            ref backoff,
+            attempts: _,
+            remove_on_fail: _,
+            remove_on_complete: _,
+            backoff: _,
             repeat: _,
         } = opts;
         let dt = Utc::now();
         let expected_dt_ts = delay.next_occurrance_timestamp_ms();
-        let delay_dt = delay.clone();
         let delay = delay.as_diff_ms(dt) as u64;
         job.add_opts(opts);
         if delay > 0 && delay < MIN_DELAY_MS_LIMIT {
@@ -304,7 +301,7 @@ where
             }
             CollectionSuffix::Delayed => self.delayed.iter().any(|entry| *entry.value() == item),
             CollectionSuffix::Stalled => self.stalled.contains(&item),
-            CollectionSuffix::Job(id) => self.jobs.inner.contains_key(&col.tag()),
+            CollectionSuffix::Job(_id) => self.jobs.inner.contains_key(&col.tag()),
             CollectionSuffix::Lock(_) | CollectionSuffix::StalledCheck => {
                 self.locks.inner.contains_key(&col.tag())
             }
@@ -313,21 +310,21 @@ where
         };
         Ok(result)
     }
-    async fn metadata_field_exists(&self, field: &str) -> KioResult<bool> {
+    async fn metadata_field_exists(&self, _field: &str) -> KioResult<bool> {
         Ok(true)
     }
 
-    async fn set_event_mode(&self, event_mode: QueueEventMode) -> KioResult<()> {
+    async fn set_event_mode(&self, _event_mode: QueueEventMode) -> KioResult<()> {
         // do nothing; only pubsub is supported
         Ok(())
     }
 
     async fn listen_to_events(
         &self,
-        event_mode: QueueEventMode,
-        block_interval: Option<u64>,
-        emitter: &EventEmitter<R, P>,
-        metrics: &QueueMetrics,
+        _event_mode: QueueEventMode,
+        _block_interval: Option<u64>,
+        _emitter: &EventEmitter<R, P>,
+        _metrics: &QueueMetrics,
     ) -> KioResult<()> {
         // we do nothing  here as  this method isn't called for this store
         // we can directly use the emitter to emit events without need for a channel
@@ -340,7 +337,7 @@ where
         notifier: Arc<Notify>,
         metrics: Arc<QueueMetrics>,
         pause_workers: Arc<AtomicBool>,
-        event_mode: QueueEventMode,
+        _event_mode: QueueEventMode,
     ) -> KioResult<JoinHandle<KioResult<()>>> {
         self.events.store(Some(emitter.clone()));
         self.notifier.store(Some(notifier.clone()));
@@ -355,7 +352,7 @@ where
         &self,
         iter: Box<dyn Iterator<Item = (String, Option<JobOptions>, D)> + Send>,
         queue_opts: QueueOpts,
-        event_mode: QueueEventMode,
+        _event_mode: QueueEventMode,
         is_paused: bool,
     ) -> KioResult<()> {
         for (ref name, opts, data) in iter {
@@ -379,7 +376,7 @@ where
         &self,
         iter: Box<dyn Iterator<Item = (String, Option<JobOptions>, D)> + Send>,
         queue_opts: QueueOpts,
-        event_mode: QueueEventMode,
+        _event_mode: QueueEventMode,
         is_paused: bool,
     ) -> KioResult<Vec<Job<D, R, P>>> {
         let mut jobs = vec![];
@@ -485,7 +482,7 @@ where
             CollectionSuffix::Lock(_) | CollectionSuffix::StalledCheck => {
                 self.locks.update_expiration_status(&key, duration).await;
             }
-            CollectionSuffix::Job(id) => {
+            CollectionSuffix::Job(_) => {
                 self.jobs.update_expiration_status(&key, duration).await;
             }
             _ => {}
@@ -494,7 +491,7 @@ where
     }
 
     async fn get_metrics(&self) -> KioResult<QueueMetrics> {
-        let mut metrics = QueueMetrics::new(
+        let metrics = QueueMetrics::new(
             self.id_counter.load(Ordering::Acquire),
             self.processing.load(Ordering::Acquire),
             self.active.len() as u64,
@@ -561,12 +558,9 @@ where
         let mut now = Utc::now().timestamp_millis();
         match col {
             CollectionSuffix::Active => {
-                let mut changed = false;
-                let before = now;
                 if append {
                     if let Some(first_entry) = self.active.front() {
                         now = *first_entry.key() - 1;
-                        changed = true;
                     }
                 }
                 self.active.insert(now, item);
@@ -758,7 +752,7 @@ where
     }
     async fn set_fields(&self, job_id: u64, fields: Vec<JobField<R>>) -> KioResult<()> {
         let key = CollectionSuffix::Job(job_id);
-        if let Some(mut pair) = self.jobs.inner.get(&key.tag()) {
+        if let Some(pair) = self.jobs.inner.get(&key.tag()) {
             let job = &mut pair.value().value.lock();
             for field in fields {
                 match field {
@@ -860,12 +854,10 @@ where
 
     async fn publish_event(
         &self,
-        event_mode: QueueEventMode,
+        _event_mode: QueueEventMode,
         event: QueueStreamEvent<R, P>,
     ) -> KioResult<()> {
-        let key = event.id;
         if let Some(emitter) = self.events.load().as_ref() {
-            let metrics = self.get_metrics();
             if let (Some(stored), Some(notifier), Some(pause_workers)) = (
                 self.stored_metrics.load().as_ref(),
                 self.notifier.load().as_ref(),
@@ -962,10 +954,10 @@ where
             CollectionSuffix::Stalled => {
                 self.stalled.remove(&item);
             }
-            CollectionSuffix::Job(id) => {
+            CollectionSuffix::Job(_) => {
                 self.jobs.remove(&col.tag());
             }
-            CollectionSuffix::Lock(id) => {
+            CollectionSuffix::Lock(_) => {
                 self.locks.remove(&col.tag());
             }
 
@@ -1012,12 +1004,12 @@ where
         Ok(())
     }
 
-    async fn clear_jobs(&self, last_id: u64) -> KioResult<()> {
+    async fn clear_jobs(&self, _last_id: u64) -> KioResult<()> {
         self.jobs.clear();
         Ok(())
     }
 
-    async fn pause(&self, pause: bool, event_mode: QueueEventMode) -> KioResult<()> {
+    async fn pause(&self, pause: bool, _event_mode: QueueEventMode) -> KioResult<()> {
         let wait_key = CollectionSuffix::Wait;
         let paused_key = CollectionSuffix::Paused;
         let src = if pause { wait_key } else { paused_key };

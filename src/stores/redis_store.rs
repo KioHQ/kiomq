@@ -1,28 +1,22 @@
 use super::*;
 use crate::utils::{
-    create_listener_handle, prepare_for_insert, process_each_event, process_queue_events,
-    query_all_batched, resume_helper, update_job_opts, ReadStreamArgs,
+    create_listener_handle, prepare_for_insert, process_each_event, query_all_batched,
+    update_job_opts,
 };
-use crate::{FailedDetails, JobError};
 use chrono::Utc;
 use deadpool_redis::{Config, Pool, Runtime};
 use derive_more::Debug;
-use futures::future::FutureExt;
-use futures::stream::Collect;
 use futures::StreamExt;
 use redis::aio::{PubSubSink, PubSubStream};
-use redis::pipe;
 use redis::streams::{StreamReadOptions, StreamReadReply};
-use redis::{streams::StreamPendingReply, AsyncCommands, Commands, LposOptions, Pipeline};
+use redis::{AsyncCommands, Commands, LposOptions};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::num::ParseIntError;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{AcquireError, Notify};
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
-use tokio_util::bytes;
 use uuid::Uuid;
 /// a counter for adding bulk jobs,
 static START: AtomicU64 = AtomicU64::new(0);
@@ -97,13 +91,12 @@ impl RedisStore {
         let consumer_group = format!("{prefix}-{prefix}-group-{id}",);
         let consumer_name = format!("consumer-{id}");
         let mut connection = conn_pool.get().await?;
-        let queue_name = CollectionSuffix::Prefix.to_collection_name(&prefix, &name);
         let stream_key = CollectionSuffix::Events.to_collection_name(&prefix, &name);
-        let (mut sink, source) = redis_client.get_async_pubsub().await?.split();
+        let (sink, source) = redis_client.get_async_pubsub().await?.split();
         let pubsub_sink = Arc::new(Mutex::new(sink));
         let pubsub_source = Arc::new(Mutex::new(source));
-        let c_group: () = connection
-            .xgroup_create_mkstream(&stream_key, &consumer_group, "$")
+        connection
+            .xgroup_create_mkstream::<_, _, _, ()>(&stream_key, &consumer_group, "$")
             .await?;
         let subscribed = Arc::default();
 
@@ -157,7 +150,7 @@ where
         let key = format!("{prefix}worker_metrics:*");
         let mut pipe = redis::pipe();
         let results = conn.scan_match::<_, redis::Value>(key)?;
-        results.into_iter().for_each(|mut value| match value {
+        results.into_iter().for_each(|value| match value {
             redis::Value::BulkString(items) => {
                 pipe.get(&items);
             }
@@ -200,7 +193,7 @@ where
             }
             CollectionSuffix::Stalled => conn.sismember(key, item).await?,
 
-            CollectionSuffix::Active | CollectionSuffix::Wait | CollectionSuffix::Wait => {
+            CollectionSuffix::Active | CollectionSuffix::Wait => {
                 let opts = LposOptions::default();
                 let pos: Option<redis::Value> = conn.lpos(key, item, opts).await?;
                 pos.is_some()
@@ -275,7 +268,7 @@ where
         pipeline.zrangebyscore(&delayed_key, "-inf", format!("({start}"));
         pipeline.zrembyscore(&delayed_key, start, stop);
         pipeline.zrembyscore(&delayed_key, "-inf", start);
-        let (jobs, missed_deadline, done, _): (Vec<u64>, Vec<u64>, i64, i64) =
+        let (jobs, missed_deadline, _done, _): (Vec<u64>, Vec<u64>, i64, i64) =
             pipeline.query_async(&mut conn).await?;
         Ok((jobs, missed_deadline))
     }
@@ -296,7 +289,6 @@ where
         emitter: &EventEmitter<R, P>,
         metrics: &QueueMetrics,
     ) -> KioResult<()> {
-        let store = Arc::new(self.clone());
         if !self.subscribed.load(Ordering::Acquire) {
             self.pubsub_sink
                 .as_async()
@@ -382,7 +374,7 @@ where
         let counter: Option<u64> = conn.get(&priority_counter_key).await?;
         let pc = counter.unwrap_or_default() + 1;
         PC_COUNTER.store(pc, Ordering::Relaxed);
-        let mut start = (end - max_len_hint) + 1;
+        let start = (end - max_len_hint) + 1;
         START.store(start as u64, Ordering::Relaxed);
         let mut is_prioritized = false;
         //let mut iter = iter.par_bridge();
@@ -437,7 +429,7 @@ where
         let counter: Option<u64> = conn.get(&priority_counter_key).await?;
         let pc = counter.unwrap_or_default() + 1;
         PC_COUNTER.store(pc, Ordering::Relaxed);
-        let mut start = (end - max_len_hint) + 1;
+        let start = (end - max_len_hint) + 1;
         START.store(start as u64, Ordering::Relaxed);
         let mut is_prioritized = false;
         //let mut iter = iter.par_bridge();
@@ -480,7 +472,6 @@ where
         crate::utils::get_queue_metrics(&self.prefix, &self.name, &mut conn).await
     }
     async fn get_job(&self, id: u64) -> Option<Job<D, R, P>> {
-        use redis::Value;
         let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
         let mut conn = self.conn_pool.get().await.ok()?;
         let value: Option<Job<_, _, _>> = conn.hgetall(job_key).await.ok()?;
@@ -567,7 +558,6 @@ where
     ) -> KioResult<u64> {
         let mut conn = self.get_connection().await?;
         let key_string = key.to_collection_name(&self.prefix, &self.name);
-        let pipeline = redis::pipe();
 
         if let Some(field_key) = hash_key {
             let val = conn.hincr(key_string, field_key, delta).await?;
@@ -603,11 +593,11 @@ where
                 let mut items = crate::utils::serialize_into_pairs(&event);
                 // remove the id field
                 items.retain(|(key, _)| key != "id");
-                items.retain(|(key, val)| !val.contains("null"));
+                items.retain(|(_, val)| !val.contains("null"));
                 pipeline.xadd(events_stream_key, "*", &items)
             }
         };
-        let done: () = pipeline.query_async(&mut conn).await?;
+        let _: () = pipeline.query_async(&mut conn).await?;
         Ok(())
     }
     fn get_job_ids_in_state(
@@ -617,7 +607,7 @@ where
         end: Option<usize>,
     ) -> KioResult<VecDeque<u64>> {
         let mut conn = self.get_blocking_connection()?;
-        let mut start = start.unwrap_or_default();
+        let start = start.unwrap_or_default();
         let col: CollectionSuffix = state.into();
         let key = col.to_collection_name(&self.prefix, &self.name);
         match state {
@@ -698,7 +688,7 @@ where
             let key = name.to_collection_name(&self.prefix, &self.name);
             pipeline.del(key);
         });
-        let done: () = pipeline.query_async(&mut conn).await?;
+        let _: () = pipeline.query_async(&mut conn).await?;
         Ok(())
     }
 
@@ -767,7 +757,6 @@ where
     }
     async fn clear_jobs(&self, last_id: u64) -> KioResult<()> {
         let mut conn = self.conn_pool.get().await?;
-        let id_key = CollectionSuffix::Id.to_collection_name(&self.prefix, &self.name);
         let mut pipeline = redis::pipe();
         pipeline.atomic();
 
@@ -779,8 +768,8 @@ where
         let _: () = pipeline.query_async(&mut conn).await?;
         Ok(())
     }
-    async fn pause(&self, pause: bool, event_mode: QueueEventMode) -> KioResult<()> {
-        let [wait_key, events_key, meta_key, paused_key] = [
+    async fn pause(&self, pause: bool, _event_mode: QueueEventMode) -> KioResult<()> {
+        let [wait_key, _events_key, meta_key, paused_key] = [
             CollectionSuffix::Wait,
             CollectionSuffix::Events,
             CollectionSuffix::Meta,
