@@ -850,7 +850,9 @@ impl<
                     }
                 }
                 RemoveOnCompletionOrFailure::Int(max_to_keep) => {
-                    if max_to_keep.is_positive() && i64::try_from(id).unwrap_or(i64::MAX) > max_to_keep {
+                    if max_to_keep.is_positive()
+                        && i64::try_from(id).unwrap_or(i64::MAX) > max_to_keep
+                    {
                         self.store.remove(CollectionSuffix::Job(job_id))?;
                     }
                 }
@@ -861,7 +863,9 @@ impl<
                             .await?;
                     }
                     if let Some(max_to_keep) = count {
-                        if max_to_keep.is_positive() && i64::try_from(id).unwrap_or(i64::MAX) > max_to_keep {
+                        if max_to_keep.is_positive()
+                            && i64::try_from(id).unwrap_or(i64::MAX) > max_to_keep
+                        {
                             self.store.remove(CollectionSuffix::Job(job_id))?;
                         }
                     }
@@ -1011,7 +1015,9 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     ) -> KioResult<()> {
         let ts = Utc::now();
 
-        if let Some(next_delay) = self.calculate_next_delay_ms(backoff_job_opts, attempts.cast_signed()) {
+        if let Some(next_delay) =
+            self.calculate_next_delay_ms(backoff_job_opts, attempts.cast_signed())
+        {
             let expected_active_time = ts + TimeDelta::milliseconds(next_delay);
             self.store
                 .add_item(

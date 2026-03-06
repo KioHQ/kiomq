@@ -780,7 +780,12 @@ where
     P: DeserializeOwned + Clone + Send + Sync + 'static,
 {
     store
-        .listen_to_events(event_mode, Some(u64::try_from(block_interval).unwrap_or(u64::MAX)), emitter, &metrics)
+        .listen_to_events(
+            event_mode,
+            Some(u64::try_from(block_interval).unwrap_or(u64::MAX)),
+            emitter,
+            &metrics,
+        )
         .await
 }
 #[allow(clippy::future_not_send)]

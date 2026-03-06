@@ -620,7 +620,8 @@ where
                 if list_len > 0 {
                     let end = end.map_or(list_len, |value| value + 1);
 
-                    let items: Vec<u64> = conn.zrange(key, start.cast_signed(), end.cast_signed())?;
+                    let items: Vec<u64> =
+                        conn.zrange(key, start.cast_signed(), end.cast_signed())?;
                     return Ok(VecDeque::from_iter(items));
                 }
             }
@@ -638,7 +639,8 @@ where
                 let list_len: usize = conn.llen(&key)?;
                 if list_len > 0 {
                     let end = end.map_or(list_len, |value| value + 1);
-                    let items: Vec<u64> = conn.lrange(key, start.cast_signed(), end.cast_signed())?;
+                    let items: Vec<u64> =
+                        conn.lrange(key, start.cast_signed(), end.cast_signed())?;
                     return Ok(VecDeque::from_iter(items));
                 }
             }

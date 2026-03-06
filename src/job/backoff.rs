@@ -78,7 +78,9 @@ impl BackOff {
     pub fn new() -> Self {
         let backoff = Self::default();
         backoff.register("exponential", |delay: i64| {
-            Arc::new(move |atempts: i64| -> i64 { 2_i64.pow(u32::try_from(atempts).unwrap_or(u32::MAX)) * delay })
+            Arc::new(move |atempts: i64| -> i64 {
+                2_i64.pow(u32::try_from(atempts).unwrap_or(u32::MAX)) * delay
+            })
         });
 
         backoff.register("fixed", |delay: i64| Arc::new(move |_attempts| delay));

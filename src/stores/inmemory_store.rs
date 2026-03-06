@@ -364,7 +364,8 @@ where
             let mut opts = opts.unwrap_or_default();
             update_job_opts(&queue_opts, &mut opts);
             let pc = if opts.priority > 0 {
-                self.incr(CollectionSuffix::PriorityCounter, 1, None).await?
+                self.incr(CollectionSuffix::PriorityCounter, 1, None)
+                    .await?
             } else {
                 0
             };
@@ -388,7 +389,8 @@ where
             let mut opts = opts.unwrap_or_default();
             update_job_opts(&queue_opts, &mut opts);
             let pc = if opts.priority > 0 {
-                self.incr(CollectionSuffix::PriorityCounter, 1, None).await?
+                self.incr(CollectionSuffix::PriorityCounter, 1, None)
+                    .await?
             } else {
                 0
             };
@@ -801,12 +803,16 @@ where
                     let update_job = |job: &mut Job<D, R, P>| -> u64 {
                         match field {
                             "attempts_made" | "attemptsMade" => {
-                                let new = (job.attempts_made.cast_signed() + delta).max(0).cast_unsigned();
+                                let new = (job.attempts_made.cast_signed() + delta)
+                                    .max(0)
+                                    .cast_unsigned();
                                 job.attempts_made = new;
                                 new
                             }
                             "stalled_counter" | "stalledCounter" => {
-                                let new = (job.stalled_counter.cast_signed() + delta).max(0).cast_unsigned();
+                                let new = (job.stalled_counter.cast_signed() + delta)
+                                    .max(0)
+                                    .cast_unsigned();
                                 job.stalled_counter = new;
                                 new
                             }
