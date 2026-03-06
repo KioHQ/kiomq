@@ -636,7 +636,7 @@ where
     ) -> KioResult<()> {
         let lock_key = col.tag();
         let duration = Duration::from_millis(lock_duration);
-        let lock = if let Some(token) = token { Lock::Token(token) } else { Lock::StallCheck };
+        let lock = token.map_or(Lock::StallCheck, Lock::Token);
         self.locks.insert_expirable(lock_key, lock, duration);
 
         Ok(())

@@ -448,7 +448,7 @@ where
         while !cancel_token.is_cancelled() {
             // promote jobs here;
             let date_time = Utc::now();
-            let interval_ms = i64::from(MIN_DELAY_MS_LIMIT as u32);
+            let interval_ms = i64::try_from(MIN_DELAY_MS_LIMIT).unwrap_or(i64::MAX);
             if queue_clone.current_metrics.has_delayed() {
                 queue_clone
                     .promote_delayed_jobs(date_time, interval_ms, &timers)
@@ -865,10 +865,10 @@ pub fn update_job_opts(queue_opts: &QueueOpts, opts: &mut JobOptions) {
         opts.attempts = queue_opts.attempts;
     }
     if opts.backoff.is_none() {
-        opts.backoff = queue_opts.default_backoff.clone();
+        opts.backoff.clone_from(&queue_opts.default_backoff);
     }
     if opts.repeat.is_none() {
-        opts.repeat = queue_opts.repeat.clone();
+        opts.repeat.clone_from(&queue_opts.repeat);
     }
 }
 /// utily function to create `stream_handles`

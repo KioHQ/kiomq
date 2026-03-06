@@ -5,6 +5,7 @@ use std::sync::{LazyLock, Mutex};
 use tokio::task::JoinError;
 type Backtrace = Option<Box<[LocationTrace]>>;
 #[derive(Debug)]
+/// Represents an error caught during async job processing, including panics, errors, and join failures.
 pub enum CaughtError {
     /// A panic was caught.
     Panic(CaughtPanicInfo),
