@@ -24,11 +24,12 @@ use tokio::{sync::Notify, task::JoinHandle};
 use tokio_metrics::TaskMonitor;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 type JobMeta<D, R, P> = (Job<D, R, P>, JobToken, TaskHandle, TaskMonitor);
-pub(crate) type JobMap<D, R, P> = Arc<SkipMap<u64, JobMeta<D, R, P>>>;
+pub type JobMap<D, R, P> = Arc<SkipMap<u64, JobMeta<D, R, P>>>;
 type Task = JoinHandle<KioResult<()>>;
-pub(crate) type TaskHandle = ArcSwapOption<Task>;
-pub(crate) type SharedTaskHandle = Arc<TaskHandle>;
-pub(crate) type ProcessingQueue = TaskTracker;
+pub type TaskHandle = ArcSwapOption<Task>;
+pub type SharedTaskHandle = Arc<TaskHandle>;
+/// Alias for the `processing_queue`. changed from (`Futures::FuturesUnordered` -> `TaskTracker`)
+pub type ProcessingQueue = TaskTracker;
 use atomig::{Atom, Atomic};
 use derive_more::IsVariant;
 pub use worker_opts::WorkerOpts;
@@ -47,7 +48,7 @@ pub enum WorkerState {
 #[cfg(feature = "tracing")]
 use tracing::{debug, instrument, warn, Instrument, Span};
 
-pub(crate) use worker_opts::MIN_DELAY_MS_LIMIT;
+pub use worker_opts::MIN_DELAY_MS_LIMIT;
 /// A job processor that consumes jobs from a [`Queue`].
 ///
 /// Each `Worker` runs an internal async loop that fetches jobs from the queue
@@ -118,7 +119,8 @@ pub struct Worker<D, R, P, S> {
 }
 use crate::utils::processor_types;
 use processor_types::Callback;
-pub(crate) type WorkerCallback<D, R, P, S> = Callback<D, R, P, S>;
+/// A callback definition alias for the worker
+pub type WorkerCallback<D, R, P, S> = Callback<D, R, P, S>;
 
 impl<
         D: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
