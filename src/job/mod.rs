@@ -1,4 +1,5 @@
 use crate::stores::Store;
+use crate::Queue;
 use chrono::{DateTime, Utc};
 #[cfg(feature = "redis-store")]
 use deadpool_redis::redis::ToRedisArgs;
@@ -33,7 +34,7 @@ pub struct JobMetrics {
     pub id: u64,
 }
 
-/// alias for `DateTime`<Utc>
+/// alias for [`DateTime<Utc>`]
 pub type Dt = DateTime<Utc>;
 /// The lifecycle state of a job within the queue.
 ///
@@ -94,7 +95,7 @@ impl ToRedisArgs for JobState {
 }
 /// Per-job configuration options.
 ///
-/// Supply this to [`Queue::add_job`] or [`Queue::bulk_add`] to customise
+/// Supply this to [`crate::Queue::add_job`] or [`crate::Queue::bulk_add`] to customise
 /// individual job behaviour.  Fields left at `Default` inherit the queue's
 /// [`crate::QueueOpts`] values.
 ///
