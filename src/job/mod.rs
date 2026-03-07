@@ -1,5 +1,4 @@
 use crate::stores::Store;
-use crate::Queue;
 use chrono::{DateTime, Utc};
 #[cfg(feature = "redis-store")]
 use deadpool_redis::redis::ToRedisArgs;
