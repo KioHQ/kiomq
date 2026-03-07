@@ -180,9 +180,9 @@ pub struct FailedDetails {
 }
 use chrono::serde::{ts_microseconds, ts_microseconds_option};
 use derive_more::Debug;
-/// A unit of work managed by a [`Queue`].
+/// A unit of work managed by a [`crate::Queue`].
 ///
-/// Jobs are created by [`Queue::add_job`] / [`Queue::bulk_add`] and passed to
+/// Jobs are created by [`crate::Queue::add_job`] / [`crate::Queue::bulk_add`] and passed to
 /// your processor function by the [`crate::Worker`].
 ///
 /// The type parameters `D`, `R`, and `P` represent the job's input data,
