@@ -7,13 +7,20 @@
   Built for <b>Tokio</b> · Scale up (many workers per machine) · Scale out (Redis + workers across machines)
 </p>
 
+<p align="center">
+  <a href="https://crates.io/crates/kiomq"><img alt="crates.io" src="https://img.shields.io/crates/v/kiomq.svg" /></a>
+  <a href="https://github.com/KioHQ/kiomq/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/KioHQ/kiomq/ci.yml?branch=main" /></a>
+  <a href="https://docs.rs/kiomq"><img alt="docs.rs" src="https://img.shields.io/docsrs/kiomq" /></a>
+  <a href= "https://opensource.org/licenses/MIT"> <img alt ="LICENSE" src="https://img.shields.io/badge/License-MIT-yellow.svg"/> </a>
+</p>
+
 ---
 
 **KioMQ** provides the core building blocks to run background work inside your Tokio services:
 
 - A **Queue** to enqueue tasks/jobs.
 - One or more **Workers** to process jobs concurrently.
-- Pluggable **Stores**: `InMemoryStore` (ephemeral), `RedisStore` (durable, distributed), RocksDB *(under construction)*.
+- Pluggable **Stores**: `InMemoryStore` (ephemeral), `RedisStore` (durable, distributed), RocksDB _(under construction)_.
 - **Scheduling** – delays, cron expressions, repeat policies.
 - **Reliability** – retries, backoff strategies, stalled-job detection.
 - **Observability** – events, progress updates, per-worker metrics.
@@ -28,12 +35,12 @@ Inspired by [BullMQ](https://docs.bullmq.io/)'s ergonomics, implemented as an em
 
 ### Key features
 
-* **Async & sync processors** – async for I/O-bound work, sync (`spawn_blocking`) for CPU-bound.
-* **Configurable concurrency** – defaults to CPU count.
-* **Event-driven idle workers** – near-zero CPU when empty, using lock-free atomics and `tokio::sync::Notify`.
-* **Bulk enqueue** – `Queue::bulk_add` / `Queue::bulk_add_only`.
-* **Priority & delayed jobs** – by score or after *N* ms / cron schedule.
-* **Repeat policies** – cron, backoff-driven, fixed interval, immediate.
+- **Async & sync processors** – async for I/O-bound work, sync (`spawn_blocking`) for CPU-bound.
+- **Configurable concurrency** – defaults to CPU count.
+- **Event-driven idle workers** – near-zero CPU when empty, using lock-free atomics and `tokio::sync::Notify`.
+- **Bulk enqueue** – `Queue::bulk_add` / `Queue::bulk_add_only`.
+- **Priority & delayed jobs** – by score or after _N_ ms / cron schedule.
+- **Repeat policies** – cron, backoff-driven, fixed interval, immediate.
 
 ---
 
@@ -61,7 +68,7 @@ async fn my_test() { /* ... */ }
 kiomq = "0.1"
 ```
 
-Cargo features: `redis-store` *(default)*, `rocksdb-store`, `tracing`.
+Cargo features: `redis-store` _(default)_, `rocksdb-store`, `tracing`.
 
 ---
 
@@ -258,7 +265,7 @@ async fn processor<S: Store<u64, u64, u8>>(
 
 `InMemoryStore` – ideal for tests, dev, and short-lived tasks. No external dependencies.
 
-#### Redis *(default feature)*
+#### Redis _(default feature)_
 
 Durable, distributed workloads. Requires a running Redis instance:
 
@@ -266,7 +273,7 @@ Durable, distributed workloads. Requires a running Redis instance:
 docker run --rm -p 6379:6379 redis:latest
 ```
 
-#### RocksDB *(under construction)*
+#### RocksDB _(under construction)_
 
 Embedded persistence – work in progress.
 
