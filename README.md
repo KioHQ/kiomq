@@ -91,9 +91,14 @@ async fn main() -> kiomq::KioResult<()> {
 
     let worker = Worker::new_async(&queue, processor, Some(WorkerOpts::default()))?;
     worker.run()?;
-
+   
     queue.bulk_add_only((0..10u64).map(|i| (format!("job-{i}"), None, i))).await?;
 
+    let updating_metrics = queue.current_metrics.clone();
+    // while for all jobs to complete
+    while !updating_metrics.all_jobs_completed()  {
+        tokio::task::yield_now().await;
+    }
     worker.close();
     Ok(())
 }
@@ -122,6 +127,11 @@ async fn main() -> kiomq::KioResult<()> {
 
     queue.add_job("compute", 42u64, None).await?;
 
+    let updating_metrics = queue.current_metrics.clone();
+    // while for all jobs to complete
+    while !updating_metrics.all_jobs_completed()  {
+        tokio::task::yield_now().await;
+    }
     worker.close();
     Ok(())
 }
@@ -172,6 +182,11 @@ async fn main() -> kiomq::KioResult<()> {
 
     queue.add_job("job-1", 42u64, None).await?;
 
+    let updating_metrics = queue.current_metrics.clone();
+    // while for all jobs to complete
+    while !updating_metrics.all_jobs_completed()  {
+        tokio::task::yield_now().await;
+    }
     worker.close();
     Ok(())
 }
