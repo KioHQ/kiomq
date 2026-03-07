@@ -21,7 +21,17 @@ categories = [
   "data-structures"
 ]
 readme = "./README.md"
+exclude = [
+  "assets/**",
+  ".github/**",
+  ".config/**",
+  "docs/**",
 
+  # optional (exclude only if you don't want them shipped on crates.io)
+  "benches/**",
+  "examples/**",
+  "tests/**",
+]
 [package.metadata.cabrgo-commands]
 exclude-examples = true
 
