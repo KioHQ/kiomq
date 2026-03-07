@@ -1,4 +1,5 @@
-name: CD (Release)
+name: CD (Next Release)
+
 on:
   push:
     tags:
@@ -68,7 +69,6 @@ jobs:
     name: Create GitHub Release (from tag)
     runs-on: ubuntu-latest
 
-    # Forward the tag so downstream jobs that only "need" job3 can still use it.
     outputs:
       tag: ${{ needs.job1.outputs.tag }}
 
@@ -88,7 +88,7 @@ jobs:
         id: date
         run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
-      - name: Generate release notes for this tag (with version + date heading)
+      - name: Generate release notes for this tag
         uses: orhun/git-cliff-action@v4
         with:
           config: .config/cliff-release.toml
@@ -115,13 +115,20 @@ jobs:
       - name: Checkout release branch
         uses: actions/checkout@v3
         with:
-          # NOTE: read the tag from job3 outputs, not job1
           ref: update-release-${{ needs.job3.outputs.tag }}
 
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           override: true
+
+      - name: Install native dependencies for RocksDB (Ubuntu)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang llvm pkg-config cmake make g++ \
+            librocksdb-dev \
+            libsnappy-dev zlib1g-dev libbz2-dev liblz4-dev libzstd-dev
 
       - uses: katyo/publish-crates@v2
         with:
