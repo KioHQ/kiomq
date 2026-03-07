@@ -1427,7 +1427,7 @@ dependencies = [
 
 [[package]]
 name = "kiomq"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arc-swap",
  "async-backtrace",
