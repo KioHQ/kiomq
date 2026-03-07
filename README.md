@@ -91,7 +91,7 @@ async fn main() -> kiomq::KioResult<()> {
 
     let worker = Worker::new_async(&queue, processor, Some(WorkerOpts::default()))?;
     worker.run()?;
-   
+
     queue.bulk_add_only((0..10u64).map(|i| (format!("job-{i}"), None, i))).await?;
 
     let updating_metrics = queue.current_metrics.clone();
@@ -288,10 +288,44 @@ Durable, distributed workloads. Requires a running Redis instance:
 docker run --rm -p 6379:6379 redis:latest
 ```
 
+```rust
+use kiomq::{Config, KioResult, Queue, RedisStore};
+
+#[tokio::main]
+async fn main() -> KioResult<()> {
+    // `Config` can be imported from `kiomq` or from `deadpool_redis`
+    // (if you already use it in your app).
+    let config = Config::default();
+
+    let store = RedisStore::new(None, "my-queue", &config).await?;
+    let queue = Queue::new(store, None).await?;
+    // ... worker logic below here
+    Ok(())
+}
+```
+
 #### RocksDB _(under construction)_
 
 Embedded persistence – work in progress.
 
+```toml
+[dependencies]
+kiomq = { "0.1", default-features=false, features=["rocksdb-store"] }
+```
+
+```rust
+use kiomq::{temporary_rocks_db, RocksDbStore, KioResult, Queue, RedisStore};
+
+#[tokio::main]
+async fn main() -> KioResult<()> {
+    let db = Arc::new(temporary_rocks_db()); // replace ``temporary_rocks_db`` with a real database Instantiation (check out the rocksdb-crate)
+
+    let store = RocksDbStore::new(None, "test", db.clone())?;
+    let queue = Queue::new(store, None).await?;
+    // ... worker logic below here
+    Ok(())
+}
+```
 ---
 
 ### Benchmarks
