@@ -8,7 +8,7 @@ description  = "An all-in-one task-queue and orchestration library for Rust"
 license = "MIT"
 repository = "https://github.com/KioHQ/kiomq"
 homepage = "https://github.com/KioHQ/kiomq"
-categories = ["asynchronous", "server-side", "task-orchestration"]
+categories = ["asynchronous", "concurrency", "network-programming", "data-structures"]
 readme ="./README.md"
 
 [package.metadata.cabrgo-commands]
