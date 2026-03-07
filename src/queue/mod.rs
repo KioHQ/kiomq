@@ -1,3 +1,4 @@
+#![allow(rustdoc::private_intra_doc_links)]
 use crate::error::{JobError, KioError};
 use crate::events::QueueStreamEvent;
 use crate::job::{Job, JobState};

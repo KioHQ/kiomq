@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="assets/logo-dark.png" alt="KioMQ logo" width="320" />
+<img src="https://raw.githubusercontent.com/KioHQ/kiomq/HEAD/assets/logo-dark.png" alt="KioMQ logo" width="320" />
 </p>
 
 <p align="center">
   <b>A task queue &amp; orchestration library for Rust</b><br/>
-  Built for <b>Tokio</b> · Scale up (many workers per machine) · Scale out (Redis + workers across machines)
+  Built for <b><a href="https://tokio.rs">Tokio</a></b> · Scale up (many workers per machine) · Scale out (Redis + workers across machines)
 </p>
 
 <p align="center">
@@ -16,11 +16,11 @@
 
 ---
 
-**KioMQ** provides the core building blocks to run background work inside your Tokio services:
+**`KioMQ`** provides the core building blocks to run background work inside your Tokio services:
 
-- A **Queue** to enqueue tasks/jobs.
+- A [`Queue`] to enqueue tasks/jobs.
 - One or more **Workers** to process jobs concurrently.
-- Pluggable **Stores**: `InMemoryStore` (ephemeral), `RedisStore` (durable, distributed), RocksDB _(under construction)_.
+- Pluggable **Stores**: [`InMemoryStore`] (ephemeral), [`RedisStore`] (durable, distributed), `RocksDB` _(under construction)_.
 - **Scheduling** – delays, cron expressions, repeat policies.
 - **Reliability** – retries, backoff strategies, stalled-job detection.
 - **Observability** – events, progress updates, per-worker metrics.
@@ -35,10 +35,10 @@ Inspired by [BullMQ](https://docs.bullmq.io/)'s ergonomics, implemented as an em
 
 ### Key features
 
-- **Async & sync processors** – async for I/O-bound work, sync (`spawn_blocking`) for CPU-bound.
+- **Async & sync processors** – async for I/O-bound work, sync [`spawn_blocking`](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html) for CPU-bound.
 - **Configurable concurrency** – defaults to CPU count.
-- **Event-driven idle workers** – near-zero CPU when empty, using lock-free atomics and `tokio::sync::Notify`.
-- **Bulk enqueue** – `Queue::bulk_add` / `Queue::bulk_add_only`.
+- **Event-driven idle workers** – near-zero CPU when empty, using lock-free atomics and [`Notify`](https://docs.rs/tokio/latest/tokio/sync/struct.Notify.html).
+- **Bulk enqueue** – [`Queue::bulk_add`] / [`Queue::bulk_add_only`].
 - **Priority & delayed jobs** – by score or after _N_ ms / cron schedule.
 - **Repeat policies** – cron, backoff-driven, fixed interval, immediate.
 
@@ -106,7 +106,7 @@ async fn main() -> kiomq::KioResult<()> {
 
 #### Sync worker
 
-Sync processors run on a blocking thread via `tokio::task::spawn_blocking` — suitable for
+Sync processors run on a blocking thread via [`tokio::task::spawn_blocking`](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html) — suitable for
 heavy computation, hashing, blocking FFI, etc.
 
 ```rust
@@ -150,7 +150,7 @@ rogue job cannot bring down the whole process.
 
 #### Async backtrace with `#[framed]`
 
-Annotate your processor with `#[framed]` (re-exported from
+Annotate your processor with [`framed`] (re-exported from
 [`async_backtrace`](https://docs.rs/async-backtrace) as `kiomq::framed`) for richer async
 stack traces:
 
@@ -196,7 +196,7 @@ async fn main() -> kiomq::KioResult<()> {
 
 ### Configuration
 
-#### Queue options (`QueueOpts`)
+#### Queue options ([`QueueOpts`])
 
 ```rust
 use kiomq::{BackOffJobOptions, BackOffOptions, KeepJobs, QueueEventMode, QueueOpts,
@@ -217,7 +217,7 @@ let queue_opts = QueueOpts {
 };
 ```
 
-#### Per-job options (`JobOptions`)
+#### Per-job options ([`JobOptions`])
 
 ```rust
 use kiomq::JobOptions;
@@ -225,7 +225,7 @@ use kiomq::JobOptions;
 let opts = JobOptions { attempts: 5, ..Default::default() };
 ```
 
-#### Worker options (`WorkerOpts`)
+#### Worker options ([`WorkerOpts`])
 
 ```rust
 use kiomq::WorkerOpts;
@@ -256,7 +256,7 @@ queue.remove_event_listener(_listener_id);
 
 ### Progress updates
 
-Report progress from inside your processor using `job.update_progress`:
+Report progress from inside your processor using `Job.update_progress`:
 
 ```rust
 use std::sync::Arc;
@@ -278,7 +278,7 @@ async fn processor<S: Store<u64, u64, u8>>(
 
 #### In-memory
 
-`InMemoryStore` – ideal for tests, dev, and short-lived tasks. No external dependencies.
+[`InMemoryStore`] – ideal for tests, dev, and short-lived tasks. No external dependencies.
 
 #### Redis _(default feature)_
 
@@ -304,7 +304,7 @@ async fn main() -> KioResult<()> {
 }
 ```
 
-#### RocksDB _(under construction)_
+#### `RocksDB` _(under construction)_
 
 Embedded persistence – work in progress.
 
@@ -326,6 +326,7 @@ async fn main() -> KioResult<()> {
     Ok(())
 }
 ```
+
 ---
 
 ### Benchmarks
@@ -342,4 +343,4 @@ cargo test
 
 ### License
 
-MIT — see [LICENSE](LICENSE)
+MIT — see [LICENSE](https://raw.githubusercontent.com/KioHQ/kiomq/HEAD/LICENSE)

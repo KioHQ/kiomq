@@ -7,6 +7,7 @@ use crate::utils::{
     create_listener_handle, prepare_for_insert, process_each_event, query_all_batched,
     update_job_opts,
 };
+use crate::KioError;
 use chrono::Utc;
 use deadpool_redis::{Config, Pool, Runtime};
 use derive_more::Debug;
