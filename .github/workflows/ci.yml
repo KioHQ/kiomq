@@ -84,7 +84,7 @@ jobs:
       - name: Run tests with RedisStore
         #env:
         #REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
-        run: cargo nextest run  --offline --config-file ./.config/nextest.toml --no-default-features --features redis-store
+        run: cargo nextest run  --config-file ./.config/nextest.toml --no-default-features --features redis-store
   fmt:
     name: Rustfmt
     env:
@@ -160,4 +160,4 @@ jobs:
       - name: Run tests
         #env:
         #REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
-        run: cargo nextest run  --offline --config-file ./.config/nextest.toml
+        run: cargo nextest run  --config-file ./.config/nextest.toml
