@@ -82,7 +82,7 @@ impl RedisStore {
     ///
     /// # Errors
     ///
-    /// Returns [`KioError`] if the pool cannot be created or the initial Redis
+    /// Returns [`crate::KioError`] if the pool cannot be created or the initial Redis
     /// connection fails.
     pub async fn new(prefix: Option<&str>, name: &str, cfg: &Config) -> KioResult<Self> {
         let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
@@ -124,7 +124,7 @@ impl RedisStore {
     ///
     /// # Errors
     ///
-    /// Returns [`KioError`] if the connection cannot be established.
+    /// Returns [`crate::KioError`] if the connection cannot be established.
     pub fn get_blocking_connection(&self) -> KioResult<redis::Connection> {
         let conn = self.redis_client.get_connection()?;
         Ok(conn)
@@ -133,7 +133,7 @@ impl RedisStore {
     ///
     /// # Errors
     ///
-    /// Returns [`KioError`] if the pool is exhausted or the connection fails.
+    /// Returns [`crate::KioError`] if the pool is exhausted or the connection fails.
     pub async fn get_connection(&self) -> KioResult<deadpool_redis::Connection> {
         let conn = self.conn_pool.get().await?;
         Ok(conn)
