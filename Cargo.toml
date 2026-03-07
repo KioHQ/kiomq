@@ -1,6 +1,6 @@
 [package]
 name = "kiomq"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = [ "Spencer Najib" ]
 keywords = [
@@ -26,12 +26,11 @@ exclude = [
   ".github/**",
   ".config/**",
   "docs/**",
-
-  # optional (exclude only if you don't want them shipped on crates.io)
   "benches/**",
   "examples/**",
-  "tests/**",
+  "tests/**"
 ]
+
 [package.metadata.cabrgo-commands]
 exclude-examples = true
 

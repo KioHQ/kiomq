@@ -33,6 +33,8 @@ All notable changes to this project will be documented in this file.
 
 - stop relying on timestamps to generate release.md (**ci**)
 
+- lint warning about links (**rustdoc**)
+
 
 ### CI
 
@@ -47,6 +49,10 @@ All notable changes to this project will be documented in this file.
 - add rocks build time system dependencies for publishing job (**cd-pipeline**)
 
 - chose better category slugs for publishing crate (**cd**)
+
+- exclude unnecessary folders and files from cargo publish (**Crates.io**)
+
+- workflow should references to the old library version in the readme (**cd-workflow**)
 
 
 ### Chores
@@ -81,6 +87,10 @@ All notable changes to this project will be documented in this file.
 
 - use real sermver version of crates (**cargo**)
 
+- 0.1.0 (**release**)
+
+- clippy fix (unused)
+
 
 ### Documentation
 
@@ -91,6 +101,16 @@ All notable changes to this project will be documented in this file.
 - restore Progress updates section and improve Panics & errors wording
 
 - add compact table of contents to README
+
+- add ci-build, crates.io, docs.rs & licence badges  to readme (**readme**)
+
+- update code snippets to include waiting for job completion (**readme**)
+
+- add example code-snippet of redis and rocksdb usage (**readme**)
+
+- use readme in lib.rs, correct links in docs
+
+- minor tweak in rocksdb usage example (**readme**)
 
 
 ### Other
