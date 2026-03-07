@@ -318,7 +318,8 @@ use kiomq::{temporary_rocks_db, RocksDbStore, KioResult, Queue, RedisStore};
 
 #[tokio::main]
 async fn main() -> KioResult<()> {
-    let db = Arc::new(temporary_rocks_db()); // replace ``temporary_rocks_db`` with a real database Instantiation (check out the rocksdb-crate)
+    // replace ``temporary_rocks_db`` with a real database Instantiation (check out the rocksdb-crate)
+    let db = Arc::new(temporary_rocks_db());
 
     let store = RocksDbStore::new(None, "test", db.clone())?;
     let queue = Queue::new(store, None).await?;
