@@ -100,7 +100,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4dcb391558246d27a13f195c1e3a53eda422270fdd452bd57a5aa9c1da1bb198"
 dependencies = [
  "async-backtrace-attributes",
- "dashmap",
+ "dashmap 5.5.3",
  "futures",
  "loom",
  "once_cell",
@@ -648,6 +648,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "978747c1d849a7d2ee5e8adc0159961c48fb7e5db2f06af6723b80123bb53856"
 dependencies = [
  "cfg-if",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
+]
+
+[[package]]
+name = "dashmap"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
+dependencies = [
+ "cfg-if",
+ "crossbeam-utils",
  "hashbrown 0.14.5",
  "lock_api",
  "once_cell",
@@ -2587,9 +2601,10 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 [[package]]
 name = "typed-emitter"
 version = "0.1.3"
-source = "git+https://github.com/spencerjibz/typed-emitter.git?rev=eafde7a6223f2acd63cc438ef6f3cbf300b3ce59#eafde7a6223f2acd63cc438ef6f3cbf300b3ce59"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70df2aa5c68f462014c5418861027f56e9a57d17189f1405dc28b4cea621f65e"
 dependencies = [
- "crossbeam-skiplist",
+ "dashmap 6.1.0",
  "futures",
  "uuid",
 ]
