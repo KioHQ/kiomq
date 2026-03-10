@@ -6,20 +6,27 @@ body = """
 {% for group, commits in commits | group_by(attribute="group") %}
 ### {{ group }}
 {% for commit in commits %}
-- {{ commit.message | trim }}{% if commit.scope %} (**{{ commit.scope }}**){% endif %}
+- {{ commit.message | trim | split(pat="\n") | first }}{% if commit.github.username %} by @{{ commit.github.username }}{% endif %}{% if commit.github.pr_number %} ([#{{ commit.github.pr_number }}](https://github.com/KioHQ/kiomq/pull/{{ commit.github.pr_number }})){% else %} ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/KioHQ/kiomq/commit/{{ commit.id }})){% endif %}{% if commit.scope %} _({{ commit.scope }})_{% endif %}
 {% endfor %}
+{% endfor %}
+
+### Contributors
+{% for login, _items in commits | group_by(attribute="github.username") %}
+{% if login %}- @{{ login }}{% endif %}
 {% endfor %}
 """
 trim = true
 footer = ""
 
 [git]
-tag_pattern = "^[0-9]+\\.[0-9]+\\.[0-9]+.*$"
+tag_pattern = "^v?[0-9]+\\.[0-9]+\\.[0-9]+.*$"
 conventional_commits = true
 filter_unconventional = false
 skip_commit_regex = "^(Merge pull request #|Merge branch |Merge remote-tracking branch |fixup! |squash! |WIP: |wip: |Bump version |Release )"
 
 commit_parsers = [
+  { message = "^chore\\(release\\):", group = "Release" },
+
   { message = "^feat(\\(.+\\))?:", group = "Features" },
   { message = "^fix(\\(.+\\))?:", group = "Bug Fixes" },
   { message = "^perf(\\(.+\\))?:", group = "Performance" },
@@ -30,6 +37,15 @@ commit_parsers = [
   { message = "^ci(\\(.+\\))?:", group = "CI" },
   { message = "^chore(\\(.+\\))?:", group = "Chores" },
   { message = "^revert(\\(.+\\))?:", group = "Reverts" },
+
+  { message = "^(?i)typo$", group = "Documentation" },
+  { message = "^(?i)cargo fmt$", group = "Chores" },
+  { message = "^(?i)format(ting)?$", group = "Chores" },
+  { message = "^(?i)(update|fix|restore|improve|add).*(readme|docs|rustdoc)", group = "Documentation" },
+  { message = "^(?i).*(workflow|github actions|ci|pipeline|release[- ]workflow|cd workflow|actions)", group = "CI" },
+  { message = "^(?i)(fix|bug|correct(ly)?|prevent|resolve|handle).*$", group = "Bug Fixes" },
+  { message = "^(?i)(add|support|implement|introduce|enable).*$", group = "Features" },
+
   { body = "BREAKING CHANGE", group = "Breaking Changes" },
   { message = ".*", group = "Other" },
 ]
