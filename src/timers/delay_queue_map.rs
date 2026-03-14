@@ -1,15 +1,16 @@
 use crossbeam::atomic::AtomicCell;
 use crossbeam_skiplist::SkipMap;
-use parking_lot::Mutex;
+use derive_more::Debug;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::runtime::Handle;
 use tokio::time::Duration;
 use tokio_util::time::{delay_queue::Key, DelayQueue};
-use xutex::AsyncMutex;
+use xutex::{AsyncMutex, Mutex};
 
 /// A value together with its optional expiry key in the delay queue.
 #[derive(Debug)]
 pub struct ValueKeyPair<V> {
+    #[debug(skip)]
     /// The stored value, protected by a mutex for interior mutability.
     pub value: Mutex<V>,
     /// The delay-queue key associated with this entry's expiry, if any.
@@ -19,12 +20,12 @@ impl<V> ValueKeyPair<V> {
     /// Wraps `value` with no expiry key assigned yet.
     pub fn new(value: V) -> Self {
         Self {
-            value: value.into(),
+            value: Mutex::new(value),
             key: AtomicCell::default(),
         }
     }
 }
-#[derive(derive_more::Debug)]
+#[derive(Debug)]
 /// A concurrent map that can automatically evict entries after a configurable TTL.
 ///
 /// Entries are inserted either with no expiry ([`insert_constant`](TimedMap::insert_constant))

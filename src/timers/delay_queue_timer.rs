@@ -115,7 +115,7 @@ impl<
         let mut delay_queue = self.delay_queue.lock().await;
         for stored_key in self.keys.iter() {
             if let Some(key) = stored_key.load().as_ref() {
-                let _ = delay_queue.remove(key);
+                let _ = delay_queue.try_remove(key);
             }
         }
     }

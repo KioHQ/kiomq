@@ -118,10 +118,6 @@ tokio-metrics = "0.4.7"
   features = [ "async-await" ]
   optional = true
 
-  [dependencies.parking_lot]
-  version = "0.12.5"
-  features = [ "send_guard" ]
-
   [dependencies.crossbeam]
   version = "0.8.4"
   features = [ "crossbeam-queue" ]
