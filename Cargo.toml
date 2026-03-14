@@ -9,6 +9,8 @@ keywords = [
   "task-orchestration",
   "tokio",
   "server-side"
+  "worker"
+   "scheduler"
 ]
 description = "An all-in-one task-queue and orchestration library for Rust"
 license = "MIT"
