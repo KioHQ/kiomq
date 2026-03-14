@@ -43,6 +43,8 @@ pub fn fetch_redis_pass() -> Option<String> {
     std::env::var("REDIS_PASSWORD").ok()
 }
 
+#[cfg(feature = "redis-store")]
+/// A utily function thats serializes an Object/Map  into  a Vector of key-value pair strings.
 pub fn serialize_into_pairs<V: Serialize>(item: &V) -> Vec<(String, String)> {
     use simd_json::BorrowedValue;
     if let Ok(BorrowedValue::Object(obj)) = simd_json::serde::to_borrowed_value(item) {
