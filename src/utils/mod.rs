@@ -474,7 +474,7 @@ where
                 #[cfg(feature = "tracing")]
                 debug!("resumed");
                 worker_state_clone.store(WorkerState::Active, Ordering::Release);
-                timers.resume().await;
+                timers.start_timers().await;
             }
             tokio::task::yield_now().await;
         }

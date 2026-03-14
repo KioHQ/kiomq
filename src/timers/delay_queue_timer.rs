@@ -1,7 +1,7 @@
 use crate::worker::{TaskInfo, WorkerMetrics, MIN_DELAY_MS_LIMIT};
 use crate::KioResult;
 use crossbeam::atomic::AtomicCell;
-use crossbeam::queue::{ArrayQueue, SegQueue};
+use crossbeam::queue::SegQueue;
 use derive_more::Debug;
 use serde::{de::DeserializeOwned, Serialize};
 use std::time::Duration;
@@ -31,12 +31,6 @@ pub enum TimerType {
     CollectMetrics,
 }
 use tokio::time::Instant;
-#[derive(Debug, Clone, Copy)]
-struct PausedTimerState {
-    timer: TimerType,
-    deadline: Instant,
-}
-
 use tokio_util::time::delay_queue::Key;
 
 use crate::{worker::JobMap, Queue, Store, WorkerOpts};
@@ -52,7 +46,6 @@ pub struct DelayQueueTimer<D, R, P, S> {
     delay_queue: Arc<AsyncMutex<DelayQueue<TimerType>>>,
     jobs: JobMap<D, R, P>,
     opts: WorkerOpts,
-    pause_state: Arc<ArrayQueue<PausedTimerState>>,
     // (extendLock, Stalled)
     keys: Arc<[AtomicCell<Option<Key>>; 3]>,
     close_now: Arc<AtomicBool>,
@@ -81,7 +74,6 @@ impl<
             AtomicCell::default(),
         ];
         let keys = Arc::new(state);
-        let pause_state = Arc::new(ArrayQueue::new(3));
         #[cfg(feature = "tracing")]
         let resource_span = info_span!("Timers");
 
@@ -89,7 +81,6 @@ impl<
             #[cfg(feature = "tracing")]
             resource_span,
             worker_id,
-            pause_state,
             keys,
             queue,
             delay_queue: Arc::new(AsyncMutex::new(DelayQueue::default())),
@@ -121,41 +112,11 @@ impl<
     }
     #[allow(clippy::future_not_send)]
     pub(crate) async fn pause(&self) {
-        if let Some(key) = self.keys[0].load().as_ref() {
-            if let Some(expired) = self.delay_queue.lock().await.try_remove(key) {
-                let deadline = expired.deadline();
-                let state = PausedTimerState {
-                    deadline,
-                    timer: TimerType::ExtendLock(deadline),
-                };
-                let _ = self.pause_state.push(state);
+        let mut delay_queue = self.delay_queue.lock().await;
+        for stored_key in self.keys.iter() {
+            if let Some(key) = stored_key.load().as_ref() {
+                let _ = delay_queue.remove(key);
             }
-        }
-        if let Some(key) = self.keys[1].load().as_ref() {
-            if let Some(expired) = self.delay_queue.lock().await.try_remove(key) {
-                let deadline = expired.deadline();
-                let state = PausedTimerState {
-                    deadline,
-                    timer: TimerType::StalledCheck(deadline),
-                };
-                let _ = self.pause_state.push(state);
-            }
-        }
-        if let Some(key) = self.keys[2].load().as_ref() {
-            if let Some(expired) = self.delay_queue.lock().await.try_remove(key) {
-                let deadline = expired.deadline();
-                let state = PausedTimerState {
-                    deadline,
-                    timer: TimerType::CollectMetrics,
-                };
-                let _ = self.pause_state.push(state);
-            }
-        }
-    }
-    #[allow(clippy::future_not_send)]
-    pub(crate) async fn resume(&self) {
-        while let Some(PausedTimerState { timer, deadline }) = self.pause_state.pop() {
-            self.delay_queue.lock().await.insert_at(timer, deadline);
         }
     }
 
