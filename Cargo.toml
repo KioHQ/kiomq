@@ -4,11 +4,9 @@ version = "0.1.1"
 edition = "2021"
 authors = [ "Spencer Najib" ]
 keywords = [
-  "async-rust",
+  "async",
   "task-queue",
-  "task-orchestration",
   "tokio",
-  "server-side",
   "worker",
    "scheduler"
 ]
