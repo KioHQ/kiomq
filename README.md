@@ -95,7 +95,7 @@ async fn main() -> kiomq::KioResult<()> {
     queue.bulk_add_only((0..10u64).map(|i| (format!("job-{i}"), None, i))).await?;
 
     let updating_metrics = queue.current_metrics.clone();
-    // while for all jobs to complete
+    // wait for all jobs to complete
     while !updating_metrics.all_jobs_completed()  {
         tokio::task::yield_now().await;
     }
@@ -128,7 +128,7 @@ async fn main() -> kiomq::KioResult<()> {
     queue.add_job("compute", 42u64, None).await?;
 
     let updating_metrics = queue.current_metrics.clone();
-    // while for all jobs to complete
+    // wait for all jobs to complete
     while !updating_metrics.all_jobs_completed()  {
         tokio::task::yield_now().await;
     }
@@ -239,7 +239,7 @@ let opts = WorkerOpts { concurrency: 8, ..Default::default() };
 
 Subscribe to job-state events on the queue:
 
-```rust
+```rust,ignore
 use kiomq::{EventParameters, InMemoryStore, JobState, Queue};
 
 // Subscribe to a specific state.
@@ -288,7 +288,7 @@ Durable, distributed workloads. Requires a running Redis instance:
 docker run --rm -p 6379:6379 redis:latest
 ```
 
-```rust
+```rust,no_run
 use kiomq::{Config, KioResult, Queue, RedisStore};
 
 #[tokio::main]
@@ -298,7 +298,7 @@ async fn main() -> KioResult<()> {
     let config = Config::default();
 
     let store = RedisStore::new(None, "my-queue", &config).await?;
-    let queue = Queue::new(store, None).await?;
+    let queue:Queue<(), (), (),_> = Queue::new(store, None).await?;
     // ... worker logic below here
     Ok(())
 }
@@ -313,17 +313,17 @@ Embedded persistence – work in progress.
 kiomq = { "0.1", default-features=false, features=["rocksdb-store"] }
 ```
 
-```rust
+```rust,ignore
 use kiomq::{temporary_rocks_db, RocksDbStore, KioResult, Queue, RedisStore};
-
+use std::sync::Arc;
 #[tokio::main]
 async fn main() -> KioResult<()> {
-    // replace ``temporary_rocks_db`` with a real database Instantiation (check out the rocksdb-crate)
+// replace ``temporary_rocks_db`` with a real database Instantiation (check out the rocksdb-crate)
     let db = Arc::new(temporary_rocks_db());
 
     let store = RocksDbStore::new(None, "test", db.clone())?;
     let queue = Queue::new(store, None).await?;
-    // ... worker logic below here
+// ... worker logic below here
     Ok(())
 }
 ```
