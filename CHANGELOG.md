@@ -1,18 +1,42 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
-## Unreleased
+## v0.1.2 (2026-03-14)
 
+
+
+### Bug Fixes
+
+- update metrics after pausing queue and fix inmemorystore pause behaviour by @spencerjibz ([7a12cea](https://github.com/KioHQ/kiomq/commit/7a12cea3fe57684cffc2d9d8d2770bccb1ede123)) _(queue)_
 
 
 ### CI
 
 - use --offline instead of --locked for tests in ci by @spencerjibz ([54247c5](https://github.com/KioHQ/kiomq/commit/54247c52cb049efdac8d15d4441f27b4ad85241b))
 
+- update git-cliff config  to generate well-grouped change and release notes by @spencerjibz ([9388bc1](https://github.com/KioHQ/kiomq/commit/9388bc16b79d78c881420ac7ebec91ae13d46e7a)) _(release-pipline)_
+
 
 ### Chores
 
 - revert usage of --offline flag in ci by @spencerjibz ([120baba](https://github.com/KioHQ/kiomq/commit/120babaf345fbdd75161647e716b895fd9b67153))
+
+- regenerate changelog with updated git-cliff configuration by @spencerjibz ([7a076ab](https://github.com/KioHQ/kiomq/commit/7a076abf3cafdfcfe285312e2d8762ab968bec5f)) _(changelog)_
+
+- remove parking_lot in favour of xutex (only one is needed) by @spencerjibz ([5045bb6](https://github.com/KioHQ/kiomq/commit/5045bb60e09dfc64d7c450b72818ba831fee69d8)) _(deps)_
+
+- make simd-json as optional dependancy by @spencerjibz ([25f5b59](https://github.com/KioHQ/kiomq/commit/25f5b59c08eb276e9815ac6af121c316d98808a1)) _(deps)_
+
+- fix a typo in readme, && ignore some code-snippets in docs tests by @spencerjibz ([df0c42a](https://github.com/KioHQ/kiomq/commit/df0c42a00f83fdf0ecdcc0d4f1887d67037c8bb7)) _(README)_
+
+- add more useful keywords for the crates by @spencerjibz ([0163531](https://github.com/KioHQ/kiomq/commit/01635313e47ec3c39d85b58197cabe77ecfb299a)) _(crates.io)_
+
+- fix missing commas in cargo.toml by @spencerjibz ([94c3d64](https://github.com/KioHQ/kiomq/commit/94c3d64674ed94282eabadf572d66085292e63a6)) _(cargo.toml)_
+
+
+### Refactoring
+
+- restart all timers instead of resuming with stored state by @spencerjibz ([2ab4cd0](https://github.com/KioHQ/kiomq/commit/2ab4cd055432bf3a34dea607e472e7a5ee289640)) _(delayed_queue_timer)_
 
 
 ### Release

@@ -1,6 +1,6 @@
 [package]
 name = "kiomq"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = [ "Spencer Najib" ]
 keywords = [
@@ -10,7 +10,7 @@ keywords = [
   "tokio",
   "server-side",
   "worker",
-   "scheduler"
+  "scheduler"
 ]
 description = "An all-in-one task-queue and orchestration library for Rust"
 license = "MIT"
@@ -88,7 +88,7 @@ tokio-metrics = "0.4.7"
   [dependencies.simd-json]
   version = "0.17.0"
   features = [ "serde", "known-key" ]
-   optional =true
+  optional = true
 
   [dependencies.rocksdb]
   version = "0.24.0"
