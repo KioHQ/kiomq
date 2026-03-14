@@ -419,7 +419,8 @@ impl<
     #[allow(clippy::future_not_send)]
     pub async fn pause_or_resume(&self) -> Result<(), KioError> {
         // if its paused
-        let pause = !self.is_paused();
+        let metrics = self.get_metrics().await?;
+        let pause = !metrics.is_paused.load(Ordering::Acquire);
         let event_mode = self.event_mode.load(Ordering::Acquire);
         self.store.pause(pause, event_mode).await?;
         let state = if pause {

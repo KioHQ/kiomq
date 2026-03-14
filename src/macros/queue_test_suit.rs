@@ -177,9 +177,21 @@ macro_rules! queue_store_suite {
                     metrics.waiting.load(std::sync::atomic::Ordering::Acquire),
                     0
                 );
+                assert_eq!(
+                    metrics.paused.load(std::sync::atomic::Ordering::Acquire),
+                    1,
+                    "paused is empty"
+                );
 
                 queue.pause_or_resume().await?;
                 assert!(!queue.is_paused());
+
+                let metrics = queue.get_metrics().await?;
+                assert_eq!(
+                    metrics.waiting.load(std::sync::atomic::Ordering::Acquire),
+                    1,
+                    "waiting is empty"
+                );
 
                 queue.obliterate().await?;
                 Ok(())

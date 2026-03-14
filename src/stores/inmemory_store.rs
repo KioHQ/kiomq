@@ -1016,25 +1016,21 @@ where
         let paused_key = CollectionSuffix::Paused;
         let src = if pause { wait_key } else { paused_key };
         // only move items when the state changes
-        if self
-            .is_paused
-            .compare_exchange(!pause, pause, Ordering::AcqRel, Ordering::Relaxed)
-            .is_ok()
-        {
-            if matches!(src, CollectionSuffix::Wait) {
-                while let Some(entry) = self.waiting.pop_front() {
-                    let key = *entry.key();
-                    let value = *entry.value();
-                    self.paused.insert(key, value);
-                }
-            } else {
-                while let Some(entry) = self.paused.pop_front() {
-                    let key = *entry.key();
-                    let value = *entry.value();
-                    self.waiting.insert(key, value);
-                }
+        if matches!(src, CollectionSuffix::Wait) {
+            while let Some(entry) = self.waiting.pop_front() {
+                let key = *entry.key();
+                let value = *entry.value();
+                self.paused.insert(key, value);
+            }
+        } else {
+            while let Some(entry) = self.paused.pop_front() {
+                let key = *entry.key();
+                let value = *entry.value();
+                self.waiting.insert(key, value);
             }
         }
+        self.is_paused.store(pause, Ordering::Release);
+
         Ok(())
     }
 }
