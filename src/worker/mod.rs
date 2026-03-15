@@ -24,13 +24,13 @@ use hdrhistogram::Histogram;
 use tokio::{sync::Notify, task::JoinHandle};
 use tokio_metrics::TaskMonitor;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
-use xutex::Mutex;
+use xutex::AsyncMutex;
 type JobMeta<D, R, P> = (
     Job<D, R, P>,
     JobToken,
     TaskHandle,
     TaskMonitor,
-    Mutex<Histogram<u64>>,
+    AsyncMutex<Histogram<u64>>,
 );
 pub type JobMap<D, R, P> = Arc<SkipMap<u64, JobMeta<D, R, P>>>;
 type Task = JoinHandle<KioResult<()>>;
