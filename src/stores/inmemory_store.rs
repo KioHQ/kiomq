@@ -565,7 +565,7 @@ where
             CollectionSuffix::Active => {
                 if append {
                     if let Some(first_entry) = self.active.front() {
-                        now = *first_entry.key() - 1;
+                        now = *first_entry.key() - 50;
                     }
                 }
                 self.active.insert(now, item);
@@ -573,7 +573,7 @@ where
             CollectionSuffix::Wait => {
                 if append {
                     if let Some(first_entry) = self.waiting.front() {
-                        now = *first_entry.key() - 1;
+                        now = *first_entry.key() - 50;
                     }
                 }
                 self.waiting.insert(now, item);
@@ -581,7 +581,7 @@ where
             CollectionSuffix::Paused => {
                 if append {
                     if let Some(first_entry) = self.paused.front() {
-                        now = *first_entry.key() - 1;
+                        now = *first_entry.key() - 50;
                     }
                 }
                 self.paused.insert(now, item);
@@ -654,6 +654,9 @@ where
         let start = start.unwrap_or_default();
         match state {
             JobState::Wait => {
+                if self.waiting.is_empty() {
+                    return Ok(VecDeque::new());
+                }
                 let end = end.unwrap_or_else(|| self.waiting.len().saturating_sub(1));
                 let start = self.waiting.iter().nth(start).map(|entry| *entry.key());
                 let end = self.waiting.iter().nth(end).map(|entry| *entry.key());
@@ -666,6 +669,9 @@ where
                 }
             }
             JobState::Prioritized => {
+                if self.prioritized.is_empty() {
+                    return Ok(VecDeque::new());
+                }
                 let end = end.unwrap_or_else(|| self.prioritized.len().saturating_sub(1));
                 let start = self.prioritized.iter().nth(start).map(|entry| *entry.key());
                 let end = self.prioritized.iter().nth(end).map(|entry| *entry.key());
@@ -678,6 +684,9 @@ where
                 }
             }
             JobState::Stalled => {
+                if self.stalled.is_empty() {
+                    return Ok(VecDeque::new());
+                }
                 let end = end.unwrap_or_else(|| self.stalled.len().saturating_sub(1));
                 let start = self.stalled.iter().nth(start).map(|entry| *entry.value());
                 let end = self.stalled.iter().nth(end).map(|entry| *entry.value());
@@ -690,6 +699,9 @@ where
                 }
             }
             JobState::Active => {
+                if self.active.is_empty() {
+                    return Ok(VecDeque::new());
+                }
                 let end = end.unwrap_or_else(|| self.active.len().saturating_sub(1));
                 let start = self.active.iter().nth(start).map(|entry| *entry.key());
                 let end = self.active.iter().nth(end).map(|entry| *entry.key());
@@ -702,6 +714,9 @@ where
                 }
             }
             JobState::Paused => {
+                if self.paused.is_empty() {
+                    return Ok(VecDeque::new());
+                }
                 let end = end.unwrap_or_else(|| self.paused.len().saturating_sub(1));
                 let start = self.paused.iter().nth(start).map(|entry| *entry.key());
                 let end = self.paused.iter().nth(end).map(|entry| *entry.key());
@@ -714,6 +729,9 @@ where
                 }
             }
             JobState::Completed => {
+                if self.completed.is_empty() {
+                    return Ok(VecDeque::new());
+                }
                 let end = end.unwrap_or_else(|| self.completed.len().saturating_sub(1));
                 let start = self.completed.iter().nth(start).map(|entry| *entry.key());
                 let end = self.completed.iter().nth(end).map(|entry| *entry.key());
@@ -726,6 +744,9 @@ where
                 }
             }
             JobState::Failed => {
+                if self.failed.is_empty() {
+                    return Ok(VecDeque::new());
+                }
                 let end = end.unwrap_or_else(|| self.failed.len().saturating_sub(1));
                 let start = self.failed.iter().nth(start).map(|entry| *entry.key());
                 let end = self.failed.iter().nth(end).map(|entry| *entry.key());
@@ -738,6 +759,9 @@ where
                 }
             }
             JobState::Delayed => {
+                if self.delayed.is_empty() {
+                    return Ok(VecDeque::new());
+                }
                 let end = end.unwrap_or_else(|| self.delayed.len().saturating_sub(1));
                 let start = self.delayed.iter().nth(start).map(|entry| *entry.key());
                 let end = self.delayed.iter().nth(end).map(|entry| *entry.key());
