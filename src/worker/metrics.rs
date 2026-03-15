@@ -128,7 +128,7 @@ impl Serialize for HistogramWrapper {
     {
         let mut vec = Vec::new();
         V2Serializer::new()
-            .serialize(&self.0, &mut vec)
+            .serialize(self, &mut vec)
             .map_err(serde::ser::Error::custom)?;
         serializer.serialize_bytes(&vec)
     }
@@ -167,6 +167,19 @@ impl<'a> Deserialize<'a> for HistogramWrapper {
         deserializer.deserialize_bytes(HdrVisitor)
     }
 }
+impl std::ops::DerefMut for HistogramWrapper {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl std::ops::Deref for HistogramWrapper {
+    type Target = Histogram<u64>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 impl PartialEq for HistogramWrapper {
     fn eq(&self, other: &Self) -> bool {
         // Histograms are equal when they produce identical serialized bytes.
@@ -188,9 +201,8 @@ impl PartialOrd for HistogramWrapper {
 
 impl Ord for HistogramWrapper {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0
-            .len()
-            .cmp(&other.0.len())
+        self.len()
+            .cmp(&other.len())
             .then_with(|| self.0.max().cmp(&other.0.max()))
     }
 }
