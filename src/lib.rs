@@ -67,7 +67,7 @@ pub use stores::*;
 pub use timers::{TimedMap, Timer};
 #[cfg(feature = "redis-store")]
 pub use utils::{fetch_redis_pass, get_queue_metrics};
-pub use worker::{Worker, WorkerMetrics, WorkerOpts, TaskInfo};
+pub use worker::{TaskInfo, Worker, WorkerMetrics, WorkerOpts};
 
 /// Convenience alias for `Result<T, KioError>`.
 pub type KioResult<T> = Result<T, KioError>;

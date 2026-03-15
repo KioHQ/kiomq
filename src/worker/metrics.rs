@@ -62,6 +62,7 @@ pub struct TaskInfo {
 
 impl TaskInfo {
     /// Creates a [`TaskInfo`] from a [`tokio_metrics::TaskMetrics`] snapshot.
+    #[must_use]
     pub fn new(task_id: u64, job_id: u64, metrics: TaskMetrics, histogram: Histogram<u64>) -> Self {
         let poll_histogram = HistogramWrapper(histogram);
         Self {
