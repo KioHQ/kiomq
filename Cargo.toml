@@ -1,15 +1,9 @@
 [package]
 name = "kiomq"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = [ "Spencer Najib" ]
-keywords = [
-  "async",
-  "task-queue",
-  "tokio",
-  "worker",
-   "scheduler"
-]
+keywords = [ "async", "task-queue", "tokio", "worker", "scheduler" ]
 description = "An all-in-one task-queue and orchestration library for Rust"
 license = "MIT"
 repository = "https://github.com/KioHQ/kiomq"
@@ -87,7 +81,7 @@ hdrhistogram = "7.5.4"
   [dependencies.simd-json]
   version = "0.17.0"
   features = [ "serde", "known-key" ]
-   optional =true
+  optional = true
 
   [dependencies.rocksdb]
   version = "0.24.0"
