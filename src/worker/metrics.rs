@@ -57,7 +57,7 @@ pub struct TaskInfo {
     /// When these metrics were last refreshed.
     pub last_updated: Dt,
     /// HDR histogram of poll durations (nanoseconds).
-    poll_histogram: HistogramWrapper,
+    pub poll_histogram: HistogramWrapper,
 }
 
 impl TaskInfo {
