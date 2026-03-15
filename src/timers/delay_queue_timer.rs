@@ -183,38 +183,37 @@ impl<
                         .await?;
                 }
                 TimerType::CollectMetrics => {
-                    let tasks: Vec<_> = self
-                        .jobs
-                        .iter()
-                        .map(|entry| {
-                            let id = entry.key();
-                            let (_, _, task_handle, monitor, hist) = entry.value();
-                            let task_id: u64 = task_handle
-                                .load()
-                                .as_ref()
-                                .and_then(|t_handle| t_handle.id().to_string().parse().ok())
-                                .unwrap_or(*id);
-                            let metrics = monitor.cumulative();
-                            let mean_poll = if metrics.total_poll_count > 0 {
-                                let total_nanos = metrics.total_poll_duration.as_nanos();
-                                let polls = u128::from(metrics.total_poll_count);
-                                Duration::from_nanos(
-                                    u64::try_from(total_nanos / polls).unwrap_or_default(),
-                                )
-                            } else {
-                                Duration::ZERO
-                            };
+                    let mut tasks = Vec::with_capacity(self.jobs.len());
+                    for entry in self.jobs.iter() {
+                        let id = entry.key();
+                        let (_, _, task_handle, monitor, hist) = entry.value();
+                        let task_id: u64 = task_handle
+                            .load()
+                            .as_ref()
+                            .and_then(|t_handle| t_handle.id().to_string().parse().ok())
+                            .unwrap_or(*id);
+                        let metrics = monitor.cumulative();
+                        let mean_poll = if metrics.total_poll_count > 0 {
+                            let total_nanos = metrics.total_poll_duration.as_nanos();
+                            let polls = u128::from(metrics.total_poll_count);
+                            Duration::from_nanos(
+                                u64::try_from(total_nanos / polls).unwrap_or_default(),
+                            )
+                        } else {
+                            Duration::ZERO
+                        };
 
-                            let mut histogram = hist.lock();
-                            // Record the current mean poll time into the HDR histogram.
-                            let mean_ns = u64::try_from(mean_poll.as_nanos()).unwrap_or_default();
-                            if mean_ns > 0 {
-                                let _ = histogram.record(mean_ns.min(HISTOGRAM_MAX_NS));
-                            }
+                        let mut histogram = hist.lock().await;
+                        // Record the current mean poll time into the HDR histogram.
+                        let mean_ns = u64::try_from(mean_poll.as_nanos()).unwrap_or_default();
+                        if mean_ns > 0 {
+                            let _ = histogram.record(mean_ns.min(HISTOGRAM_MAX_NS));
+                        }
 
-                            TaskInfo::new(task_id, *id, metrics, histogram.clone())
-                        })
-                        .collect();
+                        let task_info = TaskInfo::new(task_id, *id, metrics, histogram.clone());
+                        drop(histogram);
+                        tasks.push(task_info);
+                    }
                     let active_len = tasks.len();
 
                     let worker_id = self.worker_id;
