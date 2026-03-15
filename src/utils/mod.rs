@@ -25,9 +25,11 @@ use crate::KioResult;
 use crate::MoveToActiveResult;
 use crate::{Job, ProcessedResult, Queue};
 
+use crate::worker::{HISTOGRAM_MAX_NS, HISTOGRAM_SIGFIG};
+use hdrhistogram::Histogram;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
-
 use std::sync::Arc;
+use xutex::Mutex;
 
 #[cfg(feature = "redis-store")]
 /// Reads the Redis password from the `REDIS_PASSWORD` environment variable.
@@ -226,7 +228,7 @@ where
                 )
                 .await?;
             if let Some(entry) = jobs_in_progress.remove(&job_id) {
-                let (job, _, handle, _) = entry.value();
+                let (job, _, handle, _, _) = entry.value();
                 if completed.attempts_made < job.opts.attempts {
                     if let Some(repeat_opts) = completed.opts.repeat.as_ref() {
                         //dbg!("job here", job_id, &repeat_opts);
@@ -278,7 +280,7 @@ where
                 )
                 .await?;
             if let Some(entry) = jobs_in_progress.remove(&job_id) {
-                let (job, _, handle, _) = entry.value();
+                let (job, _, handle, _, _) = entry.value();
                 // retry failed jobs
                 if failed_job.attempts_made < job.opts.attempts {
                     if let Some(backoff_job_opts) = job.opts.backoff.as_ref() {
@@ -536,12 +538,24 @@ where
                             worker_id,
                             active_job_count.clone(),
                         );
-                        jobs_in_progress
-                            .insert(id, (job, token, TaskHandle::default(), monitor.clone()));
+                        let poll_histogram = Mutex::new(
+                            Histogram::new_with_max(HISTOGRAM_MAX_NS, HISTOGRAM_SIGFIG).unwrap(),
+                        );
+
+                        jobs_in_progress.insert(
+                            id,
+                            (
+                                job,
+                                token,
+                                TaskHandle::default(),
+                                monitor.clone(),
+                                poll_histogram,
+                            ),
+                        );
                         let task = processing
                             .spawn(monitor.instrument(async_backtrace::frame!(process_fn.boxed())));
                         if let Some(re) = jobs_in_progress.get(&id) {
-                            let (_, _, stored_handle, _) = re.value();
+                            let (_, _, stored_handle, _, _) = re.value();
 
                             stored_handle.swap(Some(task.into()));
                         }

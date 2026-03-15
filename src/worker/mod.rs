@@ -20,10 +20,18 @@ use crate::error::WorkerError;
 use crate::events::EventParameters;
 use arc_swap::ArcSwapOption;
 use crossbeam_skiplist::SkipMap;
+use hdrhistogram::Histogram;
 use tokio::{sync::Notify, task::JoinHandle};
 use tokio_metrics::TaskMonitor;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
-type JobMeta<D, R, P> = (Job<D, R, P>, JobToken, TaskHandle, TaskMonitor);
+use xutex::Mutex;
+type JobMeta<D, R, P> = (
+    Job<D, R, P>,
+    JobToken,
+    TaskHandle,
+    TaskMonitor,
+    Mutex<Histogram<u64>>,
+);
 pub type JobMap<D, R, P> = Arc<SkipMap<u64, JobMeta<D, R, P>>>;
 type Task = JoinHandle<KioResult<()>>;
 pub type TaskHandle = ArcSwapOption<Task>;
