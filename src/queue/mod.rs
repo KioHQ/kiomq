@@ -2,7 +2,7 @@
 use crate::error::{JobError, KioError};
 use crate::events::QueueStreamEvent;
 use crate::job::{Job, JobState};
-use crate::timers::DelayQueueTimer;
+use crate::timers::{DelayQueueTimer, TimerSender};
 use crate::utils::{promote_jobs, resume_helper};
 use crate::worker::{WorkerMetrics, WorkerOpts};
 use crate::{
@@ -799,15 +799,15 @@ impl<
         self.store.clear_jobs(last_id).await
     }
 
-    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self, timers)))]
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self, sender)))]
     #[allow(clippy::future_not_send)]
     pub(crate) async fn promote_delayed_jobs(
         &self,
         date_time: Dt,
         interval_ms: i64,
-        timers: &DelayQueueTimer<D, R, P, S>,
+        sender: TimerSender,
     ) -> KioResult<()> {
-        promote_jobs(self, date_time, interval_ms, timers).await
+        promote_jobs(self, date_time, interval_ms, sender).await
     }
 
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
