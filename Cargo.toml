@@ -2,8 +2,8 @@
 name = "kiomq"
 version = "0.1.2"
 edition = "2021"
-authors = [ "Spencer Najib" ]
-keywords = [ "async", "task-queue", "tokio", "worker", "scheduler" ]
+authors = ["Spencer Najib"]
+keywords = ["async", "task-queue", "tokio", "worker", "scheduler"]
 description = "An all-in-one task-queue and orchestration library for Rust"
 license = "MIT"
 repository = "https://github.com/KioHQ/kiomq"
@@ -12,7 +12,7 @@ categories = [
   "asynchronous",
   "concurrency",
   "network-programming",
-  "data-structures"
+  "data-structures",
 ]
 readme = "./README.md"
 exclude = [
@@ -22,7 +22,7 @@ exclude = [
   "docs/**",
   "benches/**",
   "examples/**",
-  "tests/**"
+  "tests/**",
 ]
 
 [package.metadata.cabrgo-commands]
@@ -42,103 +42,107 @@ arc-swap = "1.7.1"
 xutex = "0.2.0"
 tokio-metrics = "0.4.7"
 hdrhistogram = "7.5.4"
+futures-delay-queue = { version = "0.6.0", default-features = false, features = [
+  "tokio",
+] }
+futures-intrusive = "0.5.0"
 
-  [dependencies.atomig]
-  version = "0.4.3"
-  features = [ "derive", "serde" ]
+[dependencies.atomig]
+version = "0.4.3"
+features = ["derive", "serde"]
 
-  [dependencies.chrono]
-  version = "0.4.41"
-  features = [ "serde" ]
+[dependencies.chrono]
+version = "0.4.41"
+features = ["serde"]
 
-  [dependencies.croner]
-  version = "3.0.0"
-  features = [ "serde" ]
+[dependencies.croner]
+version = "3.0.0"
+features = ["serde"]
 
-  [dependencies.deadpool-redis]
-  version = "0.22.0"
-  default-features = false
-  features = [ "serde", "rt_tokio_1" ]
-  optional = true
+[dependencies.deadpool-redis]
+version = "0.22.0"
+default-features = false
+features = ["serde", "rt_tokio_1"]
+optional = true
 
-  [dependencies.derive_more]
-  version = "2.0.1"
-  features = [ "display", "from", "debug", "from_str", "is_variant" ]
+[dependencies.derive_more]
+version = "2.0.1"
+features = ["display", "from", "debug", "from_str", "is_variant"]
 
-  [dependencies.futures]
-  version = "0.3.31"
-  features = [ "executor" ]
+[dependencies.futures]
+version = "0.3.31"
+features = ["executor"]
 
-  [dependencies.redis]
-  version = "0.32.3"
-  features = [ "tokio-comp", "streams", "json" ]
-  optional = true
+[dependencies.redis]
+version = "0.32.3"
+features = ["tokio-comp", "streams", "json"]
+optional = true
 
-  [dependencies.serde]
-  version = "1.0.219"
-  features = [ "derive" ]
+[dependencies.serde]
+version = "1.0.219"
+features = ["derive"]
 
-  [dependencies.simd-json]
-  version = "0.17.0"
-  features = [ "serde", "known-key" ]
-  optional = true
+[dependencies.simd-json]
+version = "0.17.0"
+features = ["serde", "known-key"]
+optional = true
 
-  [dependencies.rocksdb]
-  version = "0.24.0"
-  default-features = false
-  features = [ "snappy", "multi-threaded-cf" ]
-  optional = true
+[dependencies.rocksdb]
+version = "0.24.0"
+default-features = false
+features = ["snappy", "multi-threaded-cf"]
+optional = true
 
-  [dependencies.tokio]
-  version = "1.46.1"
-  features = [ "macros", "rt", "rt-multi-thread", "fs", "tracing" ]
+[dependencies.tokio]
+version = "1.46.1"
+features = ["macros", "rt", "rt-multi-thread", "fs", "tracing"]
 
-  [dependencies.tokio-util]
-  version = "0.7.15"
-  features = [ "time", "rt" ]
+[dependencies.tokio-util]
+version = "0.7.15"
+features = ["time", "rt"]
 
-  [dependencies.typed-emitter]
-  version = "0.1.3"
-  default-features = false
+[dependencies.typed-emitter]
+version = "0.1.3"
+default-features = false
 
-  [dependencies.uuid]
-  version = "1.18.1"
-  features = [ "serde", "v4" ]
+[dependencies.uuid]
+version = "1.18.1"
+features = ["serde", "v4"]
 
-  [dependencies.tempfile]
-  version = "3.23.0"
-  optional = true
+[dependencies.tempfile]
+version = "3.23.0"
+optional = true
 
-  [dependencies.tracing]
-  version = "0.1.44"
-  features = [ "async-await" ]
-  optional = true
+[dependencies.tracing]
+version = "0.1.44"
+features = ["async-await"]
+optional = true
 
-  [dependencies.crossbeam]
-  version = "0.8.4"
-  features = [ "crossbeam-queue" ]
+[dependencies.crossbeam]
+version = "0.8.4"
+features = ["crossbeam-queue"]
 
 [dev-dependencies]
 criterion = "0.8"
 rand = "0.10.0"
 
-  [dev-dependencies.tracing-subscriber]
-  version = "0.3.20"
-  features = [ "env-filter" ]
+[dev-dependencies.tracing-subscriber]
+version = "0.3.20"
+features = ["env-filter"]
 
-  [dev-dependencies.ffmpeg-sidecar]
-  version = "2.4.0"
-  features = [ "download_ffmpeg" ]
+[dev-dependencies.ffmpeg-sidecar]
+version = "2.4.0"
+features = ["download_ffmpeg"]
 
-  [dev-dependencies.console-subscriber]
-  version = "0.5"
-  features = [ "env-filter" ]
+[dev-dependencies.console-subscriber]
+version = "0.5"
+features = ["env-filter"]
 
 [features]
-default = [ "redis-store" ]
-rocksdb-store = [ "dep:rocksdb", "dep:tempfile" ]
-tracing = [ "dep:tracing" ]
-redis-store = [ "dep:redis", "dep:deadpool-redis", "dep:simd-json" ]
+default = ["redis-store"]
+rocksdb-store = ["dep:rocksdb", "dep:tempfile"]
+tracing = ["dep:tracing"]
+redis-store = ["dep:redis", "dep:deadpool-redis", "dep:simd-json"]
 
 [[bench]]
 name = "queue_bench"

@@ -251,7 +251,7 @@ impl<
                         .promote_delayed_jobs(date_time, interval_ms, sender.clone())
                         .await?;
                 }
-                queue.store.purge_expired().await;
+                //queue.store.purge_expired().await;
                 Ok::<(), KioError>(())
             };
 

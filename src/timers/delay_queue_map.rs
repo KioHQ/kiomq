@@ -1,12 +1,14 @@
+use arc_swap::ArcSwapOption;
 use crossbeam::atomic::AtomicCell;
 use crossbeam_skiplist::SkipMap;
 use derive_more::Debug;
+use futures_delay_queue::{delay_queue, DelayHandle, DelayQueue, Receiver};
+use futures_intrusive::buffer::GrowingHeapBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::runtime::Handle;
 use tokio::time::Duration;
-use tokio_util::time::{delay_queue::Key, DelayQueue};
-use xutex::{AsyncMutex, Mutex};
-
+use xutex::Mutex;
 /// A value together with its optional expiry key in the delay queue.
 #[derive(Debug)]
 pub struct ValueKeyPair<V> {
@@ -14,14 +16,14 @@ pub struct ValueKeyPair<V> {
     /// The stored value, protected by a mutex for interior mutability.
     pub value: Mutex<V>,
     /// The delay-queue key associated with this entry's expiry, if any.
-    pub key: AtomicCell<Option<Key>>,
+    pub key: ArcSwapOption<DelayHandle>,
 }
 impl<V> ValueKeyPair<V> {
     /// Wraps `value` with no expiry key assigned yet.
     pub fn new(value: V) -> Self {
         Self {
             value: Mutex::new(value),
-            key: AtomicCell::default(),
+            key: ArcSwapOption::default(),
         }
     }
 }
@@ -32,17 +34,20 @@ impl<V> ValueKeyPair<V> {
 /// or with a TTL ([`insert_expirable`](TimedMap::insert_expirable)). Eviction is
 /// lazy: expired keys are removed in batch when [`purge_expired`](TimedMap::purge_expired)
 /// is called.
-pub struct TimedMap<K: Ord, V> {
+pub struct TimedMap<K: Ord + 'static, V> {
     #[debug(skip)]
-    expiries: AsyncMutex<DelayQueue<K>>,
+    queue: DelayQueue<K, GrowingHeapBuf<K>>,
+    reciever: Receiver<K>,
     /// The underlying concurrent skip-list storing all key-value pairs.
     pub inner: SkipMap<K, ValueKeyPair<V>>,
     disable_expiration: AtomicBool,
 }
-impl<K: Ord, V> Default for TimedMap<K, V> {
+impl<K: Ord + 'static + Send, V> Default for TimedMap<K, V> {
     fn default() -> Self {
+        let (queue, reciever) = delay_queue::<K>();
         Self {
-            expiries: AsyncMutex::new(DelayQueue::default()),
+            queue,
+            reciever,
             inner: SkipMap::default(),
             disable_expiration: AtomicBool::default(),
         }
@@ -81,41 +86,42 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
     pub fn insert_expirable(&self, key: K, value: V, timeout: Duration) {
         let pair = ValueKeyPair::new(value);
         if !self.disable_expiration.load(Ordering::Acquire) {
-            // To use async-mutex here, use block_in_place (on rt-multithread) - Subject to
-            // change in the future
-            let expiry_key = tokio::task::block_in_place(|| {
-                Handle::current().block_on(async {
-                    let mut expiries = self.expiries.lock().await;
-                    // Remove any stale expiry key for this key so it doesn't
-                    // purge the freshly inserted value later.
-                    if let Some(old_entry) = self.inner.get(&key) {
-                        if let Some(old_key) = old_entry.value().key.load() {
-                            expiries.remove(&old_key);
-                        }
-                    }
-                    expiries.insert(key.clone(), timeout)
-                })
-            });
-            pair.key.store(Some(expiry_key));
+            // Remove any stale expiry key for this key so it doesn't
+            // purge the freshly inserted value later.
+            if let Some(old_entry) = self.inner.get(&key) {
+                if let Some(old_key) = old_entry
+                    .value()
+                    .key
+                    .load_full()
+                    .and_then(|entry| Arc::into_inner(entry))
+                {
+                    old_key.cancel();
+                }
+            }
+            let handle = self.queue.insert(key.clone(), timeout);
+            pair.key.store(Some(handle.into()));
         }
         self.inner.insert(key, pair);
     }
     /// Returns the number of entries currently tracked in the expiry queue.
     #[allow(clippy::future_not_send)]
     pub async fn len_expired(&self) -> usize {
-        self.expiries.lock().await.len()
+        self.inner
+            .iter()
+            .filter(|entry| entry.value().key.load().is_some())
+            .count()
     }
     /// Removes the entry for `key`, cancelling its expiry if one was set.
     pub fn remove(&self, key: &K) {
         if let Some(removed) = self.inner.remove(key) {
-            if let Some(expiry_key) = removed.value().key.load() {
-                // To use async-mutex here, use block_in_place (on rt-multithread)
-                // - Subject to change in the future
-                tokio::task::block_in_place(|| {
-                    Handle::current().block_on(async {
-                        self.expiries.lock().await.remove(&expiry_key);
-                    });
-                });
+            if let Some(handle) = removed
+                .value()
+                .key
+                .swap(None)
+                .take()
+                .and_then(Arc::into_inner)
+            {
+                handle.cancel();
             }
         }
     }
@@ -125,16 +131,16 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
     /// now; otherwise a new expiry is registered.  Returns the delay-queue key
     /// on success or `None` if the entry does not exist.
     #[allow(clippy::future_not_send)]
-    pub async fn update_expiration_status(&self, key: &K, duration: Duration) -> Option<Key> {
-        let mut expiries = self.expiries.lock().await;
-        let found = self.inner.get(key)?;
-        if let Some(previous_key) = found.value().key.load() {
-            expiries.reset(&previous_key, duration);
-            return Some(previous_key);
+    pub async fn update_expiration_status(&self, key: &K, duration: Duration) {
+        if let Some(found) = self.inner.get(key) {
+            if let Some(previous_key) = found.value().key.swap(None).and_then(Arc::into_inner) {
+                let _ = previous_key.reset(duration);
+                return;
+            }
+
+            let new_key = self.queue.insert(key.clone(), duration);
+            found.value().key.store(Some(new_key.into()));
         }
-        let new_key = expiries.insert(key.clone(), duration);
-        found.value().key.store(Some(new_key));
-        Some(new_key)
     }
     /// Returns `true` if automatic expiration is currently active.
     pub fn expires_entries(&self) -> bool {
@@ -143,13 +149,18 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
 
     /// Removes all entries and clears the expiry queue.
     pub fn clear(&self) {
-        self.inner.clear();
-        // To use async-mutex here, use block_in_place (on rt-multithread) - Subject to
-        // change in the future
         tokio::task::block_in_place(|| {
-            Handle::current().block_on(async {
-                self.expiries.lock().await.clear();
+            self.inner.iter().for_each(|entry| {
+                if let Some(key) = entry
+                    .value()
+                    .key
+                    .swap(None)
+                    .and_then(|entry| Arc::into_inner(entry))
+                {
+                    key.cancel();
+                }
             });
+            self.inner.clear();
         });
     }
     /// Removes all entries whose TTL has elapsed.
@@ -163,12 +174,10 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
         if !self.expires_entries() {
             return;
         }
-        let timeout = Duration::from_millis(1);
-        let mut expiries = self.expiries.lock().await;
+        //let timeout = Duration::from_millis(1);
         // clean any queued for deletion;
-        while let Ok(Some(expired)) = expiries.next().timeout(timeout).await {
-            let key = expired.into_inner();
-            self.inner.remove(&key);
+        while let Some(expired) = self.reciever.receive().await {
+            self.inner.remove(&expired);
         }
     }
 }
