@@ -163,7 +163,7 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
         if !self.expires_entries() {
             return;
         }
-        let timeout = Duration::from_micros(10);
+        let timeout = Duration::from_millis(1);
         let mut expiries = self.expiries.lock().await;
         // clean any queued for deletion;
         while let Ok(Some(expired)) = expiries.next().timeout(timeout).await {
