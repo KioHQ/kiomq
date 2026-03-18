@@ -1,7 +1,7 @@
 use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo, JobError, QueueError};
 use crate::events::QueueStreamEvent;
 use crate::stores::Store;
-use crate::timers::{DelayQueueTimer, TimerType};
+use crate::timers::{DelayQueueTimer, TimerSender, TimerType};
 use crate::worker::{
     JobMap, ProcessingQueue, TaskHandle, WorkerCallback, WorkerState, MIN_DELAY_MS_LIMIT,
 };
@@ -13,7 +13,7 @@ use chrono::Utc;
 use crossbeam::queue::SegQueue;
 use futures::FutureExt;
 use serde::{de::DeserializeOwned, Serialize};
-use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{oneshot, Notify, OwnedSemaphorePermit, Semaphore};
 use tokio_metrics::TaskMonitor;
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
@@ -351,7 +351,7 @@ where
 type MainLoopParams<D, R, P, S> = (
     tracing::Span,
     Uuid,
-    CancellationToken,
+    Arc<CancellationToken>,
     ProcessingQueue,
     WorkerOpts,
     Arc<AtomicU64>,
@@ -362,12 +362,13 @@ type MainLoopParams<D, R, P, S> = (
     Arc<atomig::Atomic<WorkerState>>,
     Arc<Notify>,
     DelayQueueTimer<D, R, P, S>,
+    Arc<AtomicBool>,
 );
 
 #[cfg(not(feature = "tracing"))]
 type MainLoopParams<D, R, P, S> = (
     Uuid,
-    CancellationToken,
+    Arc<CancellationToken>,
     ProcessingQueue,
     WorkerOpts,
     Arc<AtomicU64>,
@@ -378,6 +379,7 @@ type MainLoopParams<D, R, P, S> = (
     Arc<atomig::Atomic<WorkerState>>,
     Arc<Notify>,
     DelayQueueTimer<D, R, P, S>,
+    Arc<AtomicBool>,
 );
 use tokio::task::JoinHandle;
 pub type JobQueue = Arc<SegQueue<u64>>;
@@ -406,6 +408,7 @@ where
         worker_state,
         paused_here,
         timers,
+        to_pause,
     ) = params;
 
     #[cfg(not(feature = "tracing"))]
@@ -422,6 +425,7 @@ where
         worker_state,
         paused_here,
         timers,
+        to_pause,
     ) = params;
 
     #[cfg(feature = "tracing")]
@@ -435,7 +439,6 @@ where
     let queue_clone = queue.clone();
     let job_queue = delayed.clone();
     let notifer = paused_here.clone();
-    let to_pause = Arc::new(AtomicBool::default());
     let pause_schedular = to_pause.clone();
     let worker_state_clone = worker_state.clone();
     #[cfg(feature = "tracing")]
@@ -449,39 +452,9 @@ where
     #[cfg(not(feature = "tracing"))]
     timers.start_timers().await;
     let t_task = async move {
-        while !cancel_token.is_cancelled() {
-            // promote jobs here;
-            let date_time = Utc::now();
-            let interval_ms = i64::try_from(MIN_DELAY_MS_LIMIT).unwrap_or(i64::MAX);
-            if queue_clone.current_metrics.has_delayed() {
-                queue_clone
-                    .promote_delayed_jobs(date_time, interval_ms, &timers)
-                    .await?;
-            }
-
-            timers.run(&job_queue).await?;
-            queue_clone.store.purge_expired().await;
-            if pause_schedular.load(Ordering::Acquire) && running.is_empty() {
-                #[cfg(feature = "tracing")]
-                debug!("pausing ... ");
-                worker_state_clone.store(WorkerState::Idle, Ordering::Release);
-                // wait for all running jobs to completed
-                timers.pause().await;
-                if cancel_token
-                    .run_until_cancelled(notifer.notified())
-                    .await
-                    .is_none()
-                {
-                    // handle cancellation here too
-                    break;
-                }
-                #[cfg(feature = "tracing")]
-                debug!("resumed");
-                worker_state_clone.store(WorkerState::Active, Ordering::Release);
-                timers.start_timers().await;
-            }
-            tokio::task::yield_now().await;
-        }
+        //while !cancel_token.is_cancelled() {
+        //tokio::task::yield_now().await;
+        //}
         #[cfg(feature = "tracing")]
         info!("cancelled");
 
@@ -614,13 +587,14 @@ where
 }
 use crate::Dt;
 use chrono::TimeDelta;
+
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::future_not_send)]
 pub async fn promote_jobs<D, R, P, S: Store<D, R, P> + Send + 'static + Clone>(
     queue: &Queue<D, R, P, S>,
     date_time: Dt,
     interval_ms: i64,
-    timers: &DelayQueueTimer<D, R, P, S>,
+    sender: TimerSender,
 ) -> KioResult<()>
 where
     D: Clone + Serialize + DeserializeOwned + Send + 'static,
@@ -634,7 +608,14 @@ where
     if !jobs.is_empty() {
         for job in jobs {
             let timer = TimerType::PromotedDelayed(job);
-            timers.insert(timer).await;
+            let duration = sender.next_duration(timer);
+            let (tx, rx) = oneshot::channel();
+            sender.send(crate::timers::TimerCmd::Insert {
+                timer,
+                duration,
+                ack: tx,
+            });
+            rx.await.ok();
         }
     }
     if !missed_deadline.is_empty() {

@@ -7,6 +7,7 @@ use crate::utils::main_loop;
 use derive_more::Debug;
 use futures::future::{Future, FutureExt};
 use serde::{de::DeserializeOwned, Serialize};
+use std::sync::atomic::AtomicBool;
 use std::sync::{
     atomic::{AtomicU64, AtomicUsize},
     Arc,
@@ -33,7 +34,7 @@ type JobMeta<D, R, P> = (
     AsyncMutex<Histogram<u64>>,
 );
 pub type JobMap<D, R, P> = Arc<SkipMap<u64, JobMeta<D, R, P>>>;
-type Task = JoinHandle<KioResult<()>>;
+pub type Task = JoinHandle<KioResult<()>>;
 pub type TaskHandle = ArcSwapOption<Task>;
 pub type SharedTaskHandle = Arc<TaskHandle>;
 /// Alias for the `processing_queue`. changed from (`Futures::FuturesUnordered` -> `TaskTracker`)
@@ -115,10 +116,11 @@ pub struct Worker<D, R, P, S> {
     processor: WorkerCallback<D, R, P, S>,
     /// Configuration options for this worker.
     pub opts: WorkerOpts,
-    cancellation_token: CancellationToken,
+    cancellation_token: Arc<CancellationToken>,
     /// Current lifecycle state of the worker.
     pub state: Arc<Atomic<WorkerState>>,
     processing: ProcessingQueue,
+    timer_pauser: Arc<AtomicBool>,
     timers: DelayQueueTimer<D, R, P, S>,
     block_until: Arc<AtomicU64>,
     active_job_count: Arc<AtomicUsize>,
@@ -261,8 +263,22 @@ impl<
         let id = Uuid::new_v4();
         let opts = worker_opts.unwrap_or_default();
         let jobs = jobs_in_progress.clone();
-        let timers = DelayQueueTimer::new(jobs, id, opts, queue.clone());
+        let cancellation_token: Arc<CancellationToken> = Arc::default();
         let continue_notifier = queue.worker_notifier.clone();
+        let notifier = continue_notifier.clone();
+        let state: Arc<Atomic<WorkerState>> = Arc::default();
+        let worker_state = state.clone();
+        let timer_pauser: Arc<AtomicBool> = Arc::default();
+        let timers = DelayQueueTimer::new(
+            jobs,
+            id,
+            opts,
+            queue.clone(),
+            cancellation_token.clone(),
+            worker_state,
+            notifier,
+            timer_pauser.clone(),
+        );
 
         #[cfg(feature = "tracing")]
         let resource_span = {
@@ -283,6 +299,8 @@ impl<
         };
         let main_task = Arc::default();
         let worker = Self {
+            state,
+            timer_pauser,
             main_task,
             #[cfg(feature = "tracing")]
             resource_span,
@@ -290,12 +308,11 @@ impl<
             continue_notifier,
             block_until: Arc::default(),
             opts,
-            state: Arc::default(),
             id,
             queue,
             jobs_in_progress,
             processor: callback,
-            cancellation_token: CancellationToken::new(),
+            cancellation_token,
             processing: TaskTracker::new(),
             active_job_count: Arc::default(),
         };
@@ -385,6 +402,7 @@ impl<
             self.state.clone(),
             self.continue_notifier.clone(),
             self.timers.clone(),
+            self.timer_pauser.clone(),
         );
         #[cfg(feature = "tracing")]
         let params = (
@@ -401,6 +419,7 @@ impl<
             self.state.clone(),
             self.continue_notifier.clone(),
             self.timers.clone(),
+            self.timer_pauser.clone(),
         );
         #[cfg(feature = "tracing")]
         let main = main_loop(params).instrument(self.resource_span.clone());
