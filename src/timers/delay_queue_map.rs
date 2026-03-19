@@ -1,12 +1,10 @@
 use arc_swap::ArcSwapOption;
-use crossbeam::atomic::AtomicCell;
 use crossbeam_skiplist::SkipMap;
 use derive_more::Debug;
 use futures_delay_queue::{delay_queue, DelayHandle, DelayQueue, Receiver};
 use futures_intrusive::buffer::GrowingHeapBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::runtime::Handle;
 use tokio::time::Duration;
 use xutex::Mutex;
 /// A value together with its optional expiry key in the delay queue.
@@ -35,7 +33,6 @@ impl<V> ValueKeyPair<V> {
 /// lazy: expired keys are removed in batch when [`purge_expired`](TimedMap::purge_expired)
 /// is called.
 pub struct TimedMap<K: Ord + 'static, V> {
-    #[debug(skip)]
     queue: DelayQueue<K, GrowingHeapBuf<K>>,
     reciever: Receiver<K>,
     /// The underlying concurrent skip-list storing all key-value pairs.
@@ -169,14 +166,13 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
     /// delay queue for a short timeout so it doesn't block indefinitely.
     #[allow(clippy::future_not_send)]
     pub async fn purge_expired(&self) {
-        use futures::StreamExt;
         use tokio_util::time::FutureExt;
         if !self.expires_entries() {
             return;
         }
-        //let timeout = Duration::from_millis(1);
+        let timeout = Duration::from_micros(500);
         // clean any queued for deletion;
-        while let Some(expired) = self.reciever.receive().await {
+        while let Ok(Some(expired)) = self.reciever.receive().timeout(timeout).await {
             self.inner.remove(&expired);
         }
     }

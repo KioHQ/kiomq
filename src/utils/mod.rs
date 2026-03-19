@@ -5,9 +5,10 @@ use crate::timers::{DelayQueueTimer, TimerSender, TimerType};
 use crate::worker::{
     JobMap, ProcessingQueue, TaskHandle, WorkerCallback, WorkerState, MIN_DELAY_MS_LIMIT,
 };
+use crate::QueueEventMode;
 use crate::{
-    EventEmitter, EventParameters, FailedDetails, JobOptions, JobState, JobToken, KioError,
-    QueueEventMode, QueueOpts, Trace, WorkerOpts,
+    EventEmitter, EventParameters, FailedDetails, JobOptions, JobState, JobToken, QueueOpts, Trace,
+    WorkerOpts,
 };
 use chrono::Utc;
 use crossbeam::queue::SegQueue;
@@ -451,24 +452,6 @@ where
     }
     #[cfg(not(feature = "tracing"))]
     timers.start_timers().await;
-    let t_task = async move {
-        //while !cancel_token.is_cancelled() {
-        //tokio::task::yield_now().await;
-        //}
-        #[cfg(feature = "tracing")]
-        info!("cancelled");
-
-        Ok::<(), KioError>(())
-    };
-    #[cfg(feature = "tracing")]
-    let sub_span = info_span!(parent: &resource_span, "timer_and_clean_up_task");
-    #[cfg(feature = "tracing")]
-    let timers_and_clean_up_task = {
-        use tracing::Instrument;
-        tokio::spawn(t_task.instrument(sub_span).boxed())
-    };
-    #[cfg(not(feature = "tracing"))]
-    let timers_and_clean_up_task = tokio::spawn(t_task.boxed());
     let semaphore = Arc::new(Semaphore::new(opts.concurrency));
     while !cancellation_token.is_cancelled() {
         while !cancellation_token.is_cancelled()
@@ -572,8 +555,6 @@ where
     if cancellation_token.is_cancelled() {
         // wait for all running jobs to finish
         processing.wait().await;
-        let _ = timers_and_clean_up_task.await?;
-
         let _ = worker_state.compare_exchange(
             WorkerState::Active,
             WorkerState::Closed,
@@ -601,6 +582,9 @@ where
     R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
     P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
 {
+    if !queue.current_metrics.has_delayed() {
+        return Ok(());
+    }
     let start = date_time.timestamp_millis();
     let stop = (date_time + TimeDelta::milliseconds(interval_ms)).timestamp_millis();
     let (jobs, missed_deadline): (Vec<u64>, Vec<u64>) =

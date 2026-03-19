@@ -1,11 +1,12 @@
 use crate::worker::WorkerState;
 use crate::worker::{TaskInfo, WorkerMetrics, HISTOGRAM_MAX_NS, MIN_DELAY_MS_LIMIT};
-use crate::{KioError, KioResult};
+use crate::KioResult;
 use atomig::Atomic;
 use chrono::Utc;
 use crossbeam::atomic::AtomicCell;
-use crossbeam::queue::SegQueue;
 use derive_more::Debug;
+use futures_delay_queue::{delay_queue, DelayHandle, DelayQueue};
+use futures_intrusive::buffer::GrowingHeapBuf;
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -13,14 +14,10 @@ use std::{
     marker::PhantomData,
     sync::{atomic::AtomicBool, Arc},
 };
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tokio_util::time::{DelayQueue, FutureExt};
 use uuid::Uuid;
-
 // model the timers (stall_check_locck  and extend_lock) as a tokio_util::DelayQueue
-
 #[derive(Debug, Clone, Copy, derive_more::Display)]
 pub enum TimerType {
     #[display("StalledCheck after {:#?}", _0.elapsed())]
@@ -39,36 +36,17 @@ pub enum TimerType {
     CollectMetrics,
 }
 use tokio::time::Instant;
-use tokio_util::time::delay_queue::Key;
 
 use crate::{
     worker::{JobMap, Task},
     Queue, Store, WorkerOpts,
 };
 
-use tokio::sync::{oneshot, Notify};
 #[cfg(feature = "tracing")]
-use tracing::{debug, info, info_span, instrument, Span};
-pub enum Cmd {
-    Insert {
-        timer: TimerType,
-        duration: Duration,
-        ack: oneshot::Sender<Key>,
-    },
-    Remove {
-        key: Key,
-        ack: oneshot::Sender<bool>,
-    },
-    Len {
-        ack: oneshot::Sender<usize>,
-    },
-    Clear {
-        ack: oneshot::Sender<()>,
-    },
-}
+use tracing::{debug, info, info_span, instrument, Instrument, Span};
 #[derive(Clone, Debug)]
 pub struct TimerSender {
-    inner_tx: UnboundedSender<Cmd>,
+    inner_tx: Arc<DelayQueue<TimerType, GrowingHeapBuf<TimerType>>>,
     // (extendLock, Stalled)
     keys: Arc<[AtomicCell<Option<Key>>; 3]>,
     opts: WorkerOpts,
@@ -124,7 +102,7 @@ pub struct DelayQueueTimer<D, R, P, S> {
     #[debug(skip)]
     jobs: JobMap<D, R, P>,
     opts: WorkerOpts,
-    sender: TimerSender,
+    queue: TimerSender,
     #[debug(skip)]
     task_handle: Arc<Task>,
     #[cfg(feature = "tracing")]
@@ -226,7 +204,10 @@ impl<
         rx.await.ok();
     }
 
-    //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(rx, sender)))]
+    #[cfg_attr(
+        feature = "tracing",
+        instrument(skip(sender, rx, jobs, opts, token, notifier, pause_schedular, queue))
+    )]
     #[allow(clippy::future_not_send)]
     fn create_timer_task(
         sender: TimerSender,
@@ -242,21 +223,11 @@ impl<
     ) -> JoinHandle<KioResult<()>> {
         use futures::StreamExt;
         let mut delay_queue: DelayQueue<TimerType> = DelayQueue::new();
+        let interval_ms = i64::try_from(MIN_DELAY_MS_LIMIT).unwrap_or(i64::MAX);
+        let mut tick_interval =
+            tokio::time::interval(Duration::from_millis(interval_ms.cast_unsigned()));
         tokio::spawn(async move {
-            let mut promotion_task = async {
-                let date_time = Utc::now();
-                let interval_ms = i64::try_from(MIN_DELAY_MS_LIMIT).unwrap_or(i64::MAX);
-                if queue.current_metrics.as_ref().has_delayed() {
-                    queue
-                        .promote_delayed_jobs(date_time, interval_ms, sender.clone())
-                        .await?;
-                }
-                //queue.store.purge_expired().await;
-                Ok::<(), KioError>(())
-            };
-
-            tokio::pin!(promotion_task);
-            while token.is_cancelled() {
+            while !token.is_cancelled() {
                 tokio::select! {
                     incoming_cmd  = rx.recv() =>  {
                          let Some(cmd) = incoming_cmd else {break};
@@ -292,14 +263,17 @@ impl<
                             worker_id,
                             sender.clone(),
                         )
-                        .await?
+                        .await?;
                     },
-                    _  = &mut promotion_task => {
-                        dbg!("got here");
+                    _  = tick_interval.tick() => {
+                        let date_time = Utc::now();
+                        let _ =tokio::join!(queue
+                            .promote_delayed_jobs(date_time, interval_ms, sender.clone()),
+                        queue.store.purge_expired());
                     },
 
                 }
-                if pause_schedular.load(Ordering::Acquire) && jobs.is_empty() {
+                if pause_schedular.load(Ordering::Acquire) {
                     #[cfg(feature = "tracing")]
                     debug!("pausing ... ");
                     worker_state.store(WorkerState::Idle, Ordering::Release);
@@ -317,6 +291,9 @@ impl<
                     worker_state.store(WorkerState::Active, Ordering::Release);
                 }
             }
+            #[cfg(feature = "tracing")]
+            info!("cancelled");
+
             Ok(())
         })
     }
@@ -361,7 +338,6 @@ where
                 .await?;
         }
         TimerType::CollectMetrics => {
-            dbg!("got here");
             let mut tasks = Vec::with_capacity(jobs.len());
             for entry in jobs.iter() {
                 let id = entry.key();
