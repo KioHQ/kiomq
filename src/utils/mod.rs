@@ -6,14 +6,13 @@ use crate::worker::{
     JobMap, ProcessingQueue, TaskHandle, WorkerCallback, WorkerState, MIN_DELAY_MS_LIMIT,
 };
 use crate::{
-    EventEmitter, EventParameters, FailedDetails, JobOptions, JobState, JobToken, KioError,
-    QueueEventMode, QueueOpts, Trace, WorkerOpts,
+    EventEmitter, EventParameters, FailedDetails, JobOptions, JobState, JobToken, QueueEventMode,
+    QueueOpts, Trace, WorkerOpts,
 };
 use chrono::Utc;
-use crossbeam::queue::SegQueue;
 use futures::FutureExt;
 use serde::{de::DeserializeOwned, Serialize};
-use tokio::sync::{oneshot, Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio_metrics::TaskMonitor;
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
@@ -382,7 +381,6 @@ type MainLoopParams<D, R, P, S> = (
     Arc<AtomicBool>,
 );
 use tokio::task::JoinHandle;
-pub type JobQueue = Arc<SegQueue<u64>>;
 #[async_backtrace::framed]
 #[allow(clippy::future_not_send)]
 pub async fn main_loop<D, R, P, S>(params: MainLoopParams<D, R, P, S>) -> KioResult<()>
@@ -433,14 +431,6 @@ where
         "Worker Starting with concurrency set to {}",
         opts.concurrency
     );
-    let delayed = JobQueue::default();
-    let running = processing.clone();
-    let cancel_token = cancellation_token.clone();
-    let queue_clone = queue.clone();
-    let job_queue = delayed.clone();
-    let notifer = paused_here.clone();
-    let pause_schedular = to_pause.clone();
-    let worker_state_clone = worker_state.clone();
     #[cfg(feature = "tracing")]
     {
         use tracing::Instrument;
@@ -450,25 +440,7 @@ where
             .await;
     }
     #[cfg(not(feature = "tracing"))]
-    timers.start_timers().await;
-    let t_task = async move {
-        //while !cancel_token.is_cancelled() {
-        //tokio::task::yield_now().await;
-        //}
-        #[cfg(feature = "tracing")]
-        info!("cancelled");
-
-        Ok::<(), KioError>(())
-    };
-    #[cfg(feature = "tracing")]
-    let sub_span = info_span!(parent: &resource_span, "timer_and_clean_up_task");
-    #[cfg(feature = "tracing")]
-    let timers_and_clean_up_task = {
-        use tracing::Instrument;
-        tokio::spawn(t_task.instrument(sub_span).boxed())
-    };
-    #[cfg(not(feature = "tracing"))]
-    let timers_and_clean_up_task = tokio::spawn(t_task.boxed());
+    timers.start_timers();
     let semaphore = Arc::new(Semaphore::new(opts.concurrency));
     while !cancellation_token.is_cancelled() {
         while !cancellation_token.is_cancelled()
@@ -481,15 +453,13 @@ where
                 let token = JobToken(id, next_id, token_prefix as u64);
                 let worker_id = id;
                 let block_delay = block_until.load(std::sync::atomic::Ordering::Acquire);
-                let passed_id = delayed.pop();
-
                 if let Ok(Some(job)) = get_next_job(
                     queue.as_ref(),
                     token,
                     block_delay,
                     cancellation_token.is_cancelled(),
                     &opts,
-                    passed_id,
+                    None,
                 )
                 .await
                 {
@@ -537,14 +507,11 @@ where
                 tokio::task::yield_now().await;
             }
 
-            if queue.pause_workers.load(Ordering::Acquire)
-                && delayed.is_empty()
-                && processing.is_empty()
-            {
+            if queue.pause_workers.load(Ordering::Acquire) && processing.is_empty() {
                 #[cfg(feature = "tracing")]
                 info!(
                     "pausing job_schedular_loop with  {delayed} delayed_jobs and {processing} running_jobs",
-                    delayed = delayed.len(),
+                    delayed = queue.current_metrics.delayed.load(Ordering::Acquire),
                     processing = processing.len(),
                 );
                 to_pause.store(true, Ordering::Release);
@@ -572,8 +539,8 @@ where
     if cancellation_token.is_cancelled() {
         // wait for all running jobs to finish
         processing.wait().await;
-        let _ = timers_and_clean_up_task.await?;
-
+        timers.clear();
+        timers.close();
         let _ = worker_state.compare_exchange(
             WorkerState::Active,
             WorkerState::Closed,
@@ -601,6 +568,9 @@ where
     R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
     P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
 {
+    if !queue.current_metrics.as_ref().has_delayed() {
+        return Ok(());
+    }
     let start = date_time.timestamp_millis();
     let stop = (date_time + TimeDelta::milliseconds(interval_ms)).timestamp_millis();
     let (jobs, missed_deadline): (Vec<u64>, Vec<u64>) =
@@ -609,13 +579,7 @@ where
         for job in jobs {
             let timer = TimerType::PromotedDelayed(job);
             let duration = sender.next_duration(timer);
-            let (tx, rx) = oneshot::channel();
-            sender.send(crate::timers::TimerCmd::Insert {
-                timer,
-                duration,
-                ack: tx,
-            });
-            rx.await.ok();
+            sender.send(crate::timers::TimerCmd::Insert { timer, duration });
         }
     }
     if !missed_deadline.is_empty() {
