@@ -1,11 +1,11 @@
-use crate::worker::WorkerState;
+use crate::worker::{ProcessingQueue, WorkerState};
 use crate::worker::{TaskInfo, WorkerMetrics, HISTOGRAM_MAX_NS, MIN_DELAY_MS_LIMIT};
 use crate::{KioError, KioResult};
+use arc_swap::ArcSwapOption;
 use atomig::Atomic;
 use chrono::Utc;
 use crossbeam::atomic::AtomicCell;
 use derive_more::Debug;
-#[cfg(not(feature = "tracing"))]
 use futures::FutureExt;
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::atomic::Ordering;
@@ -14,7 +14,7 @@ use std::{
     marker::PhantomData,
     sync::{atomic::AtomicBool, Arc},
 };
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tokio_util::time::DelayQueue;
@@ -30,13 +30,6 @@ pub enum TimerType {
     #[display("ExtendLock after {:#?}", _0.elapsed())]
     #[debug("ExtendLock")]
     ExtendLock(Instant),
-    #[debug("PromoteJob")]
-    #[display(
-        "Promoted job {} after {:#?}",
-        _0,
-        Duration::from_millis(MIN_DELAY_MS_LIMIT)
-    )]
-    PromotedDelayed(u64),
     CollectMetrics,
 }
 use tokio::time::Instant;
@@ -88,7 +81,6 @@ impl TimerSender {
             TimerType::StalledCheck(_) => Duration::from_millis(self.opts.stalled_interval),
             TimerType::ExtendLock(_) => Duration::from_millis(self.opts.lock_duration),
             TimerType::CollectMetrics => Duration::from_millis(self.opts.metrics_update_interval),
-            TimerType::PromotedDelayed(_) => Duration::from_millis(MIN_DELAY_MS_LIMIT),
         }
     }
     pub fn set_key(&self, timer: TimerType, key: Key) {
@@ -96,7 +88,6 @@ impl TimerSender {
             TimerType::StalledCheck(_) => self.keys[1].swap(Some(key)),
             TimerType::ExtendLock(_) => self.keys[0].swap(Some(key)),
             TimerType::CollectMetrics => self.keys[2].swap(Some(key)),
-            TimerType::PromotedDelayed(_) => None,
         };
     }
 }
@@ -104,13 +95,26 @@ impl TimerSender {
 /// A Runner for both  the `stalled_check` and `lock_extension` timer that requires polling
 #[derive(Clone, derive_more::Debug)]
 pub struct DelayQueueTimer<D, R, P, S> {
-    sender: TimerSender,
+    sender: Arc<ArcSwapOption<TimerSender>>,
     #[debug(skip)]
-    task_handle: Arc<Task>,
+    task_handle: Arc<ArcSwapOption<Task>>,
     #[cfg(feature = "tracing")]
     resource_span: Span,
     _data: PhantomData<(D, R, P, S)>,
     start_signal: Arc<Notify>,
+    #[debug(skip)]
+    queue: Arc<Queue<D, R, P, S>>,
+    #[debug(skip)]
+    jobs: JobMap<D, R, P>,
+    opts: WorkerOpts,
+    worker_id: Uuid,
+    token: Arc<CancellationToken>,
+    worker_state: Arc<Atomic<WorkerState>>,
+    #[debug(skip)]
+    notifier: Arc<Notify>,
+    pause_schedular: Arc<AtomicBool>,
+    promoting: ProcessingQueue,
+    processing: ProcessingQueue,
 }
 
 impl<
@@ -130,136 +134,152 @@ impl<
         worker_state: Arc<Atomic<WorkerState>>,
         notifier: Arc<Notify>,
         pause_schedular: Arc<AtomicBool>,
+        promoting: ProcessingQueue,
+        processing: ProcessingQueue,
     ) -> Self {
         #[cfg(feature = "tracing")]
         let resource_span = info_span!("Timers");
-        let (tx, rx) = mpsc::unbounded_channel();
-        let sender = TimerSender::new(tx, opts);
         let start_signal: Arc<Notify> = Arc::default();
-        let task_handle = Self::create_timer_task(
-            sender.clone(),
-            rx,
+        Self {
+            start_signal,
+            task_handle: Arc::default(),
+            sender: Arc::default(),
+            #[cfg(feature = "tracing")]
+            resource_span,
+            _data: PhantomData,
             queue,
             jobs,
             opts,
             worker_id,
-            cancellation_token,
+            token: cancellation_token,
             worker_state,
             notifier,
             pause_schedular,
-            start_signal.clone(),
-        );
-
-        Self {
-            start_signal,
-            task_handle: task_handle.into(),
-            sender,
-            #[cfg(feature = "tracing")]
-            resource_span,
-            _data: PhantomData,
+            promoting,
+            processing,
         }
     }
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
-    #[allow(clippy::future_not_send)]
     pub(crate) fn insert(&self, timer: TimerType) {
-        let next_duration = self.sender.next_duration(timer);
-        #[cfg(feature = "tracing")]
-        {
-            let duration = self.sender.next_duration(timer);
-            info!("Started {timer:?} timer running every {duration:?}");
+        if let Some(sender) = self.sender.load().as_ref() {
+            let next_duration = sender.next_duration(timer);
+            #[cfg(feature = "tracing")]
+            {
+                let duration = sender.next_duration(timer);
+                info!("Started {timer:?} timer running every {duration:?}");
+            }
+            sender.send(Cmd::Insert {
+                timer,
+                duration: next_duration,
+            });
         }
-        self.sender.send(Cmd::Insert {
-            timer,
-            duration: next_duration,
-        });
     }
-    #[allow(clippy::future_not_send)]
+    //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
     pub(crate) fn clear(&self) {
-        for stored_key in self.sender.keys.iter() {
-            if let Some(key) = stored_key.load() {
-                self.sender.send(Cmd::Remove { key });
+        if let Some(sender) = self.sender.load().as_ref() {
+            for stored_key in sender.keys.iter() {
+                if let Some(key) = stored_key.load() {
+                    sender.send(Cmd::Remove { key });
+                }
             }
         }
     }
 
+    //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
     pub(crate) fn close(&self) {
-        self.task_handle.abort();
+        self.clear();
+        let task_handle = self.task_handle.swap(None);
+        if let Some(task_handle) = task_handle {
+            task_handle.abort();
+        }
     }
-    #[allow(clippy::future_not_send)]
-    pub(crate) fn start_timers(&self) {
-        self.start_signal.notify_one();
-        let instant = Instant::now();
-        self.insert(TimerType::ExtendLock(instant));
-        self.insert(TimerType::StalledCheck(instant));
-        self.insert(TimerType::CollectMetrics);
-    }
-    //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(rx, sender)))]
-    #[allow(clippy::future_not_send)]
-    #[allow(clippy::too_many_arguments)]
-    fn create_timer_task(
-        sender: TimerSender,
-        mut rx: UnboundedReceiver<Cmd>,
-        queue: Arc<Queue<D, R, P, S>>,
-        jobs: JobMap<D, R, P>,
-        opts: WorkerOpts,
-        worker_id: Uuid,
-        token: Arc<CancellationToken>,
-        worker_state: Arc<Atomic<WorkerState>>,
-        notifier: Arc<Notify>,
-        pause_schedular: Arc<AtomicBool>,
-        start_signal: Arc<Notify>,
-    ) -> JoinHandle<KioResult<()>> {
+    //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
+    fn timer_task(&self) -> impl std::future::Future<Output = KioResult<()>> {
         use futures::StreamExt;
-        let t_task = async move {
-            let mut delay_queue: DelayQueue<TimerType> = DelayQueue::new();
+        let promoting = self.promoting.clone();
+        let processing = self.processing.clone();
+        let notifier = self.notifier.clone();
+        let queue = self.queue.clone();
+        let start_signal = self.start_signal.clone();
+        let (worker_id, opts, pause_schedular, worker_state, jobs, token) = (
+            self.worker_id,
+            self.opts,
+            self.pause_schedular.clone(),
+            self.worker_state.clone(),
+            self.jobs.clone(),
+            self.token.clone(),
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sender = TimerSender::new(tx, self.opts);
+        self.sender.store(Some(sender.clone().into()));
 
+        #[cfg(feature = "tracing")]
+        let resource_span = self.resource_span.clone();
+        async move {
+            let mut delay_queue: DelayQueue<TimerType> = DelayQueue::new();
             let interval_ms = i64::try_from(MIN_DELAY_MS_LIMIT).unwrap_or(i64::MAX);
-            // let mut tick_iternval =
-            //     tokio::time::interval(Duration::from_millis(interval_ms.cast_unsigned()));
-            //let timeout = Duration::from_millis(1);
             start_signal.notified().await;
             #[cfg(feature = "tracing")]
             info!("starting ...");
+            let mut tick_interval =
+                tokio::time::interval(Duration::from_millis(interval_ms.cast_unsigned()));
             while !token.is_cancelled() {
-                let date_time = Utc::now();
-                tokio::try_join!(
-                    //tick_iternval.tick().await;
-                    queue.promote_delayed_jobs(date_time, interval_ms, sender.clone()),
-                    async {
-                        tokio::select! {
-                            Some(cmd)  = rx.recv() =>  {
-                                match cmd {
-                                    Cmd::Insert {
-                                        timer,
-                                        duration,
-                                    } => {
-                                        let key = delay_queue.insert(timer, duration);
-                                        sender.set_key(timer, key);
-                                    }
-                                    Cmd::Remove { key } => {
-                                          let _ = delay_queue.try_remove(&key);
-                                    }
-                                }
-                            },
-                             Some(expired) = delay_queue.next()=> {
-                                let key = expired.into_inner();
-                                process_timer(
-                                    key,
-                                    queue.clone(),
-                                    jobs.clone(),
-                                    opts,
-                                    worker_id,
-                                    sender.clone(),
-                                )
-                                .await?;
-                            },
-                            ()  =  queue.store.purge_expired() => {},
+                tokio::select! {
+                    _ = tick_interval.tick() => {
+                        let  promoting  = promoting.clone();
+                        let queue = Arc::clone(&queue);
 
+                        #[cfg(feature = "tracing")]
+                        let resource_span = resource_span.clone();
+                         tokio::spawn( async move  {
+                            let date_time = Utc::now();
+                            #[cfg(feature = "tracing")]
+                            {
+                                use tracing::Instrument;
+                                queue
+                                    .promote_delayed_jobs(date_time, interval_ms, &promoting)
+                                    .instrument(resource_span.clone())
+                                    .await?;
+                            }
+                            #[cfg(not(feature = "tracing"))]
+                            queue
+                                .promote_delayed_jobs(date_time, interval_ms, &promoting)
+                                .await?;
+                            queue.store.purge_expired().await;
+                            Ok::<(), KioError>(())
+                        });
                         }
-                        Ok::<(), KioError>(())
-                    }
-                )?;
-                if pause_schedular.load(Ordering::Acquire) && jobs.is_empty() {
+
+                    Some(cmd)  = rx.recv() =>  {
+                        match cmd {
+                            Cmd::Insert {
+                                timer,
+                                duration,
+                            } => {
+                                let key = delay_queue.insert(timer, duration);
+                                sender.set_key(timer, key);
+                            }
+                            Cmd::Remove { key } => {
+                                  let _ = delay_queue.try_remove(&key);
+                            }
+                        }
+                    },
+                     Some(expired) = delay_queue.next() => {
+                        let key = expired.into_inner();
+                        process_timer(
+                            key,
+                            &queue,
+                            &jobs,
+                            opts,
+                            worker_id,
+                            sender.clone(),
+                        )
+                        .await?;
+                    },
+
+                }
+
+                if pause_schedular.load(Ordering::Acquire) && processing.is_empty() {
                     #[cfg(feature = "tracing")]
                     debug!("pausing ... ");
                     worker_state.store(WorkerState::Idle, Ordering::Release);
@@ -281,9 +301,26 @@ impl<
             #[cfg(feature = "tracing")]
             info!("cancelled");
             Ok(())
-        };
+        }
+    }
+
+    #[allow(clippy::future_not_send)]
+    //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
+    pub(crate) fn start_timers(&self) {
+        let task_handle = self.create_timer_task();
+        self.task_handle.store(Some(Arc::new(task_handle)));
+        self.start_signal.notify_one();
+        let instant = Instant::now();
+        self.insert(TimerType::ExtendLock(instant));
+        self.insert(TimerType::StalledCheck(instant));
+        self.insert(TimerType::CollectMetrics);
+    }
+    //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(rx, self)))]
+    #[allow(clippy::too_many_arguments)]
+    fn create_timer_task(&self) -> JoinHandle<KioResult<()>> {
+        let t_task = self.timer_task();
         #[cfg(feature = "tracing")]
-        let sub_span = info_span!(parent: None, "timer_and_clean_up_task");
+        let sub_span = info_span!(parent: &self.resource_span, "timer_and_clean_up_task");
         #[cfg(feature = "tracing")]
         let timers_and_clean_up_task = {
             use tracing::Instrument;
@@ -294,11 +331,11 @@ impl<
         timers_and_clean_up_task
     }
 }
-#[allow(clippy::future_not_send)]
+//#[cfg_attr(feature="tracing", instrument(skip(queue, jobs,sender)))]
 async fn process_timer<D, R, P, S>(
     key: TimerType,
-    queue: Arc<Queue<D, R, P, S>>,
-    jobs: JobMap<D, R, P>,
+    queue: &Queue<D, R, P, S>,
+    jobs: &JobMap<D, R, P>,
     opts: WorkerOpts,
     worker_id: Uuid,
     sender: TimerSender,
@@ -327,12 +364,7 @@ where
                 }
             }
         }
-        TimerType::PromotedDelayed(job_id) => {
-            queue
-                .store
-                .add_item(crate::CollectionSuffix::Wait, job_id, None, true)
-                .await?;
-        }
+
         TimerType::CollectMetrics => {
             let mut tasks = Vec::with_capacity(jobs.len());
             for entry in jobs.iter() {
