@@ -120,6 +120,7 @@ pub struct Worker<D, R, P, S> {
     /// Current lifecycle state of the worker.
     pub state: Arc<Atomic<WorkerState>>,
     processing: ProcessingQueue,
+    promoting: ProcessingQueue,
     timer_pauser: Arc<AtomicBool>,
     timers: DelayQueueTimer<D, R, P, S>,
     block_until: Arc<AtomicU64>,
@@ -269,6 +270,8 @@ impl<
         let state: Arc<Atomic<WorkerState>> = Arc::default();
         let worker_state = state.clone();
         let timer_pauser: Arc<AtomicBool> = Arc::default();
+        let processing = TaskTracker::new();
+        let promoting = TaskTracker::new();
         let timers = DelayQueueTimer::new(
             jobs,
             id,
@@ -278,6 +281,8 @@ impl<
             worker_state,
             notifier,
             timer_pauser.clone(),
+            promoting.clone(),
+            processing.clone(),
         );
 
         #[cfg(feature = "tracing")]
@@ -311,9 +316,10 @@ impl<
             id,
             queue,
             jobs_in_progress,
+            promoting,
+            processing,
             processor: callback,
             cancellation_token,
-            processing: TaskTracker::new(),
             active_job_count: Arc::default(),
         };
         if worker.opts.autorun {
@@ -393,6 +399,7 @@ impl<
             self.id,
             self.cancellation_token.clone(),
             self.processing.clone(),
+            self.promoting.clone(),
             self.opts,
             self.block_until.clone(),
             self.jobs_in_progress.clone(),
@@ -410,6 +417,7 @@ impl<
             self.id,
             self.cancellation_token.clone(),
             self.processing.clone(),
+            self.promoting.clone(),
             self.opts,
             self.block_until.clone(),
             self.jobs_in_progress.clone(),
@@ -461,6 +469,7 @@ impl<
             self.state.load(std::sync::atomic::Ordering::Acquire)
         );
         self.processing.close();
+        self.promoting.close();
 
         self.timers.close();
         self.queue.resume_workers();
@@ -476,7 +485,7 @@ impl<
             // wait for handle to finishd
             #[cfg(feature = "tracing")]
             {
-                let running_tasks = self.processing.len();
+                let running_tasks = self.processing.len() + self.promoting.len();
                 warn!("waiting for all {running_tasks} tasks to complete or abort");
             }
             // wait for the main loop to close
