@@ -2,9 +2,8 @@
 use crate::error::{JobError, KioError};
 use crate::events::QueueStreamEvent;
 use crate::job::{Job, JobState};
-use crate::timers::TimerSender;
 use crate::utils::{promote_jobs, resume_helper};
-use crate::worker::{WorkerMetrics, WorkerOpts};
+use crate::worker::{ProcessingQueue, WorkerMetrics, WorkerOpts};
 use crate::{
     BackOff, BackOffJobOptions, Dt, FailedDetails, JobOptions, JobToken, KeepJobs, KioResult,
     RemoveOnCompletionOrFailure, Trace,
@@ -85,9 +84,9 @@ pub struct Queue<D, R, P, S> {
 }
 
 impl<
-        D: Clone + Serialize + DeserializeOwned + Send + 'static,
+        D: Clone + Serialize + DeserializeOwned + Send + 'static + Sync,
         R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
-        S: Clone + Store<D, R, P> + Send + 'static,
+        S: Clone + Store<D, R, P> + Send + 'static + Sync,
         P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
     > Queue<D, R, P, S>
 {
@@ -118,7 +117,6 @@ impl<
     /// # Ok(())
     /// # }
     /// ```
-    #[allow(clippy::future_not_send)]
     pub async fn new(store: S, queue_opts: Option<QueueOpts>) -> KioResult<Self> {
         use typed_emitter::TypedEmitter;
         let opts = queue_opts.unwrap_or_default();
@@ -192,7 +190,6 @@ impl<
     /// # Errors
     ///
     /// Returns [`KioError`] if the underlying store fails.
-    #[allow(clippy::future_not_send)]
     #[allow(clippy::future_not_send)]
     pub async fn bulk_add<I: Iterator<Item = (String, Option<JobOptions>, D)> + Send + 'static>(
         &self,
@@ -799,19 +796,17 @@ impl<
         self.store.clear_jobs(last_id).await
     }
 
-    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self, sender)))]
-    #[allow(clippy::future_not_send)]
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self,promoting)))]
     pub(crate) async fn promote_delayed_jobs(
         &self,
         date_time: Dt,
         interval_ms: i64,
-        sender: TimerSender,
+        promoting: &ProcessingQueue,
     ) -> KioResult<()> {
-        promote_jobs(self, date_time, interval_ms, sender).await
+        promote_jobs(self, date_time, interval_ms, promoting).await
     }
 
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
-    #[allow(clippy::future_not_send)]
     async fn move_job_from_priorty_to_active(&self) -> KioResult<Option<u64>> {
         let mut min_priority_job: Vec<(u64, u64)> = self
             .store

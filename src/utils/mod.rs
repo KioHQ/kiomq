@@ -1,16 +1,17 @@
 use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo, JobError, QueueError};
 use crate::events::QueueStreamEvent;
 use crate::stores::Store;
-use crate::timers::{DelayQueueTimer, TimerSender, TimerType};
+use crate::timers::DelayQueueTimer;
 use crate::worker::{
     JobMap, ProcessingQueue, TaskHandle, WorkerCallback, WorkerState, MIN_DELAY_MS_LIMIT,
 };
 use crate::{
-    EventEmitter, EventParameters, FailedDetails, JobOptions, JobState, JobToken, QueueEventMode,
-    QueueOpts, Trace, WorkerOpts,
+    EventEmitter, EventParameters, FailedDetails, JobOptions, JobState, JobToken, KioError,
+    QueueEventMode, QueueOpts, Trace, WorkerOpts,
 };
 use chrono::Utc;
-use futures::FutureExt;
+use futures::stream::FuturesUnordered;
+use futures::{FutureExt, StreamExt};
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio_metrics::TaskMonitor;
@@ -28,6 +29,7 @@ use crate::worker::{HISTOGRAM_MAX_NS, HISTOGRAM_SIGFIG};
 use hdrhistogram::Histogram;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::Arc;
+use std::time::Duration;
 use xutex::AsyncMutex;
 
 #[cfg(feature = "redis-store")]
@@ -156,7 +158,6 @@ pub async fn get_queue_metrics<C: redis::aio::ConnectionLike>(
 // ---- UTIL FUNCTIONS for the worker
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines)]
-#[allow(clippy::future_not_send)]
 pub async fn process_job<D, R, P, S>(
     job: Job<D, R, P>,
     token: JobToken,
@@ -169,7 +170,7 @@ pub async fn process_job<D, R, P, S>(
 ) -> KioResult<()>
 where
     R: Serialize + Send + Clone + DeserializeOwned + 'static + Sync,
-    D: Clone + Serialize + DeserializeOwned + Send + 'static,
+    D: Clone + Serialize + DeserializeOwned + Send + 'static + Sync,
     P: Clone + Serialize + DeserializeOwned + Send + 'static + Sync,
     S: Clone + Store<D, R, P> + Send + 'static + Sync,
 {
@@ -301,18 +302,18 @@ where
         }
     }
 
-    while let Some((_key, job_id, state)) = task_queue.take() {
+    while let Some((key, job_id, state)) = task_queue.take() {
         let _ = current_job_current.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
         queue
             .update_processing_count(false, worker_id, job_id, state)
             .await?;
 
         #[cfg(feature = "tracing")]
-        debug!("processed job {job_id} in task({_key}) to state: {state}");
+        debug!("processed job {job_id} in task({key}) to state: {state}");
+        let _ = key;
     }
     Ok(())
 }
-#[allow(clippy::future_not_send)]
 pub async fn get_next_job<D, R, P, S>(
     queue: &Queue<D, R, P, S>,
     token: JobToken,
@@ -352,6 +353,7 @@ type MainLoopParams<D, R, P, S> = (
     Uuid,
     Arc<CancellationToken>,
     ProcessingQueue,
+    ProcessingQueue,
     WorkerOpts,
     Arc<AtomicU64>,
     JobMap<D, R, P>,
@@ -369,6 +371,7 @@ type MainLoopParams<D, R, P, S> = (
     Uuid,
     Arc<CancellationToken>,
     ProcessingQueue,
+    ProcessingQueue,
     WorkerOpts,
     Arc<AtomicU64>,
     JobMap<D, R, P>,
@@ -382,7 +385,6 @@ type MainLoopParams<D, R, P, S> = (
 );
 use tokio::task::JoinHandle;
 #[async_backtrace::framed]
-#[allow(clippy::future_not_send)]
 pub async fn main_loop<D, R, P, S>(params: MainLoopParams<D, R, P, S>) -> KioResult<()>
 where
     D: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
@@ -393,10 +395,11 @@ where
     use std::sync::atomic::Ordering;
     #[cfg(feature = "tracing")]
     let (
-        resource_span,
+        _resource_span,
         id,
         cancellation_token,
         processing,
+        promoting,
         opts,
         block_until,
         jobs_in_progress,
@@ -414,6 +417,7 @@ where
         id,
         cancellation_token,
         processing,
+        promoting,
         opts,
         block_until,
         jobs_in_progress,
@@ -431,15 +435,6 @@ where
         "Worker Starting with concurrency set to {}",
         opts.concurrency
     );
-    #[cfg(feature = "tracing")]
-    {
-        use tracing::Instrument;
-        timers
-            .start_timers()
-            .instrument(resource_span.clone())
-            .await;
-    }
-    #[cfg(not(feature = "tracing"))]
     timers.start_timers();
     let semaphore = Arc::new(Semaphore::new(opts.concurrency));
     while !cancellation_token.is_cancelled() {
@@ -507,11 +502,15 @@ where
                 tokio::task::yield_now().await;
             }
 
-            if queue.pause_workers.load(Ordering::Acquire) && processing.is_empty() {
+            if queue.pause_workers.load(Ordering::Acquire)
+                && processing.is_empty()
+                && promoting.is_empty()
+            {
                 #[cfg(feature = "tracing")]
                 info!(
-                    "pausing job_schedular_loop with  {delayed} delayed_jobs and {processing} running_jobs",
+                    "pausing job_schedular_loop with  {delayed} delayed_jobs , promoting  {promoting} jobs and {processing} running_jobs",
                     delayed = queue.current_metrics.delayed.load(Ordering::Acquire),
+                    promoting = promoting.len(),
                     processing = processing.len(),
                 );
                 to_pause.store(true, Ordering::Release);
@@ -539,7 +538,7 @@ where
     if cancellation_token.is_cancelled() {
         // wait for all running jobs to finish
         processing.wait().await;
-        timers.clear();
+        promoting.wait().await;
         timers.close();
         let _ = worker_state.compare_exchange(
             WorkerState::Active,
@@ -555,16 +554,14 @@ where
 use crate::Dt;
 use chrono::TimeDelta;
 
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::future_not_send)]
-pub async fn promote_jobs<D, R, P, S: Store<D, R, P> + Send + 'static + Clone>(
+pub async fn promote_jobs<D, R, P, S: Store<D, R, P> + Send + 'static + Clone + Sync>(
     queue: &Queue<D, R, P, S>,
     date_time: Dt,
     interval_ms: i64,
-    sender: TimerSender,
+    promoting_tracker: &ProcessingQueue,
 ) -> KioResult<()>
 where
-    D: Clone + Serialize + DeserializeOwned + Send + 'static,
+    D: Clone + Serialize + DeserializeOwned + Send + 'static + Sync,
     R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
     P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
 {
@@ -576,41 +573,58 @@ where
     let (jobs, missed_deadline): (Vec<u64>, Vec<u64>) =
         queue.store.get_delayed_at(start, stop).await?;
     if !jobs.is_empty() {
-        for job in jobs {
-            let timer = TimerType::PromotedDelayed(job);
-            let duration = sender.next_duration(timer);
-            sender.send(crate::timers::TimerCmd::Insert { timer, duration });
+        for job_id in jobs {
+            let queue = queue.clone();
+            let sleep_for = Duration::from_millis(interval_ms.cast_unsigned());
+            let task = async move {
+                tokio::time::sleep(sleep_for).await;
+                queue
+                    .store
+                    .add_item(crate::CollectionSuffix::Wait, job_id, None, true)
+                    .await?;
+                #[cfg(feature = "tracing")]
+                info!("Promoted job {job_id} to wait queue after {sleep_for:?}");
+                Ok::<(), KioError>(())
+            };
+            promoting_tracker.spawn(tokio::spawn(task.boxed()));
         }
     }
     if !missed_deadline.is_empty() {
-        let queue_clone = queue.clone();
         let ts = date_time.timestamp_micros();
         let move_to_state = JobState::Failed;
+        let mut task_queue: FuturesUnordered<_> = FuturesUnordered::new();
         for job_id in &missed_deadline {
-            let mut reason = FailedDetails {
-                run: 0,
-                reason: JobError::MissedDelayDeadline.to_string(),
-            };
-            let attempts = queue
-                .store
-                .get_counter(CollectionSuffix::Job(*job_id), Some("attemptsMade"))
-                .await;
-            let token = queue.store.get_token(*job_id).await;
-            let attempts = attempts.unwrap_or_default();
-            let token = token.unwrap_or_default();
-            reason.run = attempts;
-            queue_clone
-                .move_job_to_finished_or_failed(
-                    *job_id,
-                    ts,
-                    token,
-                    move_to_state,
-                    ProcessedResult::Failed(reason),
-                    None,
-                )
-                .await?;
+            let queue_clone = queue.clone();
+            task_queue.push(
+                async move {
+                    let mut reason = FailedDetails {
+                        run: 0,
+                        reason: JobError::MissedDelayDeadline.to_string(),
+                    };
+                    let attempts = queue
+                        .store
+                        .get_counter(CollectionSuffix::Job(*job_id), Some("attemptsMade"))
+                        .await;
+                    let token = queue.store.get_token(*job_id).await;
+                    let attempts = attempts.unwrap_or_default();
+                    let token = token.unwrap_or_default();
+                    reason.run = attempts;
+                    queue_clone
+                        .move_job_to_finished_or_failed(
+                            *job_id,
+                            ts,
+                            token,
+                            move_to_state,
+                            ProcessedResult::Failed(reason),
+                            None,
+                        )
+                        .await?;
+                    Ok::<(), KioError>(())
+                }
+                .boxed(),
+            );
         }
-        //let _: () = conn.zrem(&delayed_key, missed_deadline).await?;
+        while let Some(_err) = task_queue.next().await {}
     }
     Ok(())
 }
