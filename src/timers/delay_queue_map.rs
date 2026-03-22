@@ -68,7 +68,7 @@ impl<K: Ord, V> TimedMap<K, V> {
         );
     }
 }
-impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
+impl<K: Ord + Clone + Send + 'static + Sync, V: Send + 'static> TimedMap<K, V> {
     /// Creates an empty `TimedMap` with expiration enabled.
     #[must_use]
     pub fn new() -> Self {
@@ -101,7 +101,7 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
         self.inner.insert(key, pair);
     }
     /// Returns the number of entries currently tracked in the expiry queue.
-    pub async fn len_expired(&self) -> usize {
+    pub fn len_expired(&self) -> usize {
         self.inner
             .iter()
             .filter(|entry| entry.value().key.load().is_some())
@@ -117,7 +117,7 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
     /// If the entry already has an expiry key it is reset to `duration` from
     /// now; otherwise a new expiry is registered.  Returns the delay-queue key
     /// on success or `None` if the entry does not exist.
-    pub async fn update_expiration_status<'a>(
+    pub async fn update_expiration_status(
         &self,
         key: &K,
         duration: Duration,
@@ -142,7 +142,6 @@ impl<K: Ord + Clone + Send + 'static, V: Send + 'static> TimedMap<K, V> {
     ///
     /// This is a no-op when expiration is disabled. The method polls the
     /// delay queue for a short timeout so it doesn't block indefinitely.
-    #[allow(clippy::future_not_send)]
     pub async fn purge_expired(&self) {
         use tokio_util::time::FutureExt;
         if !self.expires_entries() {
@@ -197,6 +196,6 @@ mod tests {
 
         map.purge_expired().await;
 
-        assert_eq!(map.len_expired().await, 0);
+        assert_eq!(map.len_expired(), 0);
     }
 }

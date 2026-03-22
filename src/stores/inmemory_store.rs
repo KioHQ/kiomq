@@ -261,18 +261,18 @@ where
     }
     async fn purge_expired(&self) {
         let purge_locks = async {
-            if self.locks.len_expired().await > 0 {
+            if self.locks.len_expired() > 0 {
                 self.locks.purge_expired().await;
             }
         };
 
         let purge_metrics = async {
-            if self.worker_metrics.len_expired().await > 0 {
+            if self.worker_metrics.len_expired() > 0 {
                 self.worker_metrics.purge_expired().await;
             }
         };
         let purge_jobs = async move {
-            if self.jobs.len_expired().await > 0 {
+            if self.jobs.len_expired() > 0 {
                 self.jobs.purge_expired().await;
             }
         };
