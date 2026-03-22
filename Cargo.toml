@@ -42,6 +42,8 @@ arc-swap = "1.7.1"
 xutex = "0.2.0"
 tokio-metrics = "0.4.7"
 hdrhistogram = "7.5.4"
+futures-delay-queue = { version = "0.6.0", default-features = false, features = ["tokio"] }
+futures-intrusive = "0.5.0"
 
 [dependencies.atomig]
 version = "0.4.3"
