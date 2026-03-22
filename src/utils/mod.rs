@@ -17,7 +17,7 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio_metrics::TaskMonitor;
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
-use tracing::{debug, info, info_span};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 pub mod processor_types;

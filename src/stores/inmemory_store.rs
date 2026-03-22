@@ -252,7 +252,8 @@ where
     async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()> {
         let duration = std::time::Duration::from_millis(ttl_ms);
         self.worker_metrics
-            .insert_expirable(metrics.worker_id, metrics, duration);
+            .insert_expirable(metrics.worker_id, metrics, duration)
+            .await;
         Ok(())
     }
     fn queue_name(&self) -> &str {
@@ -644,7 +645,7 @@ where
         let lock_key = col.tag();
         let duration = Duration::from_millis(lock_duration);
         let lock = token.map_or(Lock::StallCheck, Lock::Token);
-        self.locks.insert_expirable(lock_key, lock, duration);
+        self.locks.insert_expirable(lock_key, lock, duration).await;
 
         Ok(())
     }
