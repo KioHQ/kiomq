@@ -4,9 +4,10 @@ use crate::{KioError, KioResult};
 use arc_swap::ArcSwapOption;
 use atomig::Atomic;
 use chrono::Utc;
-use crossbeam::atomic::AtomicCell;
 use derive_more::Debug;
 use futures::FutureExt;
+use futures_delay_queue::{delay_queue, DelayHandle, DelayQueue};
+use futures_intrusive::buffer::GrowingHeapBuf;
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -14,10 +15,10 @@ use std::{
     marker::PhantomData,
     sync::{atomic::AtomicBool, Arc},
 };
-use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tokio_util::time::DelayQueue;
+#[cfg(feature = "tracing")]
+use tracing::{debug, info, info_span, instrument, Span};
 use uuid::Uuid;
 
 // model the timers (stall_check_locck  and extend_lock) as a tokio_util::DelayQueue
@@ -33,48 +34,42 @@ pub enum TimerType {
     CollectMetrics,
 }
 use tokio::time::Instant;
-use tokio_util::time::delay_queue::Key;
 
 use crate::{
     worker::{JobMap, Task},
     Queue, Store, WorkerOpts,
 };
+#[derive(Debug)]
+struct SenderInner {
+    tx: DelayQueue<TimerType, GrowingHeapBuf<TimerType>>,
+    keys: [ArcSwapOption<DelayHandle>; 3],
+}
+impl SenderInner {
+    fn new(tx: DelayQueue<TimerType, GrowingHeapBuf<TimerType>>) -> Self {
+        let keys = [
+            ArcSwapOption::default(),
+            ArcSwapOption::default(),
+            ArcSwapOption::default(),
+        ];
+        Self { tx, keys }
+    }
+}
 
 use tokio::sync::Notify;
-#[cfg(feature = "tracing")]
-use tracing::{debug, info, info_span, instrument, Span};
-pub enum Cmd {
-    Insert {
-        timer: TimerType,
-        duration: Duration,
-    },
-    Remove {
-        key: Key,
-    },
-}
 #[derive(Clone, Debug)]
 pub struct TimerSender {
-    inner_tx: UnboundedSender<Cmd>,
-    // (extendLock, Stalled)
-    keys: Arc<[AtomicCell<Option<Key>>; 3]>,
+    inner: Arc<SenderInner>,
     opts: WorkerOpts,
 }
 impl TimerSender {
-    pub fn new(tx: UnboundedSender<Cmd>, opts: WorkerOpts) -> Self {
-        let state = [
-            AtomicCell::default(),
-            AtomicCell::default(),
-            AtomicCell::default(),
-        ];
-        let keys = Arc::new(state);
-        Self {
-            inner_tx: tx,
-            keys,
-            opts,
-        }
+    pub fn new(tx: DelayQueue<TimerType, GrowingHeapBuf<TimerType>>, opts: WorkerOpts) -> Self {
+        let inner = Arc::new(SenderInner::new(tx));
+        Self { inner, opts }
     }
-    pub fn send(&self, cmd: Cmd) {
-        let _ = self.inner_tx.send(cmd);
+    pub fn send(&self, timer: TimerType) {
+        let duration = self.next_duration(timer);
+        let handle = self.inner.tx.insert(timer, duration);
+        self.set_key(timer, handle);
     }
     pub const fn next_duration(&self, timer: TimerType) -> Duration {
         match timer {
@@ -83,11 +78,11 @@ impl TimerSender {
             TimerType::CollectMetrics => Duration::from_millis(self.opts.metrics_update_interval),
         }
     }
-    pub fn set_key(&self, timer: TimerType, key: Key) {
+    pub fn set_key(&self, timer: TimerType, key: DelayHandle) {
         match timer {
-            TimerType::StalledCheck(_) => self.keys[1].swap(Some(key)),
-            TimerType::ExtendLock(_) => self.keys[0].swap(Some(key)),
-            TimerType::CollectMetrics => self.keys[2].swap(Some(key)),
+            TimerType::StalledCheck(_) => self.inner.keys[1].swap(Some(key.into())),
+            TimerType::ExtendLock(_) => self.inner.keys[0].swap(Some(key.into())),
+            TimerType::CollectMetrics => self.inner.keys[2].swap(Some(key.into())),
         };
     }
 }
@@ -162,24 +157,20 @@ impl<
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
     pub(crate) fn insert(&self, timer: TimerType) {
         if let Some(sender) = self.sender.load().as_ref() {
-            let next_duration = sender.next_duration(timer);
             #[cfg(feature = "tracing")]
             {
                 let duration = sender.next_duration(timer);
                 info!("Started {timer:?} timer running every {duration:?}");
             }
-            sender.send(Cmd::Insert {
-                timer,
-                duration: next_duration,
-            });
+            sender.send(timer);
         }
     }
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
-    pub(crate) fn clear(&self) {
+    pub(crate) async fn clear(&self) {
         if let Some(sender) = self.sender.load().as_ref() {
-            for stored_key in sender.keys.iter() {
-                if let Some(key) = stored_key.load() {
-                    sender.send(Cmd::Remove { key });
+            for stored_key in sender.inner.keys.iter() {
+                if let Some(handle) = stored_key.swap(None).and_then(Arc::into_inner) {
+                    let _ = handle.cancel().await;
                 }
             }
         }
@@ -187,7 +178,6 @@ impl<
 
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
     pub(crate) fn close(&self) {
-        self.clear();
         let task_handle = self.task_handle.swap(None);
         if let Some(task_handle) = task_handle {
             task_handle.abort();
@@ -209,14 +199,15 @@ impl<
             self.jobs.clone(),
             self.token.clone(),
         );
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, rx) = delay_queue();
         let sender = TimerSender::new(tx, self.opts);
         self.sender.store(Some(sender.clone().into()));
 
         #[cfg(feature = "tracing")]
         let resource_span = self.resource_span.clone();
         async move {
-            let mut delay_queue: DelayQueue<TimerType> = DelayQueue::new();
+            let rx_stream = rx.into_stream();
+            tokio::pin!(rx_stream);
             let interval_ms = i64::try_from(MIN_DELAY_MS_LIMIT).unwrap_or(i64::MAX);
             start_signal.notified().await;
             #[cfg(feature = "tracing")]
@@ -224,60 +215,45 @@ impl<
             let mut tick_interval =
                 tokio::time::interval(Duration::from_millis(interval_ms.cast_unsigned()));
             while !token.is_cancelled() {
-                tokio::select! {
-                    _ = tick_interval.tick() => {
-                        let  promoting  = promoting.clone();
-                        let queue = Arc::clone(&queue);
-
+                tokio::try_join!(
+                    async {
                         #[cfg(feature = "tracing")]
                         let resource_span = resource_span.clone();
-                         tokio::spawn( async move  {
-                            let date_time = Utc::now();
-                            #[cfg(feature = "tracing")]
-                            {
-                                use tracing::Instrument;
-                                queue
-                                    .promote_delayed_jobs(date_time, interval_ms, &promoting)
-                                    .instrument(resource_span.clone())
-                                    .await?;
-                            }
-                            #[cfg(not(feature = "tracing"))]
+                        let date_time = Utc::now();
+                        #[cfg(feature = "tracing")]
+                        {
+                            use tracing::Instrument;
                             queue
                                 .promote_delayed_jobs(date_time, interval_ms, &promoting)
+                                .instrument(resource_span.clone())
                                 .await?;
-                            queue.store.purge_expired().await;
-                            Ok::<(), KioError>(())
-                        });
                         }
-
-                    Some(cmd)  = rx.recv() =>  {
-                        match cmd {
-                            Cmd::Insert {
-                                timer,
-                                duration,
-                            } => {
-                                let key = delay_queue.insert(timer, duration);
-                                sender.set_key(timer, key);
-                            }
-                            Cmd::Remove { key } => {
-                                  let _ = delay_queue.try_remove(&key);
-                            }
+                        #[cfg(not(feature = "tracing"))]
+                        queue
+                            .promote_delayed_jobs(date_time, interval_ms, &promoting)
+                            .await?;
+                        tick_interval.tick().await;
+                        Ok::<(), KioError>(())
+                    },
+                    async {
+                        tokio::select! {
+                            biased;
+                            Some(expired) = rx_stream.next()  => {
+                                process_timer(
+                                    expired,
+                                    &queue,
+                                    &jobs,
+                                    opts,
+                                    worker_id,
+                                    sender.clone(),
+                                )
+                                .await?;
+                            },
+                            _= queue.store.purge_expired() => {},
                         }
-                    },
-                     Some(expired) = delay_queue.next() => {
-                        let key = expired.into_inner();
-                        process_timer(
-                            key,
-                            &queue,
-                            &jobs,
-                            opts,
-                            worker_id,
-                            sender.clone(),
-                        )
-                        .await?;
-                    },
-
-                }
+                        Ok(())
+                    }
+                )?;
 
                 if pause_schedular.load(Ordering::Acquire) && processing.is_empty() {
                     #[cfg(feature = "tracing")]
@@ -405,9 +381,8 @@ where
         }
     }
     if let Some(timer) = next_timer {
-        let duration = sender.next_duration(timer);
-
-        sender.send(Cmd::Insert { timer, duration });
+        sender.send(timer);
+        drop(sender)
     }
     Ok(())
 }
