@@ -539,6 +539,7 @@ where
         // wait for all running jobs to finish
         processing.wait().await;
         promoting.wait().await;
+        timers.clear().await;
         timers.close();
         let _ = worker_state.compare_exchange(
             WorkerState::Active,
@@ -588,6 +589,8 @@ where
             };
             promoting_tracker.spawn(tokio::spawn(task.boxed()));
         }
+        #[cfg(feature = "tracing")]
+        info!("promoting {} jobs", promoting_tracker.len());
     }
     if !missed_deadline.is_empty() {
         let ts = date_time.timestamp_micros();
