@@ -9,6 +9,7 @@ mod delay_queue_map;
 mod delay_queue_timer;
 pub use delay_queue_map::TimedMap;
 pub use delay_queue_timer::DelayQueueTimer;
+pub use delay_queue_timer::{TimerSender, TimerType};
 pub type EmptyCb = dyn Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static;
 use tokio_util::sync::CancellationToken;
 /// A repeating async timer that fires a callback at a fixed interval.
