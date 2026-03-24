@@ -2,8 +2,9 @@
 use crate::error::{JobError, KioError};
 use crate::events::QueueStreamEvent;
 use crate::job::{Job, JobState};
+use crate::timers::TimerSender;
 use crate::utils::{promote_jobs, resume_helper};
-use crate::worker::{ProcessingQueue, WorkerMetrics, WorkerOpts};
+use crate::worker::{WorkerMetrics, WorkerOpts};
 use crate::{
     BackOff, BackOffJobOptions, Dt, FailedDetails, JobOptions, JobToken, KeepJobs, KioResult,
     RemoveOnCompletionOrFailure, Trace,
@@ -796,14 +797,14 @@ impl<
         self.store.clear_jobs(last_id).await
     }
 
-    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self,promoting)))]
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self,timer_sender)))]
     pub(crate) async fn promote_delayed_jobs(
         &self,
         date_time: Dt,
         interval_ms: i64,
-        promoting: &ProcessingQueue,
+        timer_sender: &TimerSender,
     ) -> KioResult<()> {
-        promote_jobs(self, date_time, interval_ms, promoting).await
+        promote_jobs(self, date_time, interval_ms, timer_sender).await
     }
 
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]

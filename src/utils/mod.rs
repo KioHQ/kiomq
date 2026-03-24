@@ -1,7 +1,7 @@
 use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo, JobError, QueueError};
 use crate::events::QueueStreamEvent;
 use crate::stores::Store;
-use crate::timers::DelayQueueTimer;
+use crate::timers::{DelayQueueTimer, TimerSender};
 use crate::worker::{
     JobMap, ProcessingQueue, TaskHandle, WorkerCallback, WorkerState, MIN_DELAY_MS_LIMIT,
 };
@@ -29,7 +29,6 @@ use crate::worker::{HISTOGRAM_MAX_NS, HISTOGRAM_SIGFIG};
 use hdrhistogram::Histogram;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::Arc;
-use std::time::Duration;
 use xutex::AsyncMutex;
 
 #[cfg(feature = "redis-store")]
@@ -353,7 +352,6 @@ type MainLoopParams<D, R, P, S> = (
     Uuid,
     Arc<CancellationToken>,
     ProcessingQueue,
-    ProcessingQueue,
     WorkerOpts,
     Arc<AtomicU64>,
     JobMap<D, R, P>,
@@ -370,7 +368,6 @@ type MainLoopParams<D, R, P, S> = (
 type MainLoopParams<D, R, P, S> = (
     Uuid,
     Arc<CancellationToken>,
-    ProcessingQueue,
     ProcessingQueue,
     WorkerOpts,
     Arc<AtomicU64>,
@@ -399,7 +396,6 @@ where
         id,
         cancellation_token,
         processing,
-        promoting,
         opts,
         block_until,
         jobs_in_progress,
@@ -417,7 +413,6 @@ where
         id,
         cancellation_token,
         processing,
-        promoting,
         opts,
         block_until,
         jobs_in_progress,
@@ -436,6 +431,10 @@ where
         opts.concurrency
     );
     timers.start_timers();
+    let timer_sender = timers
+        .sender
+        .load_full()
+        .ok_or_else(|| std::io::Error::other("store not initialized"))?;
     let semaphore = Arc::new(Semaphore::new(opts.concurrency));
     while !cancellation_token.is_cancelled() {
         while !cancellation_token.is_cancelled()
@@ -448,16 +447,20 @@ where
                 let token = JobToken(id, next_id, token_prefix as u64);
                 let worker_id = id;
                 let block_delay = block_until.load(std::sync::atomic::Ordering::Acquire);
-                if let Ok(Some(job)) = get_next_job(
-                    queue.as_ref(),
-                    token,
-                    block_delay,
-                    cancellation_token.is_cancelled(),
-                    &opts,
-                    None,
-                )
-                .await
-                {
+                let date_time = Utc::now();
+                let interval_ms = MIN_DELAY_MS_LIMIT.cast_signed();
+                let (_, next_job_result) = tokio::join!(
+                    queue.promote_delayed_jobs(date_time, interval_ms, &timer_sender),
+                    get_next_job(
+                        queue.as_ref(),
+                        token,
+                        block_delay,
+                        cancellation_token.is_cancelled(),
+                        &opts,
+                        None
+                    )
+                );
+                if let Ok(Some(job)) = next_job_result {
                     if let Some(id) = job.id {
                         let monitor = TaskMonitor::new();
 
@@ -502,15 +505,11 @@ where
                 tokio::task::yield_now().await;
             }
 
-            if queue.pause_workers.load(Ordering::Acquire)
-                && processing.is_empty()
-                && promoting.is_empty()
-            {
+            if queue.pause_workers.load(Ordering::Acquire) && processing.is_empty() {
                 #[cfg(feature = "tracing")]
                 info!(
-                    "pausing job_schedular_loop with  {delayed} delayed_jobs , promoting  {promoting} jobs and {processing} running_jobs",
+                    "pausing job_schedular_loop with  {delayed} delayed_jobs and {processing} running_jobs",
                     delayed = queue.current_metrics.delayed.load(Ordering::Acquire),
-                    promoting = promoting.len(),
                     processing = processing.len(),
                 );
                 to_pause.store(true, Ordering::Release);
@@ -538,7 +537,6 @@ where
     if cancellation_token.is_cancelled() {
         // wait for all running jobs to finish
         processing.wait().await;
-        promoting.wait().await;
         timers.clear().await;
         timers.close();
         let _ = worker_state.compare_exchange(
@@ -559,7 +557,7 @@ pub async fn promote_jobs<D, R, P, S: Store<D, R, P> + Send + 'static + Clone + 
     queue: &Queue<D, R, P, S>,
     date_time: Dt,
     interval_ms: i64,
-    promoting_tracker: &ProcessingQueue,
+    timer_sender: &TimerSender,
 ) -> KioResult<()>
 where
     D: Clone + Serialize + DeserializeOwned + Send + 'static + Sync,
@@ -575,22 +573,8 @@ where
         queue.store.get_delayed_at(start, stop).await?;
     if !jobs.is_empty() {
         for job_id in jobs {
-            let queue = queue.clone();
-            let sleep_for = Duration::from_millis(interval_ms.cast_unsigned());
-            let task = async move {
-                tokio::time::sleep(sleep_for).await;
-                queue
-                    .store
-                    .add_item(crate::CollectionSuffix::Wait, job_id, None, true)
-                    .await?;
-                #[cfg(feature = "tracing")]
-                info!("Promoted job {job_id} to wait queue after {sleep_for:?}");
-                Ok::<(), KioError>(())
-            };
-            promoting_tracker.spawn(tokio::spawn(task.boxed()));
+            timer_sender.send(crate::timers::TimerType::PromotedDelayed(job_id));
         }
-        #[cfg(feature = "tracing")]
-        info!("promoting {} jobs", promoting_tracker.len());
     }
     if !missed_deadline.is_empty() {
         let ts = date_time.timestamp_micros();
