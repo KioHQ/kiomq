@@ -18,14 +18,13 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 /// a counter for adding bulk jobs,
 static START: AtomicU64 = AtomicU64::new(0);
 static PC_COUNTER: AtomicU64 = AtomicU64::new(0);
-use xutex::Mutex;
+use xutex::AsyncMutex;
 /// A [`Store`] implementation backed by Redis.
 ///
 /// `RedisStore` uses a deadpool connection pool for async operations and a
@@ -58,13 +57,15 @@ pub struct RedisStore {
     consumer_name: String,
     stream_key: String,
     #[debug(skip)]
-    pubsub_source: Arc<Mutex<PubSubStream>>,
+    pubsub_source: Arc<AsyncMutex<PubSubStream>>,
     #[debug(skip)]
-    pubsub_sink: Arc<Mutex<PubSubSink>>,
+    pubsub_sink: Arc<AsyncMutex<PubSubSink>>,
     subscribed: Arc<AtomicBool>,
     #[debug(skip)]
     pub(crate) conn_pool: Arc<Pool>,
     redis_client: redis::Client,
+    /// The redis version of redis this store is initialized with.
+    pub redis_version: RedisVersion,
 }
 
 impl RedisStore {
@@ -97,14 +98,22 @@ impl RedisStore {
         let mut connection = conn_pool.get().await?;
         let stream_key = CollectionSuffix::Events.to_collection_name(&prefix, &name);
         let (sink, source) = redis_client.get_async_pubsub().await?.split();
-        let pubsub_sink = Arc::new(Mutex::new(sink));
-        let pubsub_source = Arc::new(Mutex::new(source));
+        let pubsub_sink = Arc::new(AsyncMutex::new(sink));
+        let pubsub_source = Arc::new(AsyncMutex::new(source));
         connection
             .xgroup_create_mkstream::<_, _, _, ()>(&stream_key, &consumer_group, "$")
             .await?;
         let subscribed = Arc::default();
+        let raw: String = redis::cmd("INFO")
+            .arg("server")
+            .query_async(&mut connection)
+            .await?;
+
+        let redis_version = RedisVersion::parse(&raw)
+            .ok_or(std::io::Error::other("failed to fetch redis-version info "))?;
 
         Ok(Self {
+            redis_version,
             prefix,
             name,
             consumer_group,
@@ -295,7 +304,6 @@ where
     ) -> KioResult<()> {
         if !self.subscribed.load(Ordering::Acquire) {
             self.pubsub_sink
-                .as_async()
                 .lock()
                 .await
                 .subscribe(&self.stream_key)
@@ -304,18 +312,7 @@ where
         }
         match event_mode {
             QueueEventMode::PubSub => {
-                use tokio_util::time::FutureExt;
-                let block_interval = block_interval.unwrap_or(5000);
-                let timeout = Duration::from_millis(block_interval);
-                while let Ok(Some(msg)) = self
-                    .pubsub_source
-                    .as_async()
-                    .lock()
-                    .await
-                    .next()
-                    .timeout(timeout)
-                    .await
-                {
+                while let Some(msg) = self.pubsub_source.lock().await.next().await {
                     let event: QueueStreamEvent<R, P> = msg.get_payload()?;
                     process_each_event::<D, R, P>(event, emitter, self, metrics).await?;
                 }
@@ -813,5 +810,98 @@ where
         let list: Vec<Job<D, R, P>> = pipeline.query(&mut conn)?;
 
         Ok(VecDeque::from_iter(list))
+    }
+}
+/// Represents a parsed Redis server version with major, minor, and patch components.
+///
+/// Supports ordering and equality comparisons, allowing you to check
+/// minimum version requirements before using version-specific Redis features.
+///
+/// # Examples
+///
+/// ```rust
+/// let raw = get_redis_info().await?;
+/// let version = RedisVersion::parse(&raw).expect("Failed to parse Redis version");
+///
+/// if version >= (RedisVersion { major: 7, minor: 2, patch: 0 }) {
+///     // use Redis 7.2+ features
+/// }
+/// ```
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
+pub struct RedisVersion {
+    /// Major version number (e.g. `7` in `7.2.4`)
+    pub major: u32,
+    /// Minor version number (e.g. `2` in `7.2.4`)
+    pub minor: u32,
+    /// Patch version number (e.g. `4` in `7.2.4`), defaults to `0` if absent
+    pub patch: u32,
+}
+
+impl RedisVersion {
+    /// Parses a `RedisVersion` from the raw output of the `INFO server` command.
+    ///
+    /// Looks for the `redis_version:` field in the INFO response and splits
+    /// it into major, minor, and patch components.
+    ///
+    /// # Arguments
+    ///
+    /// * `raw` - The raw string output from `INFO server`
+    ///
+    /// # Returns
+    ///
+    /// `Some(RedisVersion)` if the version field was found and parsed successfully,
+    /// `None` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// let raw = "redis_version:7.2.4\r\nos:Linux\r\n";
+    /// let version = RedisVersion::parse(raw).unwrap();
+    /// assert_eq!(version.major, 7);
+    /// assert_eq!(version.minor, 2);
+    /// assert_eq!(version.patch, 4);
+    /// ```
+    fn parse(raw: &str) -> Option<Self> {
+        let version_str = raw
+            .lines()
+            .find(|line| line.starts_with("redis_version:"))?
+            .splitn(2, ':')
+            .nth(1)?
+            .trim();
+
+        let mut parts = version_str.splitn(3, '.');
+        Some(Self {
+            major: parts.next()?.parse().ok()?,
+            minor: parts.next()?.parse().ok()?,
+            patch: parts.next().unwrap_or("0").parse().ok()?,
+        })
+    }
+    /// Checks if this version is greater than or equal to a version string.
+    ///
+    /// # Arguments
+    ///
+    /// * `version` - A version string in the format `"major.minor.patch"` or `"major.minor"`
+    ///
+    /// # Returns
+    ///
+    /// `Some(bool)` if the string was parsed successfully, `None` if the format is invalid.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// let version = RedisVersion { major: 7, minor: 2, patch: 4 };
+    ///
+    /// assert_eq!(version.is_at_least("7.2"), Some(true));
+    /// assert_eq!(version.is_at_least("7.2.4"), Some(true));
+    /// assert_eq!(version.is_at_least("8.0"), Some(false));
+    /// ```
+    fn is_at_least(&self, version: &str) -> Option<bool> {
+        let mut parts = version.splitn(3, '.');
+        let other = RedisVersion {
+            major: parts.next()?.parse().ok()?,
+            minor: parts.next()?.parse().ok()?,
+            patch: parts.next().unwrap_or("0").parse().ok()?,
+        };
+        Some(self >= &other)
     }
 }
