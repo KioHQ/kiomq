@@ -3,7 +3,7 @@ use crate::worker::{TaskInfo, WorkerMetrics, HISTOGRAM_MAX_NS};
 use crate::KioResult;
 use arc_swap::ArcSwapOption;
 use atomig::Atomic;
-use derive_more::Debug;
+use derive_more::{Debug, Display};
 use futures::FutureExt;
 use futures_delay_queue::{delay_queue, DelayHandle, DelayQueue};
 use futures_intrusive::buffer::GrowingHeapBuf;
@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, info_span, instrument, Span};
 use uuid::Uuid;
 // model the timers (stall_check_lock,  extend_lock and job_promotion)
-#[derive(Debug, Clone, Copy, derive_more::Display)]
+#[derive(Debug, Clone, Copy, Display)]
 pub enum TimerType {
     #[display("StalledCheck after {:#?}", _0.elapsed())]
     #[debug("StalledCheck")]
@@ -158,7 +158,7 @@ impl<
             processing,
         }
     }
-    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    #[cfg_attr(feature = "tracing", instrument(parent = &self.resource_span, skip(self)))]
     pub(crate) fn insert(&self, timer: TimerType) {
         if let Some(sender) = self.sender.load().as_ref() {
             #[cfg(feature = "tracing")]
@@ -334,8 +334,9 @@ where
                 tasks.push(task_info);
             }
             let active_len = tasks.len();
+            let ttls = opts.metrics_update_interval;
 
-            let worker_metrics = WorkerMetrics::new(worker_id, active_len, tasks);
+            let worker_metrics = WorkerMetrics::new(worker_id, active_len, tasks, ttls);
             queue
                 .store_worker_metrics(worker_metrics, opts.metrics_update_interval)
                 .await?;
