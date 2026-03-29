@@ -32,12 +32,20 @@ pub struct WorkerMetrics {
     pub active_len: usize,
     /// Per-task timing snapshots for each in-flight job.
     pub tasks: Vec<TaskInfo>,
+    /// When the metrics were last updated.
+    pub last_updated: Dt,
+    /// time to live for metrics
+    pub ttl_ms: u64,
 }
 impl WorkerMetrics {
     /// Creates a new `WorkerMetrics` snapshot.
     #[must_use]
-    pub const fn new(worker_id: Uuid, active_len: usize, tasks: Vec<TaskInfo>) -> Self {
+    pub fn new(worker_id: Uuid, active_len: usize, tasks: Vec<TaskInfo>, ttl: u64) -> Self {
+        use chrono::Utc;
+        let last_updated = Utc::now();
         Self {
+            ttl_ms: ttl,
+            last_updated,
             worker_id,
             active_len,
             tasks,
