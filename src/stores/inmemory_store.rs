@@ -236,8 +236,13 @@ where
             .map(|entry| {
                 let worker_id = *entry.key();
                 let value = entry.value().value.lock();
-                let metrics =
-                    WorkerMetrics::new(value.worker_id, value.active_len, value.tasks.clone());
+                let ttls = value.ttl_ms;
+                let metrics = WorkerMetrics::new(
+                    value.worker_id,
+                    value.active_len,
+                    value.tasks.clone(),
+                    ttls,
+                );
                 drop(value);
                 (worker_id, metrics)
             })

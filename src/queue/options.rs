@@ -59,7 +59,6 @@ impl<R> JobField<R> {
 }
 
 use derive_more::{Debug, Display};
-use uuid::Uuid;
 /// Identifies a named collection (list, set, sorted-set, hash, or key) in the
 /// backing store.
 ///
@@ -107,8 +106,8 @@ pub enum CollectionSuffix {
     #[display("stalled_check")]
     StalledCheck,
     /// Key storing serialised metrics for a specific worker.
-    #[display("worker_metrics:{_0}")]
-    WorkerMetrics(Uuid),
+    #[display("worker_metrics")]
+    WorkerMetrics,
 }
 
 impl CollectionSuffix {
@@ -137,7 +136,7 @@ impl CollectionSuffix {
             Self::Prefix => 15,
             Self::Lock(_) => 16,
             Self::StalledCheck => 17,
-            Self::WorkerMetrics(_) => 18,
+            Self::WorkerMetrics => 18,
         }
     }
     /// Encodes this variant as a compact `u64` tag.
@@ -164,8 +163,8 @@ impl CollectionSuffix {
             | Self::Failed
             | Self::Marker
             | Self::Prefix
-            | Self::StalledCheck => top,
-            Self::WorkerMetrics(uuid) => top | (uuid.as_u64_pair().1 & 0x00FF_FFFF_FFFF_FFFF),
+            | Self::StalledCheck
+            | Self::WorkerMetrics => top,
 
             // Tagged variants → combine variant id + payload in lower 56 bits
             Self::Job(id) | Self::Lock(id) => top | (id & 0x00FF_FFFF_FFFF_FFFF),
