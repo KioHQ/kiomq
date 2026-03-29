@@ -13,7 +13,10 @@ use derive_more::Debug;
 use futures::StreamExt;
 use redis::aio::{PubSubSink, PubSubStream};
 use redis::streams::{StreamReadOptions, StreamReadReply};
-use redis::{AsyncCommands, Commands, LposOptions};
+use redis::{
+    AsyncCommands, Commands, FieldExistenceCheck, HashFieldExpirationOptions, LposOptions,
+    SetExpiry,
+};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -110,10 +113,9 @@ impl RedisStore {
             .await?;
 
         let redis_version = RedisVersion::parse(&raw)
-            .ok_or(std::io::Error::other("failed to fetch redis-version info "))?;
+            .ok_or_else(|| std::io::Error::other("failed to fetch redis-version info "))?;
 
         Ok(Self {
-            redis_version,
             prefix,
             name,
             consumer_group,
@@ -124,6 +126,7 @@ impl RedisStore {
             subscribed,
             conn_pool,
             redis_client,
+            redis_version,
         })
     }
     /// Returns a synchronous (blocking) Redis connection.
@@ -159,32 +162,44 @@ where
 {
     fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
         let mut conn = self.get_blocking_connection()?;
-        let prefix = CollectionSuffix::Prefix.to_collection_name(&self.prefix, &self.name);
-        let key = format!("{prefix}worker_metrics:*");
-        let mut pipe = redis::pipe();
-        let results = conn.scan_match::<_, redis::Value>(key)?;
-        results.into_iter().for_each(|value| match value {
-            redis::Value::BulkString(items) => {
-                pipe.get(&items);
-            }
-            redis::Value::SimpleString(str) => {
-                pipe.get(str.as_bytes());
-            }
-            _ => {}
-        });
-
-        let results: Vec<WorkerMetrics> = pipe.query(&mut conn)?;
+        let key = CollectionSuffix::WorkerMetrics.to_collection_name(&self.prefix, &self.name);
+        let results: Vec<WorkerMetrics> = conn.hvals(key)?;
         Ok(results
             .into_iter()
-            .map(|metrics| (metrics.worker_id, metrics))
+            .filter_map(|metrics| {
+                let now = Utc::now();
+                if now
+                    .signed_duration_since(metrics.last_updated)
+                    .num_milliseconds()
+                    <= (metrics.ttl_ms.cast_signed() + 20)
+                {
+                    return Some((metrics.worker_id, metrics));
+                }
+
+                None
+            })
             .collect())
     }
     async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()> {
-        let key = CollectionSuffix::WorkerMetrics(metrics.worker_id)
-            .to_collection_name(&self.prefix, &self.name);
+        let key = CollectionSuffix::WorkerMetrics.to_collection_name(&self.prefix, &self.name);
         let mut conn = self.get_connection().await?;
+        let field_key = metrics.worker_id.to_string();
         let metrics_string = simd_json::to_string(&metrics)?;
-        let _: () = conn.pset_ex(key, metrics_string, ttl_ms).await?;
+
+        let expiry_opts = HashFieldExpirationOptions::default()
+            .set_existence_check(FieldExistenceCheck::FNX)
+            .set_expiration(SetExpiry::PX(ttl_ms));
+        if self.redis_version.is_at_least("7.4.0").unwrap_or(false) {
+            let _: () = conn
+                .hset_ex(key, &expiry_opts, &[(field_key, metrics_string)])
+                .await?;
+            return Ok(());
+        }
+        let mut pipeline = redis::pipe();
+        pipeline.atomic();
+        pipeline.hset(&key, field_key, metrics_string);
+        pipeline.pexpire(key, ttl_ms.saturating_mul(100).cast_signed());
+        let _: () = pipeline.query_async(&mut conn).await?;
         Ok(())
     }
     async fn metadata_field_exists(&self, field: &str) -> KioResult<bool> {
@@ -865,8 +880,8 @@ impl RedisVersion {
         let version_str = raw
             .lines()
             .find(|line| line.starts_with("redis_version:"))?
-            .splitn(2, ':')
-            .nth(1)?
+            .split_once(':')?
+            .1
             .trim();
 
         let mut parts = version_str.splitn(3, '.');
@@ -897,7 +912,7 @@ impl RedisVersion {
     /// ```
     fn is_at_least(&self, version: &str) -> Option<bool> {
         let mut parts = version.splitn(3, '.');
-        let other = RedisVersion {
+        let other = Self {
             major: parts.next()?.parse().ok()?,
             minor: parts.next()?.parse().ok()?,
             patch: parts.next().unwrap_or("0").parse().ok()?,

@@ -217,7 +217,8 @@ impl<
                     let active_len = tasks.len();
 
                     let worker_id = self.worker_id;
-                    let worker_metrics = WorkerMetrics::new(worker_id, active_len, tasks);
+                    let ttls = self.opts.metrics_update_interval;
+                    let worker_metrics = WorkerMetrics::new(worker_id, active_len, tasks, ttls);
                     self.queue
                         .store_worker_metrics(worker_metrics, self.opts.metrics_update_interval)
                         .await?;
