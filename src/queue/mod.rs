@@ -21,7 +21,7 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 #[cfg(feature = "tracing")]
-use tracing::{debug_span, instrument, Instrument, Span};
+use tracing::{debug_span, info, instrument, Instrument, Span};
 use uuid::Uuid;
 mod options;
 use crate::stores::Store;
@@ -398,6 +398,10 @@ impl<
                     event.metrics = Some(metrics);
                 }
             }
+        }
+        #[cfg(feature = "tracing")]
+        {
+            info!("moved job {job_id} from {from} to {to}");
         }
         self.store.publish_event(event_mode, event).await?;
         Ok(())
