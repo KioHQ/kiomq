@@ -464,15 +464,12 @@ impl<
         );
         self.processing.close();
 
-        self.timers.close();
         self.queue.resume_workers();
         self.queue.worker_notifier.notify_waiters();
         self.queue
             .pause_workers
             .store(false, std::sync::atomic::Ordering::Release);
         self.cancellation_token.cancel();
-        // TODO: work on gracefully shutdown later; currently we just cancel the token but
-        // don't check whether the main_task has closed too. Handle this later
         let mut main_task = self.main_task.load_full();
         if let Some(handle) = main_task.take() {
             // wait for handle to finishd
