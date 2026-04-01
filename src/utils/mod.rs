@@ -301,7 +301,7 @@ where
         }
     }
 
-    while let Some((key, job_id, state)) = task_queue.take() {
+    if let Some((key, job_id, state)) = task_queue.take() {
         let _ = current_job_current.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
         queue
             .update_processing_count(false, worker_id, job_id, state)
@@ -431,10 +431,6 @@ where
         opts.concurrency
     );
     timers.start_timers();
-    let timer_sender = timers
-        .sender
-        .load_full()
-        .ok_or_else(|| std::io::Error::other("store not initialized"))?;
     let semaphore = Arc::new(Semaphore::new(opts.concurrency));
     while !cancellation_token.is_cancelled() {
         while !cancellation_token.is_cancelled()
@@ -447,20 +443,16 @@ where
                 let token = JobToken(id, next_id, token_prefix as u64);
                 let worker_id = id;
                 let block_delay = block_until.load(std::sync::atomic::Ordering::Acquire);
-                let date_time = Utc::now();
-                let interval_ms = MIN_DELAY_MS_LIMIT.cast_signed();
-                let (_, next_job_result) = tokio::join!(
-                    queue.promote_delayed_jobs(date_time, interval_ms, &timer_sender),
-                    get_next_job(
-                        queue.as_ref(),
-                        token,
-                        block_delay,
-                        cancellation_token.is_cancelled(),
-                        &opts,
-                        None
-                    )
+                let next_job_result = get_next_job(
+                    queue.as_ref(),
+                    token,
+                    block_delay,
+                    cancellation_token.is_cancelled(),
+                    &opts,
+                    None,
                 );
-                if let Ok(Some(job)) = next_job_result {
+
+                if let Ok(Some(job)) = next_job_result.await {
                     if let Some(id) = job.id {
                         let monitor = TaskMonitor::new();
 
@@ -537,8 +529,7 @@ where
     if cancellation_token.is_cancelled() {
         // wait for all running jobs to finish
         processing.wait().await;
-        timers.clear().await;
-        timers.close();
+        timers.close().await;
         let _ = worker_state.compare_exchange(
             WorkerState::Active,
             WorkerState::Closed,

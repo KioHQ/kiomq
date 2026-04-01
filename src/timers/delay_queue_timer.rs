@@ -91,7 +91,7 @@ impl TimerSender {
             TimerType::ExtendLock(_) => self.inner.keys.0.store(Some(key.into())),
             TimerType::CollectMetrics => self.inner.keys.2.store(Some(key.into())),
             TimerType::PromotedDelayed(_) => {} // do nothing here, these are temporary one-shot timers
-        };
+        }
     }
 }
 
