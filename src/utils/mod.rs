@@ -227,7 +227,7 @@ where
                 )
                 .await?;
             if let Some(entry) = jobs_in_progress.remove(&job_id) {
-                let (job, _, handle, _, _) = entry.value();
+                let (_, (job, _, handle, _, _)) = entry;
                 if completed.attempts_made < job.opts.attempts {
                     if let Some(repeat_opts) = completed.opts.repeat.as_ref() {
                         //dbg!("job here", job_id, &repeat_opts);
@@ -279,7 +279,7 @@ where
                 )
                 .await?;
             if let Some(entry) = jobs_in_progress.remove(&job_id) {
-                let (job, _, handle, _, _) = entry.value();
+                let (_, (job, _, handle, _, _)) = entry;
                 // retry failed jobs
                 if failed_job.attempts_made < job.opts.attempts {
                     if let Some(backoff_job_opts) = job.opts.backoff.as_ref() {

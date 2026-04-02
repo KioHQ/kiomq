@@ -20,7 +20,7 @@ pub use metrics::*;
 use crate::error::WorkerError;
 use crate::events::EventParameters;
 use arc_swap::ArcSwapOption;
-use crossbeam_skiplist::SkipMap;
+//use crossbeam_skiplist::SkipMap;
 use hdrhistogram::Histogram;
 use tokio::{sync::Notify, task::JoinHandle};
 use tokio_metrics::TaskMonitor;
@@ -33,7 +33,8 @@ type JobMeta<D, R, P> = (
     TaskMonitor,
     AsyncMutex<Histogram<u64>>,
 );
-pub type JobMap<D, R, P> = Arc<SkipMap<u64, JobMeta<D, R, P>>>;
+use dashmap::DashMap;
+pub type JobMap<D, R, P> = Arc<DashMap<u64, JobMeta<D, R, P>>>;
 pub type Task = JoinHandle<KioResult<()>>;
 pub type TaskHandle = ArcSwapOption<Task>;
 pub type SharedTaskHandle = Arc<TaskHandle>;
@@ -256,7 +257,7 @@ impl<
         E: std::error::Error + Send + 'static,
     {
         let queue = Arc::new(queue.clone());
-        let jobs_in_progress: JobMap<_, _, _> = Arc::new(SkipMap::new());
+        let jobs_in_progress: JobMap<_, _, _> = Arc::new(DashMap::new());
         let f: F = processor.into();
         let callback = Callback::from(f);
 
