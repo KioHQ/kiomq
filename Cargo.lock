@@ -666,6 +666,8 @@ dependencies = [
  "lock_api",
  "once_cell",
  "parking_lot_core",
+ "rayon",
+ "serde",
 ]
 
 [[package]]
@@ -1470,6 +1472,7 @@ dependencies = [
  "croner",
  "crossbeam",
  "crossbeam-skiplist",
+ "dashmap 6.1.0",
  "deadpool-redis",
  "derive_more",
  "dotenv",
