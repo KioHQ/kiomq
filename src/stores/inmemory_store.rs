@@ -235,7 +235,7 @@ where
             .iter()
             .map(|entry| {
                 let worker_id = *entry.key();
-                let value = entry.value().value.lock();
+                let value = &entry.value().value;
                 let ttls = value.ttl_ms;
                 let metrics = WorkerMetrics::new(
                     value.worker_id,
@@ -243,7 +243,6 @@ where
                     value.tasks.clone(),
                     ttls,
                 );
-                drop(value);
                 (worker_id, metrics)
             })
             .collect();
@@ -290,7 +289,7 @@ where
         for id in ids {
             let key = CollectionSuffix::Job(*id).tag();
             if let Some(found) = self.jobs.inner.get(&key) {
-                results.push_back(found.value().value.lock().clone());
+                results.push_back(found.value().value.clone());
             }
         }
         Ok(results)
@@ -524,7 +523,7 @@ where
         self.jobs
             .inner
             .get(&job_key)
-            .map(|pair| pair.value().value.lock().clone())
+            .map(|pair| pair.value().value.clone())
     }
 
     async fn get_token(&self, id: u64) -> Option<JobToken> {
@@ -532,7 +531,7 @@ where
         self.locks
             .inner
             .get(&lock_key)
-            .and_then(|entry| match *entry.value().value.lock() {
+            .and_then(|entry| match entry.value().value {
                 Lock::Token(token) => Some(token),
                 Lock::StallCheck => None,
             })
@@ -543,7 +542,7 @@ where
         self.jobs
             .inner
             .get(&job_key)
-            .map(|entry| entry.value().value.lock().state)
+            .map(|entry| entry.value().value.state)
     }
 
     fn update_job_progress(&self, job: &mut Job<D, R, P>, value: P) -> KioResult<()> {
@@ -551,8 +550,8 @@ where
             let job_key = CollectionSuffix::Job(id).tag();
             let jobs = self.jobs.clone();
             let value_clone = value.clone();
-            if let Some(entry) = jobs.inner.get(&job_key) {
-                entry.value().value.lock().progress = Some(value_clone);
+            if let Some(mut entry) = jobs.inner.get_mut(&job_key) {
+                entry.value_mut().value.progress = Some(value_clone);
             }
             job.progress = Some(value);
         }
@@ -785,8 +784,8 @@ where
     }
     async fn set_fields(&self, job_id: u64, fields: Vec<JobField<R>>) -> KioResult<()> {
         let key = CollectionSuffix::Job(job_id);
-        if let Some(pair) = self.jobs.inner.get(&key.tag()) {
-            let job = &mut pair.value().value.lock();
+        if let Some(mut pair) = self.jobs.inner.get_mut(&key.tag()) {
+            let job = &mut pair.value_mut().value;
             for field in fields {
                 match field {
                     JobField::BackTrace(trace) => job.stack_trace.push(trace),
@@ -849,8 +848,8 @@ where
                             _ => 0,
                         }
                     };
-                    let next = self.jobs.inner.get(&key.tag()).map_or(0, |pair| {
-                        let job = &mut pair.value().value.lock();
+                    let next = self.jobs.inner.get_mut(&key.tag()).map_or(0, |mut pair| {
+                        let job = &mut pair.value_mut().value;
                         update_job(job)
                     });
                     return Ok(next);
@@ -874,7 +873,7 @@ where
                 if let Some(field) = hash_key {
                     let job_key = key.tag();
                     return self.jobs.inner.get(&job_key).and_then(|pair| {
-                        let job = &pair.value().value.lock();
+                        let job = &pair.value().value;
                         match field.to_lowercase().as_str() {
                             "stalled_counter" | "stalledcounter" => Some(job.stalled_counter),
                             "attempts_made" | "attemptsmade" => Some(job.attempts_made),

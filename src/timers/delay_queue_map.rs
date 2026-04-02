@@ -1,19 +1,19 @@
 use arc_swap::ArcSwapOption;
-use crossbeam_skiplist::SkipMap;
+use dashmap::DashMap;
 use derive_more::Debug;
 use futures_delay_queue::{delay_queue, DelayHandle, DelayQueue, Receiver};
 use futures_intrusive::buffer::GrowingHeapBuf;
+use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::time::Duration;
-use xutex::Mutex;
-
+// use xutex::Mutex;
 /// A value together with its optional expiry key in the delay queue.
 #[derive(Debug)]
 pub struct ValueKeyPair<V> {
     #[debug(skip)]
     /// The stored value, protected by a mutex for interior mutability.
-    pub value: Mutex<V>,
+    pub value: V,
     /// The delay-queue key associated with this entry's expiry, if any.
     pub key: ArcSwapOption<DelayHandle>,
 }
@@ -21,7 +21,7 @@ impl<V> ValueKeyPair<V> {
     /// Wraps `value` with no expiry key assigned yet.
     pub fn new(value: V) -> Self {
         Self {
-            value: Mutex::new(value),
+            value,
             key: ArcSwapOption::default(),
         }
     }
@@ -39,14 +39,14 @@ pub struct TimedMap<K: Ord + 'static, V> {
     /// The delay-queue receive channel used to process expired keys.
     reciever: Receiver<K>,
     /// The underlying concurrent skip-list storing all key-value pairs.
-    pub inner: SkipMap<K, ValueKeyPair<V>>,
+    pub inner: DashMap<K, ValueKeyPair<V>>,
     disable_expiration: AtomicBool,
 }
-impl<K: Ord + 'static + Send, V> Default for TimedMap<K, V> {
+impl<K: Ord + 'static + Send + Hash, V> Default for TimedMap<K, V> {
     fn default() -> Self {
         let (sender, reciever) = delay_queue();
         Self {
-            inner: SkipMap::default(),
+            inner: DashMap::default(),
             sender,
             reciever,
             disable_expiration: AtomicBool::default(),
@@ -68,7 +68,7 @@ impl<K: Ord, V> TimedMap<K, V> {
         );
     }
 }
-impl<K: Ord + Clone + Send + 'static + Sync, V: Send + 'static> TimedMap<K, V> {
+impl<K: Ord + Clone + Send + 'static + Sync + Hash, V: Send + 'static + Sync> TimedMap<K, V> {
     /// Creates an empty `TimedMap` with expiration enabled.
     #[must_use]
     pub fn new() -> Self {
@@ -126,6 +126,7 @@ impl<K: Ord + Clone + Send + 'static + Sync, V: Send + 'static> TimedMap<K, V> {
         let previous_handle = found.value().key.swap(None).and_then(Arc::into_inner)?;
         let next_handle = Arc::new(previous_handle.reset(duration).await.ok()?);
         found.value().key.store(Some(next_handle.clone()));
+        drop(found);
         Some(next_handle)
     }
     /// Returns `true` if automatic expiration is currently active.
