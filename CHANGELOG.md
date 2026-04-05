@@ -1,6 +1,114 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## v0.1.3 (2026-04-05)
+
+
+
+### Bug Fixes
+
+- fix typo in cargo.toml and fmt the file by @spencerjibz ([42499eb](https://github.com/KioHQ/kiomq/commit/42499eb326e9d92cd0b0a2f03f71c703124924e4)) _(cargo)_
+
+- add derive debug and display to fix rebase issues by @spencerjibz ([9f253ab](https://github.com/KioHQ/kiomq/commit/9f253abae927a6507ea17a8bafb44e713b88a007))
+
+- logic bug in end-to-end benchmarks by @spencerjibz ([#73](https://github.com/KioHQ/kiomq/pull/73))
+
+
+### Chores
+
+- add hdrhistogram for poll_duration_metrics collection by @spencerjibz ([9ec9193](https://github.com/KioHQ/kiomq/commit/9ec9193bcdb64feca8ab4d65733a10d6fa22c72f)) _(deps)_
+
+- implement deref & deref_mut  traits for the `HistogramWrapper` by @spencerjibz ([04b4484](https://github.com/KioHQ/kiomq/commit/04b4484e305a473ad7d2b393eebe4ff78611cdab)) _(WorkerMetrics)_
+
+- make poll_duration_history public in `TaskInfo` by @spencerjibz ([36c45bc](https://github.com/KioHQ/kiomq/commit/36c45bc935e4736d75131f5c05627cc376844c14)) _(WorkerMetrics)_
+
+- export `TaskInfo` publicly by @spencerjibz ([1cd7176](https://github.com/KioHQ/kiomq/commit/1cd7176dcffe0bf9c81f5fc307c0803385c7f468))
+
+- use async-mutex only for guarding Histogram per task by @spencerjibz ([828fbc3](https://github.com/KioHQ/kiomq/commit/828fbc3e55379bd0a16059d9321960a93b98cf32))
+
+- adhere to clippy::depantic by @spencerjibz ([#66](https://github.com/KioHQ/kiomq/pull/66)) _(clippy)_
+
+- update release name format in release GitHub Actions workflow by @spencerjibz ([4b455b4](https://github.com/KioHQ/kiomq/commit/4b455b42b796267c3582eede57919dbee3577e6a)) _(ci)_
+
+- remove buildjet cache usage from action-workflows by @spencerjibz ([54b9898](https://github.com/KioHQ/kiomq/commit/54b98985d7e089fab9c869c170424587041f8c0b)) _(actions)_
+
+- delay-queue-wip by @spencerjibz ([82e57bc](https://github.com/KioHQ/kiomq/commit/82e57bc85734aa36c5f668d5389121204a219527))
+
+- add futures-intrusive && futures-delay-queue by @spencerjibz ([576844b](https://github.com/KioHQ/kiomq/commit/576844b56e95801d1a8fa323f03625b7edb4c1ab)) _(deps)_
+
+- apply clippy lint recommendations by @spencerjibz ([b94c0a9](https://github.com/KioHQ/kiomq/commit/b94c0a9b7e5206efb4407443319085b9e2a7c9ea)) _(lints)_
+
+- reinstate job promotion timer and move delayed job pick up logic to the worker main_loop instead of timers by @spencerjibz ([2b67228](https://github.com/KioHQ/kiomq/commit/2b672287a8d702faf8b733b552293fce921169ad))
+
+- chore: log job state transitions in the queue(when tracing is enabled) & by @spencerjibz ([#67](https://github.com/KioHQ/kiomq/pull/67))
+
+- bump rustls-webpki from 0.103.4 to 0.103.10 by @dependabot[bot] ([#68](https://github.com/KioHQ/kiomq/pull/68)) _(deps)_
+
+- bump tar from 0.4.44 to 0.4.45 by @dependabot[bot] ([#72](https://github.com/KioHQ/kiomq/pull/72)) _(deps)_
+
+- bump slab from 0.4.10 to 0.4.12 by @dependabot[bot] ([#71](https://github.com/KioHQ/kiomq/pull/71)) _(deps)_
+
+- bump bytes from 1.10.1 to 1.11.1 by @dependabot[bot] ([#69](https://github.com/KioHQ/kiomq/pull/69)) _(deps)_
+
+- remove xutex as dependency; use tokio's mutex for async cases by @spencerjibz ([6940d76](https://github.com/KioHQ/kiomq/commit/6940d76b63a58574ab030c864f28027bcb7887a5)) _(dep)_
+
+
+### Documentation
+
+- add refactor as a type of change in pull request template by @spencerjibz ([b76b5a5](https://github.com/KioHQ/kiomq/commit/b76b5a57b19293467db78cbe37deeb1cc5353855))
+
+
+### Features
+
+- add a poll_duration histogram for get collect statistcs by @spencerjibz ([312b12a](https://github.com/KioHQ/kiomq/commit/312b12af594ee8db5410fd4d43e1bce0d0ba47b6)) _(WorkerMetrics)_
+
+- add redis-version checking and the field to the redis-store by @spencerjibz ([82406a7](https://github.com/KioHQ/kiomq/commit/82406a712f3e15f324164f79dcfd88c0b2ebd8a3)) _(RedisStore)_
+
+
+### Other
+
+- chore(deps) add dashmap as a new dependency by @spencerjibz ([ce97639](https://github.com/KioHQ/kiomq/commit/ce97639542dec6e94dc36bac0bf013a491e20db5))
+
+
+### Performance
+
+- use early returns when fetch jobs from empty collections by @spencerjibz ([0b2a563](https://github.com/KioHQ/kiomq/commit/0b2a56388b990a1bc67b5fa910b634e8e5727c95)) _(InMemoryStore)_
+
+- store worker_metrics in redis as a hash instead of individual values by @spencerjibz ([#70](https://github.com/KioHQ/kiomq/pull/70)) _(RedisStore)_
+
+
+### Refactoring
+
+- add the last_updated_time and ttl fields to worker_metrics by @spencerjibz ([935f680](https://github.com/KioHQ/kiomq/commit/935f68033fb3d2ffb3d088f6ce7c7b08730f3558)) _(WorkerMetrics)_
+
+- add a clean lockfree timer design based off channels by @spencerjibz ([20f9759](https://github.com/KioHQ/kiomq/commit/20f97597ce3a3a3c2a78e05574d6df671614de50)) _(DelayedQueue)_
+
+- require Sync trait for Data type and Store type (D&S) by @spencerjibz ([43d3e2d](https://github.com/KioHQ/kiomq/commit/43d3e2d149475ade23fa8eb90c0dc471d4724ff8))
+
+- move job promotion from this DelayQueue  to an independent tasks  with a dedicated track by @spencerjibz ([383b7c5](https://github.com/KioHQ/kiomq/commit/383b7c5e27fda57562a5af1c9f949c2733f1fb2c)) _(DelayTimer)_
+
+- use a channel based delayed-queue from futures-delayed-queue crate && remove usage of block_in_place in this module too by @spencerjibz ([7b76f81](https://github.com/KioHQ/kiomq/commit/7b76f819302aa0cae29f998dae7c259229c5dad7)) _(TimedMap)_
+
+- use the same channel queue instead of tokio::util::DelayQueue by @spencerjibz ([7e088c3](https://github.com/KioHQ/kiomq/commit/7e088c33985144e55a0d48f0c2ddb75ba431fb1b)) _(DelayQueueTimer)_
+
+- simplify delay_queue_timer and include job promotion in it too by @spencerjibz ([5c0f0e5](https://github.com/KioHQ/kiomq/commit/5c0f0e5a7b07a44255ee9c9c41c13d6ecbccfd8a))
+
+- use dashmap::HashMap in timedmap & delayed_queue-map by @spencerjibz ([0685cdf](https://github.com/KioHQ/kiomq/commit/0685cdfc705b2da6e8663c64a226672a3f13b822))
+
+- use dashmap::Hashmap instead crossbeam::skipmap to store runnings in the worker by @spencerjibz ([3f308a2](https://github.com/KioHQ/kiomq/commit/3f308a290137ae1b9462efdc631d80730b15675f))
+
+
+### Release
+
+- 0.1.2 by @spencerjibz ([#65](https://github.com/KioHQ/kiomq/pull/65)) _(release)_
+
+
+
+### Contributors
+
+- @dependabot[bot]
+
+- @spencerjibz
 ## v0.1.2 (2026-03-14)
 
 
