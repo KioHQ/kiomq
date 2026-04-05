@@ -22,16 +22,19 @@ use crate::events::EventParameters;
 use arc_swap::ArcSwapOption;
 //use crossbeam_skiplist::SkipMap;
 use hdrhistogram::Histogram;
-use tokio::{sync::Notify, task::JoinHandle};
+use tokio::{
+    sync::{Mutex, Notify},
+    task::JoinHandle,
+};
 use tokio_metrics::TaskMonitor;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
-use xutex::AsyncMutex;
+
 type JobMeta<D, R, P> = (
     Job<D, R, P>,
     JobToken,
     TaskHandle,
     TaskMonitor,
-    AsyncMutex<Histogram<u64>>,
+    Mutex<Histogram<u64>>,
 );
 use dashmap::DashMap;
 pub type JobMap<D, R, P> = Arc<DashMap<u64, JobMeta<D, R, P>>>;

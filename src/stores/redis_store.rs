@@ -27,7 +27,7 @@ use uuid::Uuid;
 /// a counter for adding bulk jobs,
 static START: AtomicU64 = AtomicU64::new(0);
 static PC_COUNTER: AtomicU64 = AtomicU64::new(0);
-use xutex::AsyncMutex;
+use tokio::sync::Mutex;
 /// A [`Store`] implementation backed by Redis.
 ///
 /// `RedisStore` uses a deadpool connection pool for async operations and a
@@ -60,9 +60,9 @@ pub struct RedisStore {
     consumer_name: String,
     stream_key: String,
     #[debug(skip)]
-    pubsub_source: Arc<AsyncMutex<PubSubStream>>,
+    pubsub_source: Arc<Mutex<PubSubStream>>,
     #[debug(skip)]
-    pubsub_sink: Arc<AsyncMutex<PubSubSink>>,
+    pubsub_sink: Arc<Mutex<PubSubSink>>,
     subscribed: Arc<AtomicBool>,
     #[debug(skip)]
     pub(crate) conn_pool: Arc<Pool>,
@@ -101,8 +101,8 @@ impl RedisStore {
         let mut connection = conn_pool.get().await?;
         let stream_key = CollectionSuffix::Events.to_collection_name(&prefix, &name);
         let (sink, source) = redis_client.get_async_pubsub().await?.split();
-        let pubsub_sink = Arc::new(AsyncMutex::new(sink));
-        let pubsub_source = Arc::new(AsyncMutex::new(source));
+        let pubsub_sink = Arc::new(Mutex::new(sink));
+        let pubsub_source = Arc::new(Mutex::new(source));
         connection
             .xgroup_create_mkstream::<_, _, _, ()>(&stream_key, &consumer_group, "$")
             .await?;
