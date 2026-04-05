@@ -29,7 +29,7 @@ use crate::worker::{HISTOGRAM_MAX_NS, HISTOGRAM_SIGFIG};
 use hdrhistogram::Histogram;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::Arc;
-use xutex::AsyncMutex;
+use tokio::sync::Mutex;
 
 #[cfg(feature = "redis-store")]
 /// Reads the Redis password from the `REDIS_PASSWORD` environment variable.
@@ -471,7 +471,7 @@ where
                             worker_id,
                             active_job_count.clone(),
                         );
-                        let poll_histogram = AsyncMutex::new(
+                        let poll_histogram = Mutex::new(
                             Histogram::new_with_max(HISTOGRAM_MAX_NS, HISTOGRAM_SIGFIG).unwrap(),
                         );
 

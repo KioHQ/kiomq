@@ -1,5 +1,4 @@
 use super::*;
-use crate::events::StreamEventId;
 use crate::timers::TimedMap;
 use crate::utils::{
     calculate_next_priority_score, create_listener_handle, pause_or_resume_workers,
@@ -28,8 +27,8 @@ use std::future::IntoFuture;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
-use xutex::Mutex;
 #[track_caller]
 pub fn ivec_to_number<T: AsRef<[u8]>>(mut src: T) -> i64 {
     let array: [u8; 8] = src.as_ref().try_into().ok().unwrap_or_default();
@@ -210,7 +209,7 @@ impl<D, R, P> RocksDbStore<D, R, P> {
         let mut opts = WriteOptions::default();
         opts.set_sync(false);
         opts.disable_wal(true);
-        let job_batch = std::mem::take(&mut *self.job_batch.lock());
+        let job_batch = std::mem::take(&mut *self.job_batch.lock().unwrap());
         self.db.write_opt(job_batch, &opts)?;
         Ok(())
     }
@@ -326,7 +325,7 @@ where
         }
         job.id = Some(id);
         let jobs_cf = self.db.cf_handle(&self.jobs).ok_or(JobError::JobNotFound)?;
-        self.job_batch.lock().put_cf(
+        self.job_batch.lock().unwrap().put_cf(
             &jobs_cf,
             CollectionSuffix::Job(id).to_bytes(),
             simd_json::to_vec(job)?,
