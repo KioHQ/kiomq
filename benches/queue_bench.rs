@@ -60,7 +60,7 @@ fn bench_end_to_end_throughput(c: &mut Criterion) {
                     queue.bulk_add_only(jobs).await.unwrap();
 
                     let start = Instant::now();
-                    while !completed.load(Ordering::Acquire) < n {
+                    while completed.load(Ordering::Acquire) < n {
                         tokio::time::sleep(Duration::from_millis(1)).await;
                     }
                     let elapsed = start.elapsed();
@@ -108,7 +108,7 @@ fn bench_single_job_latency(c: &mut Criterion) {
                     .await
                     .unwrap();
 
-                while !counter.load(Ordering::Acquire) < 1 {
+                while counter.load(Ordering::Acquire) < 1 {
                     tokio::time::sleep(Duration::from_millis(1)).await;
                 }
 
