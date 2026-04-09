@@ -10,6 +10,8 @@ use crate::{
     QueueEventMode, QueueOpts, Trace, WorkerOpts,
 };
 use chrono::Utc;
+#[cfg(not(feature = "tracing"))]
+use crossbeam::atomic::AtomicCell;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
 use serde::{de::DeserializeOwned, Serialize};
@@ -375,7 +377,7 @@ type MainLoopParams<D, R, P, S> = (
     Arc<AtomicUsize>,
     WorkerCallback<D, R, P, S>,
     Arc<Queue<D, R, P, S>>,
-    Arc<atomig::Atomic<WorkerState>>,
+    Arc<AtomicCell<WorkerState>>,
     Arc<Notify>,
     DelayQueueTimer<D, R, P, S>,
     Arc<AtomicBool>,
@@ -530,12 +532,7 @@ where
         // wait for all running jobs to finish
         processing.wait().await;
         timers.close().await;
-        let _ = worker_state.compare_exchange(
-            WorkerState::Active,
-            WorkerState::Closed,
-            Ordering::AcqRel,
-            Ordering::SeqCst,
-        );
+        let _ = worker_state.compare_exchange(WorkerState::Active, WorkerState::Closed);
     }
     #[cfg(feature = "tracing")]
     info!("Worker Closed");

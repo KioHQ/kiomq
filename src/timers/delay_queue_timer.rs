@@ -2,8 +2,8 @@ use crate::worker::{ProcessingQueue, WorkerState, MIN_DELAY_MS_LIMIT as EVICTION
 use crate::worker::{TaskInfo, WorkerMetrics, HISTOGRAM_MAX_NS};
 use crate::{KioError, KioResult};
 use arc_swap::ArcSwapOption;
-use atomig::Atomic;
 use chrono::Utc;
+use crossbeam::atomic::AtomicCell;
 use derive_more::{Debug, Display};
 use futures::FutureExt;
 use futures_delay_queue::{delay_queue, DelayHandle, DelayQueue, Receiver};
@@ -112,7 +112,7 @@ pub struct DelayQueueTimer<D, R, P, S> {
     opts: WorkerOpts,
     worker_id: Uuid,
     token: Arc<CancellationToken>,
-    worker_state: Arc<Atomic<WorkerState>>,
+    worker_state: Arc<AtomicCell<WorkerState>>,
     #[debug(skip)]
     notifier: Arc<Notify>,
     pause_schedular: Arc<AtomicBool>,
@@ -133,7 +133,7 @@ impl<
         opts: WorkerOpts,
         queue: Arc<Queue<D, R, P, S>>,
         cancellation_token: Arc<CancellationToken>,
-        worker_state: Arc<Atomic<WorkerState>>,
+        worker_state: Arc<AtomicCell<WorkerState>>,
         notifier: Arc<Notify>,
         pause_schedular: Arc<AtomicBool>,
         processing: ProcessingQueue,
@@ -234,7 +234,7 @@ impl<
                 if pause_schedular.load(Ordering::Acquire) && processing.is_empty() {
                     #[cfg(feature = "tracing")]
                     debug!("pausing ... ");
-                    worker_state.store(WorkerState::Idle, Ordering::Release);
+                    worker_state.store(WorkerState::Idle);
                     // wait for all running jobs to completed
                     if token
                         .run_until_cancelled(notifier.notified())
@@ -246,7 +246,7 @@ impl<
                     }
                     #[cfg(feature = "tracing")]
                     debug!("resumed");
-                    worker_state.store(WorkerState::Active, Ordering::Release);
+                    worker_state.store(WorkerState::Active);
                 }
                 // yield for allow other tasks to continue
                 tokio::task::yield_now().await;

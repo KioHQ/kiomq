@@ -51,7 +51,6 @@ struct Meta {
     processing: u64,
     paused: bool,
 }
-use atomig::{Atom, Atomic};
 pub type RocksDb = OptimisticTransactionDB<MultiThreaded>;
 #[derive(Debug, Clone)]
 pub struct RocksDbStore<D, R, P> {
@@ -135,7 +134,6 @@ impl<D, R, P> RocksDbStore<D, R, P> {
         self.db.create_cf(&self.main_tree, &opts)?;
         self.db.create_cf(&self.jobs, &opts)?;
         let main_tree = self.db.cf_handle(&self.main_tree).unwrap();
-        let jobs = self.db.cf_handle(&self.jobs).unwrap();
         setup_type::<VecDeque<u64>>(CollectionSuffix::Wait, &self.db, &main_tree)?;
         setup_type::<VecDeque<u64>>(CollectionSuffix::Active, &self.db, &main_tree)?;
         setup_type::<BTreeSet<u64>>(CollectionSuffix::Stalled, &self.db, &main_tree)?;

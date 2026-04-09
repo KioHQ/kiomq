@@ -10,6 +10,7 @@ use crate::{
     RemoveOnCompletionOrFailure, Trace,
 };
 use chrono::{TimeDelta, Utc};
+use crossbeam::atomic::AtomicCell;
 use futures::future::Future;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -27,7 +28,6 @@ mod options;
 use crate::stores::Store;
 
 use crate::{EventEmitter, EventParameters};
-use atomig::Atomic;
 use derive_more::Debug;
 pub use options::{CollectionSuffix, QueueEventMode, QueueMetrics, QueueOpts, RetryOptions};
 pub use options::{Counter, JobField, ProcessedResult};
@@ -69,7 +69,7 @@ pub struct Queue<D, R, P, S> {
     pub current_metrics: Arc<QueueMetrics>,
     /// Queue-level configuration supplied at construction time.
     pub opts: QueueOpts,
-    pub(crate) event_mode: Arc<Atomic<QueueEventMode>>,
+    pub(crate) event_mode: Arc<AtomicCell<QueueEventMode>>,
     emitter: EventEmitter<R, P>,
     pub(crate) store: Arc<S>,
     #[debug(skip)]
@@ -126,9 +126,9 @@ impl<
         let events_mode_exits: bool = store.metadata_field_exists("event_mode").await?;
         let event_mode = metrics.event_mode.clone();
         if let Some(passed_mode) = opts.event_mode {
-            if !events_mode_exits && passed_mode != event_mode.load(Ordering::Acquire) {
+            if !events_mode_exits && passed_mode != event_mode.load() {
                 store.set_event_mode(passed_mode).await?;
-                event_mode.swap(passed_mode, Ordering::AcqRel);
+                event_mode.swap(passed_mode);
             }
         }
         let _queue_name = store.queue_name();
@@ -157,7 +157,7 @@ impl<
                 worker_notifier.clone(),
                 current_metrics.clone(),
                 pause_workers.clone(),
-                event_mode.load(Ordering::Acquire),
+                event_mode.load(),
             )
             .await?;
         let stream_listener = Arc::new(task);
@@ -196,7 +196,7 @@ impl<
         &self,
         iter: I,
     ) -> KioResult<Vec<Job<D, R, P>>> {
-        let event_mode = self.event_mode.load(Ordering::Acquire);
+        let event_mode = self.event_mode.load();
         let is_paused = self.is_paused();
         self.store
             .add_bulk(Box::new(iter), self.opts.clone(), event_mode, is_paused)
@@ -233,7 +233,7 @@ impl<
         &self,
         iter: I,
     ) -> KioResult<()> {
-        let event_mode = self.event_mode.load(Ordering::Acquire);
+        let event_mode = self.event_mode.load();
         let is_paused = self.is_paused();
         self.store
             .add_bulk_only(Box::new(iter), self.opts.clone(), event_mode, is_paused)
@@ -280,7 +280,7 @@ impl<
         opts: Option<JobOptions>,
     ) -> Result<Job<D, R, P>, KioError> {
         let opts = opts.unwrap_or_default();
-        let event_mode = self.event_mode.load(Ordering::Acquire);
+        let event_mode = self.event_mode.load();
         let is_paused = self.is_paused();
         let queue_opts = self.opts.clone();
         let iter = std::iter::once((name.to_string(), Some(opts), data));
@@ -341,7 +341,7 @@ impl<
         ts: Option<i64>,
         backtrace: Option<Trace>,
     ) -> KioResult<()> {
-        let event_mode = self.event_mode.load(Ordering::Acquire);
+        let event_mode = self.event_mode.load();
         let is_paused = self.is_paused();
         let job_key = CollectionSuffix::Job(job_id);
         let move_to_failed_or_completed = matches!(to, JobState::Failed | JobState::Completed);
@@ -423,7 +423,7 @@ impl<
         // if its paused
         let metrics = self.get_metrics().await?;
         let pause = !metrics.is_paused.load(Ordering::Acquire);
-        let event_mode = self.event_mode.load(Ordering::Acquire);
+        let event_mode = self.event_mode.load();
         self.store.pause(pause, event_mode).await?;
         let state = if pause {
             JobState::Paused
@@ -782,7 +782,7 @@ impl<
         self.delete_all_jobs().await?;
         // delete all other grouped collections;
         self.store.clear_collections().await?;
-        let event_mode = self.event_mode.load(Ordering::Acquire);
+        let event_mode = self.event_mode.load();
         let event = JobState::Obliterated;
         let last_id = self.current_metrics.last_id.load(Ordering::Acquire);
         let item: QueueStreamEvent<R, P> = QueueStreamEvent {
@@ -1125,7 +1125,7 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
         self.store
             .incr(CollectionSuffix::Meta, delta, Some("processing"))
             .await?;
-        let event_mode = self.event_mode.load(Ordering::Acquire);
+        let event_mode = self.event_mode.load();
         // this event, doesn't have the return and progress fields
         let event = QueueStreamEvent::<R, P> {
             job_id,

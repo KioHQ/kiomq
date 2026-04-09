@@ -7,7 +7,7 @@ use crate::{
     error::QueueError, BackOffJobOptions, FailedDetails, JobMetrics, JobState, JobToken,
     RemoveOnCompletionOrFailure, Repeat, Trace,
 };
-use atomig::{Atom, Atomic};
+use crossbeam::atomic::AtomicCell;
 #[cfg(feature = "redis-store")]
 use redis::{FromRedisValue, RedisResult, ToRedisArgs, Value};
 use serde::{Deserialize, Serialize};
@@ -235,7 +235,7 @@ impl ToRedisArgs for CollectionSuffix {
 /// Controls how events are published and consumed within a queue.
 ///
 /// Set this via [`QueueOpts::event_mode`].
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, Atom, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, Eq, PartialEq)]
 #[repr(u8)]
 pub enum QueueEventMode {
     /// Broadcast-only delivery. Listeners that connect after an event is fired
@@ -390,7 +390,7 @@ pub struct QueueMetrics {
     /// Whether the queue is currently in the paused state.
     pub is_paused: Arc<AtomicBool>,
     /// The active event-delivery mode for this queue.
-    pub event_mode: Arc<Atomic<QueueEventMode>>,
+    pub event_mode: Arc<AtomicCell<QueueEventMode>>,
 }
 impl QueueMetrics {
     /// Returns `true` when every enqueued job has completed.
@@ -438,7 +438,7 @@ impl QueueMetrics {
             paused: create_counter(paused),
             failed: create_counter(failed),
             is_paused: Arc::new(is_paused.into()),
-            event_mode: Arc::new(Atomic::new(event_mode)),
+            event_mode: Arc::new(AtomicCell::new(event_mode)),
         }
     }
     /// Atomically replaces all counters with the values from `other`.
@@ -463,8 +463,7 @@ impl QueueMetrics {
             .swap(other.processing.load(Ordering::Acquire), Ordering::AcqRel);
         self.prioritized
             .swap(other.prioritized.load(Ordering::Acquire), Ordering::AcqRel);
-        self.event_mode
-            .swap(other.event_mode.load(Ordering::Acquire), Ordering::AcqRel);
+        self.event_mode.swap(other.event_mode.load());
     }
     /// Returns `true` if there are delayed jobs ready or waiting to run.
     #[must_use]
