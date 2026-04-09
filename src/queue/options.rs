@@ -1,13 +1,9 @@
-use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc,
-};
+use std::sync::Arc;
 
 use crate::{
     error::QueueError, BackOffJobOptions, FailedDetails, JobMetrics, JobState, JobToken,
     RemoveOnCompletionOrFailure, Repeat, Trace,
 };
-use crossbeam::atomic::AtomicCell;
 #[cfg(feature = "redis-store")]
 use redis::{FromRedisValue, RedisResult, ToRedisArgs, Value};
 use serde::{Deserialize, Serialize};
@@ -350,9 +346,10 @@ impl Default for QueueOpts {
         }
     }
 }
+use crossbeam::atomic::AtomicCell;
 
 /// A shared atomic counter used to track job IDs and other queue counters.
-pub type Counter = Arc<AtomicU64>;
+pub type Counter = Arc<AtomicCell<u64>>;
 fn create_counter(count: u64) -> Counter {
     Counter::new(count.into())
 }
@@ -388,7 +385,7 @@ pub struct QueueMetrics {
     /// Number of jobs waiting to be picked up by a worker.
     pub waiting: Counter,
     /// Whether the queue is currently in the paused state.
-    pub is_paused: Arc<AtomicBool>,
+    pub is_paused: Arc<AtomicCell<bool>>,
     /// The active event-delivery mode for this queue.
     pub event_mode: Arc<AtomicCell<QueueEventMode>>,
 }
@@ -403,11 +400,8 @@ impl QueueMetrics {
     ///   prioritized jobs and no in-flight workers).
     #[must_use]
     pub fn all_jobs_completed(&self) -> bool {
-        let last_id = self.last_id.load(Ordering::Acquire);
-        last_id > 0
-            && self.completed.load(Ordering::Acquire) == last_id
-            && self.active.load(Ordering::Acquire) == 0
-            && self.is_idle()
+        let last_id = self.last_id.load();
+        last_id > 0 && self.completed.load() == last_id && self.active.load() == 0 && self.is_idle()
     }
     #[allow(clippy::too_many_arguments)]
     /// Constructs a `QueueMetrics` from raw counter values read from the store.
@@ -443,55 +437,45 @@ impl QueueMetrics {
     }
     /// Atomically replaces all counters with the values from `other`.
     pub fn update(&self, other: &Self) {
-        self.paused
-            .swap(other.paused.load(Ordering::Acquire), Ordering::AcqRel);
-        self.completed
-            .swap(other.completed.load(Ordering::Acquire), Ordering::AcqRel);
-        self.stalled
-            .swap(other.stalled.load(Ordering::Acquire), Ordering::AcqRel);
-        self.active
-            .swap(other.active.load(Ordering::Acquire), Ordering::AcqRel);
-        self.last_id
-            .swap(other.last_id.load(Ordering::Acquire), Ordering::AcqRel);
-        self.delayed
-            .swap(other.delayed.load(Ordering::Acquire), Ordering::AcqRel);
-        self.failed
-            .swap(other.failed.load(Ordering::Acquire), Ordering::AcqRel);
-        self.waiting
-            .swap(other.waiting.load(Ordering::Acquire), Ordering::AcqRel);
-        self.processing
-            .swap(other.processing.load(Ordering::Acquire), Ordering::AcqRel);
-        self.prioritized
-            .swap(other.prioritized.load(Ordering::Acquire), Ordering::AcqRel);
+        self.paused.swap(other.paused.load());
+        self.completed.swap(other.completed.load());
+        self.stalled.swap(other.stalled.load());
+        self.active.swap(other.active.load());
+        self.last_id.swap(other.last_id.load());
+        self.delayed.swap(other.delayed.load());
+        self.failed.swap(other.failed.load());
+        self.waiting.swap(other.waiting.load());
+        self.processing.swap(other.processing.load());
+        self.prioritized.swap(other.prioritized.load());
         self.event_mode.swap(other.event_mode.load());
     }
     /// Returns `true` if there are delayed jobs ready or waiting to run.
     #[must_use]
     pub fn has_delayed(&self) -> bool {
-        self.delayed.load(Ordering::Acquire) > 0
+        self.delayed.load() > 0
     }
     /// Returns `true` if there are jobs waiting to be picked up by a worker.
     #[must_use]
     pub fn queue_has_work(&self) -> bool {
-        self.waiting.load(Ordering::Acquire) > 0
-            || self.delayed.load(Ordering::Acquire) > 0
-            || self.stalled.load(Ordering::Acquire) > 0
-            || self.prioritized.load(Ordering::Acquire) > 0
+        self.waiting.load() > 0
+            || self.delayed.load() > 0
+            || self.stalled.load() > 0
+            || self.prioritized.load() > 0
     }
     /// Returns `true` if the queue is currently in the paused state.
     #[must_use]
     pub fn queue_is_paused(&self) -> bool {
-        self.is_paused.load(Ordering::Acquire)
+        self.is_paused.load()
     }
     /// Returns `true` when no workers are currently processing a job.
     #[must_use]
     pub fn workers_idle(&self) -> bool {
-        self.processing.load(Ordering::Acquire) == 0
+        self.processing.load() == 0
     }
     /// Returns `true` if at least one job is in the active state.
     #[must_use]
     pub fn has_active_jobs(&self) -> bool {
-        self.active.load(Ordering::Acquire) > 0
+        self.active.load() > 0
     }
     /// Returns `true` when the queue is in a fully quiescent state:
     /// no work waiting, no active jobs, and no workers are processing.
@@ -502,7 +486,7 @@ impl QueueMetrics {
         !self.queue_has_work()
             && !self.has_active_jobs()
             && self.workers_idle()
-            && self.last_id.load(Ordering::Acquire) > 0
+            && self.last_id.load() > 0
     }
     /// Resets all counters to zero (equivalent to a freshly created queue).
     pub fn clear(&self) {

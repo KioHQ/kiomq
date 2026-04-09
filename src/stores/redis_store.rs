@@ -8,6 +8,7 @@ use crate::utils::{
     update_job_opts,
 };
 use chrono::Utc;
+use crossbeam::atomic::AtomicCell;
 use deadpool_redis::{Config, Pool, Runtime};
 use derive_more::Debug;
 use futures::StreamExt;
@@ -359,7 +360,7 @@ where
         emitter: EventEmitter<R, P>,
         notifier: Arc<Notify>,
         metrics: Arc<QueueMetrics>,
-        pause_workers: Arc<AtomicBool>,
+        pause_workers: Arc<AtomicCell<bool>>,
         event_mode: QueueEventMode,
     ) -> KioResult<JoinHandle<KioResult<()>>> {
         create_listener_handle::<D, R, P, Self>(
@@ -834,8 +835,9 @@ where
 ///
 /// # Examples
 ///
-/// ```rust
-/// let raw = get_redis_info().await?;
+/// ```rust,ignore
+/// use kiomq::{RedisVersion};
+/// let raw = get_redis_info();
 /// let version = RedisVersion::parse(&raw).expect("Failed to parse Redis version");
 ///
 /// if version >= (RedisVersion { major: 7, minor: 2, patch: 0 }) {
@@ -870,13 +872,15 @@ impl RedisVersion {
     /// # Examples
     ///
     /// ```rust
+    /// use kiomq::{RedisVersion};
     /// let raw = "redis_version:7.2.4\r\nos:Linux\r\n";
     /// let version = RedisVersion::parse(raw).unwrap();
     /// assert_eq!(version.major, 7);
     /// assert_eq!(version.minor, 2);
     /// assert_eq!(version.patch, 4);
     /// ```
-    fn parse(raw: &str) -> Option<Self> {
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
         let version_str = raw
             .lines()
             .find(|line| line.starts_with("redis_version:"))?
@@ -904,13 +908,15 @@ impl RedisVersion {
     /// # Examples
     ///
     /// ```rust
+    /// use kiomq::{RedisVersion};
     /// let version = RedisVersion { major: 7, minor: 2, patch: 4 };
     ///
     /// assert_eq!(version.is_at_least("7.2"), Some(true));
     /// assert_eq!(version.is_at_least("7.2.4"), Some(true));
     /// assert_eq!(version.is_at_least("8.0"), Some(false));
     /// ```
-    fn is_at_least(&self, version: &str) -> Option<bool> {
+    #[must_use]
+    pub fn is_at_least(&self, version: &str) -> Option<bool> {
         let mut parts = version.splitn(3, '.');
         let other = Self {
             major: parts.next()?.parse().ok()?,

@@ -7,11 +7,7 @@ use crate::utils::main_loop;
 use derive_more::Debug;
 use futures::future::{Future, FutureExt};
 use serde::{de::DeserializeOwned, Serialize};
-use std::sync::atomic::AtomicBool;
-use std::sync::{
-    atomic::{AtomicU64, AtomicUsize},
-    Arc,
-};
+use std::sync::Arc;
 use uuid::Uuid;
 mod metrics;
 mod worker_opts;
@@ -19,6 +15,7 @@ pub use metrics::*;
 
 use crate::error::WorkerError;
 use crate::events::EventParameters;
+use crate::Counter;
 use arc_swap::ArcSwapOption;
 use hdrhistogram::Histogram;
 use tokio::{
@@ -123,10 +120,10 @@ pub struct Worker<D, R, P, S> {
     /// Current lifecycle state of the worker.
     pub state: Arc<AtomicCell<WorkerState>>,
     processing: ProcessingQueue,
-    timer_pauser: Arc<AtomicBool>,
+    timer_pauser: Arc<AtomicCell<bool>>,
     timers: DelayQueueTimer<D, R, P, S>,
-    block_until: Arc<AtomicU64>,
-    active_job_count: Arc<AtomicUsize>,
+    block_until: Counter,
+    active_job_count: Arc<AtomicCell<usize>>,
     continue_notifier: Arc<Notify>,
     main_task: SharedTaskHandle,
 }
@@ -271,7 +268,7 @@ impl<
         let notifier = continue_notifier.clone();
         let state: Arc<AtomicCell<WorkerState>> = Arc::default();
         let worker_state = state.clone();
-        let timer_pauser: Arc<AtomicBool> = Arc::default();
+        let timer_pauser: Arc<AtomicCell<bool>> = Arc::default();
         let processing = TaskTracker::new();
         let timers = DelayQueueTimer::new(
             jobs,
@@ -451,15 +448,13 @@ impl<
         #[cfg(feature = "tracing")]
         debug!(
             "cancel the worker's engine_loop, current_state: {:#?}",
-            self.state.load(std::sync::atomic::Ordering::Acquire)
+            self.state.load()
         );
         self.processing.close();
 
         self.queue.resume_workers();
         self.queue.worker_notifier.notify_waiters();
-        self.queue
-            .pause_workers
-            .store(false, std::sync::atomic::Ordering::Release);
+        self.queue.pause_workers.store(false);
         self.cancellation_token.cancel();
         let mut main_task = self.main_task.load_full();
         if let Some(handle) = main_task.take() {

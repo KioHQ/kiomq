@@ -79,9 +79,9 @@ macro_rules! worker_store_suite {
                 assert!(!worker.is_running());
 
                 let metrics = queue.get_metrics().await?;
-                assert_eq!(metrics.waiting.load(std::sync::atomic::Ordering::Acquire), 0);
+                assert_eq!(metrics.waiting.load(), 0);
                 assert_eq!(
-                    metrics.completed.load(std::sync::atomic::Ordering::Acquire),
+                    metrics.completed.load(),
                     jobs.len() as u64
                 );
 
@@ -165,7 +165,7 @@ macro_rules! worker_store_suite {
                 assert_eq!(completed.len(), count as usize);
 
                 let metrics = queue.current_metrics.as_ref();
-                assert_eq!(metrics.delayed.load(std::sync::atomic::Ordering::Acquire), 0);
+                assert_eq!(metrics.delayed.load(), 0);
 
                 while let Some(id) = completed.pop() {
                     if let Some(job) = queue.get_job(id).await {
@@ -228,7 +228,7 @@ macro_rules! worker_store_suite {
                 assert!(worker.is_running());
 
                 let metrics = queue.get_metrics().await?;
-                assert_eq!(metrics.waiting.load(std::sync::atomic::Ordering::Acquire), 0);
+                assert_eq!(metrics.waiting.load(), 0);
 
                 while !queue.current_metrics.all_jobs_completed() {}
                 queue.obliterate().await?;
@@ -278,7 +278,7 @@ macro_rules! worker_store_suite {
                 assert_eq!(moved_to_active.len(), count as usize);
 
                 let metrics = queue.current_metrics.as_ref();
-                assert_eq!(metrics.waiting.load(std::sync::atomic::Ordering::Acquire), 0);
+                assert_eq!(metrics.waiting.load(), 0);
 
                 while !queue.current_metrics.all_jobs_completed() {}
 

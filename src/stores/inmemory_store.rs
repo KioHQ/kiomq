@@ -1,5 +1,5 @@
 use super::{
-    Arc, ArcSwapOption, AtomicBool, BTreeMap, CollectionSuffix, EventEmitter, Job, JobField,
+    Arc, ArcSwapOption, BTreeMap, CollectionSuffix, EventEmitter, Job, JobField,
     JobOptions, JobState, JobToken, JoinHandle, KioResult, Lock, Notify, QueueEventMode,
     QueueMetrics, QueueOpts, QueueStreamEvent, SharedEmitter, Store, WorkerMetrics,
 };
@@ -11,6 +11,7 @@ use crate::worker::MIN_DELAY_MS_LIMIT;
 use crate::ProcessedResult;
 use crate::{Counter, Dt, QueueError};
 use chrono::Utc;
+use crossbeam::atomic::AtomicCell;
 use crossbeam_skiplist::{SkipMap, SkipSet};
 use derive_more::Debug;
 use serde::{de::DeserializeOwned, Serialize};
@@ -18,7 +19,6 @@ use std::collections::VecDeque;
 use std::time::Duration;
 use uuid::Uuid;
 type StoredMap = SkipMap<u64, u64>;
-use std::sync::atomic::Ordering;
 type TimedJobMap<D, R, P> = TimedMap<u64, Job<D, R, P>>;
 type ListQueue = SkipMap<i64, u64>;
 /// An in-memory [`Store`] implementation.
@@ -51,7 +51,7 @@ pub struct InMemoryStore<D, R, P> {
     /// The key prefix used to namespace all collections.
     pub prefix: String,
     processing: Counter,
-    is_paused: Arc<AtomicBool>,
+    is_paused: Arc<AtomicCell<bool>>,
     jobs: Arc<TimedJobMap<D, R, P>>,
     worker_metrics: Arc<TimedMap<Uuid, WorkerMetrics>>,
     #[debug(skip)]
@@ -60,8 +60,8 @@ pub struct InMemoryStore<D, R, P> {
     events: Arc<SharedEmitter<R, P>>,
     id_counter: Counter,
     stored_metrics: Arc<ArcSwapOption<QueueMetrics>>,
-    pause_workers: Arc<ArcSwapOption<AtomicBool>>,
-    is_inital: Arc<AtomicBool>,
+    pause_workers: Arc<ArcSwapOption<AtomicCell<bool>>>,
+    is_inital: Arc<AtomicCell<bool>>,
     notifier: Arc<ArcSwapOption<Notify>>,
     priority_counter: Counter,
     completed: Arc<StoredMap>,
@@ -346,7 +346,7 @@ where
         emitter: EventEmitter<R, P>,
         notifier: Arc<Notify>,
         metrics: Arc<QueueMetrics>,
-        pause_workers: Arc<AtomicBool>,
+        pause_workers: Arc<AtomicCell<bool>>,
         _event_mode: QueueEventMode,
     ) -> KioResult<JoinHandle<KioResult<()>>> {
         self.events.store(Some(emitter));
@@ -502,8 +502,8 @@ where
 
     async fn get_metrics(&self) -> KioResult<QueueMetrics> {
         let metrics = QueueMetrics::new(
-            self.id_counter.load(Ordering::Acquire),
-            self.processing.load(Ordering::Acquire),
+            self.id_counter.load(),
+            self.processing.load(),
             self.active.len() as u64,
             self.stalled.len() as u64,
             self.completed.len() as u64,
@@ -512,7 +512,7 @@ where
             self.paused.len() as u64,
             self.failed.len() as u64,
             self.waiting.len() as u64,
-            self.is_paused.load(Ordering::Acquire),
+            self.is_paused.load(),
             self.event_mode,
         );
         Ok(metrics)
@@ -817,11 +817,11 @@ where
     ) -> KioResult<u64> {
         let handle_counter = |counter: &Counter| {
             if delta.is_positive() {
-                counter.fetch_add(delta.unsigned_abs(), Ordering::AcqRel);
-                return counter.load(Ordering::Acquire);
+                counter.fetch_add(delta.unsigned_abs());
+                return counter.load();
             }
-            counter.fetch_sub(delta.unsigned_abs(), Ordering::AcqRel);
-            counter.load(Ordering::Acquire)
+            counter.fetch_sub(delta.unsigned_abs());
+            counter.load()
         };
         let next = match key {
             CollectionSuffix::Id => handle_counter(&self.id_counter),
@@ -864,11 +864,9 @@ where
 
     async fn get_counter(&self, key: CollectionSuffix, hash_key: Option<&str>) -> Option<u64> {
         match key {
-            CollectionSuffix::Id => Some(self.id_counter.load(Ordering::Acquire)),
-            CollectionSuffix::PriorityCounter => {
-                Some(self.priority_counter.load(Ordering::Acquire))
-            }
-            CollectionSuffix::Meta => Some(self.processing.load(Ordering::Acquire)),
+            CollectionSuffix::Id => Some(self.id_counter.load()),
+            CollectionSuffix::PriorityCounter => Some(self.priority_counter.load()),
+            CollectionSuffix::Meta => Some(self.processing.load()),
             CollectionSuffix::Job(_) => {
                 if let Some(field) = hash_key {
                     let job_key = key.tag();
@@ -1058,7 +1056,7 @@ where
                 self.waiting.insert(key, value);
             }
         }
-        self.is_paused.store(pause, Ordering::Release);
+        self.is_paused.store(pause);
 
         Ok(())
     }

@@ -9,8 +9,7 @@ use futures::FutureExt;
 use futures_delay_queue::{delay_queue, DelayHandle, DelayQueue, Receiver};
 use futures_intrusive::buffer::GrowingHeapBuf;
 use serde::{de::DeserializeOwned, Serialize};
-use std::sync::atomic::Ordering;
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -115,7 +114,7 @@ pub struct DelayQueueTimer<D, R, P, S> {
     worker_state: Arc<AtomicCell<WorkerState>>,
     #[debug(skip)]
     notifier: Arc<Notify>,
-    pause_schedular: Arc<AtomicBool>,
+    pause_schedular: Arc<AtomicCell<bool>>,
     processing: ProcessingQueue,
 }
 
@@ -135,7 +134,7 @@ impl<
         cancellation_token: Arc<CancellationToken>,
         worker_state: Arc<AtomicCell<WorkerState>>,
         notifier: Arc<Notify>,
-        pause_schedular: Arc<AtomicBool>,
+        pause_schedular: Arc<AtomicCell<bool>>,
         processing: ProcessingQueue,
     ) -> Self {
         #[cfg(feature = "tracing")]
@@ -231,7 +230,7 @@ impl<
                         Ok::<(), KioError>(())
                     }
                 )?;
-                if pause_schedular.load(Ordering::Acquire) && processing.is_empty() {
+                if pause_schedular.load() && processing.is_empty() {
                     #[cfg(feature = "tracing")]
                     debug!("pausing ... ");
                     worker_state.store(WorkerState::Idle);

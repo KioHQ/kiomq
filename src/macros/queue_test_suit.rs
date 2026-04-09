@@ -30,10 +30,10 @@ macro_rules! queue_store_suite {
 
                 let job = queue.add_job("test", 1, None).await?;
                 let metrics = queue.get_metrics().await?;
-                let waiting = metrics.waiting.load(std::sync::atomic::Ordering::Acquire);
+                let waiting = metrics.waiting.load();
                 assert_eq!(waiting, 1);
 
-                let expected_id = metrics.last_id.load(std::sync::atomic::Ordering::Acquire);
+                let expected_id = metrics.last_id.load();
                 let fetched_job = queue.get_job(expected_id).await;
 
                 if let Some(fetched) = fetched_job {
@@ -54,10 +54,7 @@ macro_rules! queue_store_suite {
                 let jobs = queue.bulk_add(job_iterator).await?;
 
                 let metrics = queue.get_metrics().await?;
-                assert_eq!(
-                    metrics.waiting.load(std::sync::atomic::Ordering::Acquire),
-                    jobs.len() as u64,
-                );
+                assert_eq!(metrics.waiting.load(), jobs.len() as u64,);
 
                 queue.obliterate().await?;
                 Ok(())
@@ -73,20 +70,11 @@ macro_rules! queue_store_suite {
                 let jobs = queue.bulk_add(job_iterator).await?;
 
                 let metrics = queue.get_metrics().await?;
-                assert_eq!(
-                    metrics.waiting.load(std::sync::atomic::Ordering::Acquire),
-                    jobs.len() as u64,
-                );
+                assert_eq!(metrics.waiting.load(), jobs.len() as u64,);
 
                 queue.obliterate().await?;
 
-                assert_eq!(
-                    queue
-                        .current_metrics
-                        .waiting
-                        .load(std::sync::atomic::Ordering::Acquire),
-                    0
-                );
+                assert_eq!(queue.current_metrics.waiting.load(), 0);
 
                 Ok(())
             }
@@ -105,8 +93,8 @@ macro_rules! queue_store_suite {
                 let job = queue.add_job("delay", 1, Some(job_opts)).await?;
 
                 let metrics = queue.get_metrics().await?;
-                let delayed = metrics.delayed.load(std::sync::atomic::Ordering::Acquire);
-                let expected_id = metrics.last_id.load(std::sync::atomic::Ordering::Acquire);
+                let delayed = metrics.delayed.load();
+                let expected_id = metrics.last_id.load();
                 let fetched_job = queue.get_job(expected_id).await;
 
                 assert!(metrics.has_delayed());
@@ -137,7 +125,7 @@ macro_rules! queue_store_suite {
                 let job = queue.add_job("Priorized", 1, Some(job_opts)).await?;
 
                 let metrics = queue.get_metrics().await?;
-                let expected_id = metrics.last_id.load(std::sync::atomic::Ordering::Acquire);
+                let expected_id = metrics.last_id.load();
                 let fetched_job = queue.get_job(expected_id).await;
 
                 if let Some(fetched) = fetched_job {
@@ -165,33 +153,19 @@ macro_rules! queue_store_suite {
 
                 let _job = queue.add_job(&name, 1, None).await?;
                 let metrics = queue.get_metrics().await?;
-                assert_eq!(
-                    metrics.waiting.load(std::sync::atomic::Ordering::Acquire),
-                    1
-                );
+                assert_eq!(metrics.waiting.load(), 1);
 
                 queue.pause_or_resume().await?;
                 let metrics = queue.get_metrics().await?;
-                assert!(metrics.is_paused.load(std::sync::atomic::Ordering::Acquire));
-                assert_eq!(
-                    metrics.waiting.load(std::sync::atomic::Ordering::Acquire),
-                    0
-                );
-                assert_eq!(
-                    metrics.paused.load(std::sync::atomic::Ordering::Acquire),
-                    1,
-                    "paused is empty"
-                );
+                assert!(metrics.is_paused.load());
+                assert_eq!(metrics.waiting.load(), 0);
+                assert_eq!(metrics.paused.load(), 1, "paused is empty");
 
                 queue.pause_or_resume().await?;
                 assert!(!queue.is_paused());
 
                 let metrics = queue.get_metrics().await?;
-                assert_eq!(
-                    metrics.waiting.load(std::sync::atomic::Ordering::Acquire),
-                    1,
-                    "waiting is empty"
-                );
+                assert_eq!(metrics.waiting.load(), 1, "waiting is empty");
 
                 queue.obliterate().await?;
                 Ok(())

@@ -5,12 +5,12 @@ use crate::timers::{DelayQueueTimer, TimerSender};
 use crate::worker::{
     JobMap, ProcessingQueue, TaskHandle, WorkerCallback, WorkerState, MIN_DELAY_MS_LIMIT,
 };
+use crate::Counter;
 use crate::{
     EventEmitter, EventParameters, FailedDetails, JobOptions, JobState, JobToken, KioError,
     QueueEventMode, QueueOpts, Trace, WorkerOpts,
 };
 use chrono::Utc;
-#[cfg(not(feature = "tracing"))]
 use crossbeam::atomic::AtomicCell;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
@@ -29,7 +29,6 @@ use crate::{Job, ProcessedResult, Queue};
 
 use crate::worker::{HISTOGRAM_MAX_NS, HISTOGRAM_SIGFIG};
 use hdrhistogram::Histogram;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -167,7 +166,7 @@ pub async fn process_job<D, R, P, S>(
     callback: WorkerCallback<D, R, P, S>,
     _permit: OwnedSemaphorePermit,
     worker_id: Uuid,
-    current_job_current: Arc<AtomicUsize>,
+    current_job_current: Arc<AtomicCell<usize>>,
 ) -> KioResult<()>
 where
     R: Serialize + Send + Clone + DeserializeOwned + 'static + Sync,
@@ -304,7 +303,7 @@ where
     }
 
     if let Some((key, job_id, state)) = task_queue.take() {
-        let _ = current_job_current.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        let _ = current_job_current.fetch_sub(1);
         queue
             .update_processing_count(false, worker_id, job_id, state)
             .await?;
@@ -355,15 +354,15 @@ type MainLoopParams<D, R, P, S> = (
     Arc<CancellationToken>,
     ProcessingQueue,
     WorkerOpts,
-    Arc<AtomicU64>,
+    Counter,
     JobMap<D, R, P>,
-    Arc<AtomicUsize>,
+    Arc<AtomicCell<usize>>,
     WorkerCallback<D, R, P, S>,
     Arc<Queue<D, R, P, S>>,
-    Arc<atomig::Atomic<WorkerState>>,
+    Arc<AtomicCell<WorkerState>>,
     Arc<Notify>,
     DelayQueueTimer<D, R, P, S>,
-    Arc<AtomicBool>,
+    Arc<AtomicCell<bool>>,
 );
 
 #[cfg(not(feature = "tracing"))]
@@ -372,15 +371,15 @@ type MainLoopParams<D, R, P, S> = (
     Arc<CancellationToken>,
     ProcessingQueue,
     WorkerOpts,
-    Arc<AtomicU64>,
+    Counter,
     JobMap<D, R, P>,
-    Arc<AtomicUsize>,
+    Arc<AtomicCell<usize>>,
     WorkerCallback<D, R, P, S>,
     Arc<Queue<D, R, P, S>>,
     Arc<AtomicCell<WorkerState>>,
     Arc<Notify>,
     DelayQueueTimer<D, R, P, S>,
-    Arc<AtomicBool>,
+    Arc<AtomicCell<bool>>,
 );
 use tokio::task::JoinHandle;
 #[async_backtrace::framed]
@@ -391,7 +390,6 @@ where
     P: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
     S: Clone + Store<D, R, P> + 'static + Send + Sync,
 {
-    use std::sync::atomic::Ordering;
     #[cfg(feature = "tracing")]
     let (
         _resource_span,
@@ -440,11 +438,11 @@ where
             && processing.len() < opts.concurrency
         {
             if let Ok(permit) = semaphore.clone().acquire_owned().await {
-                let token_prefix = active_job_count.load(std::sync::atomic::Ordering::Acquire);
+                let token_prefix = active_job_count.load();
                 let next_id = Uuid::new_v4();
                 let token = JobToken(id, next_id, token_prefix as u64);
                 let worker_id = id;
-                let block_delay = block_until.load(std::sync::atomic::Ordering::Acquire);
+                let block_delay = block_until.load();
                 let next_job_result = get_next_job(
                     queue.as_ref(),
                     token,
@@ -499,14 +497,14 @@ where
                 tokio::task::yield_now().await;
             }
 
-            if queue.pause_workers.load(Ordering::Acquire) && processing.is_empty() {
+            if queue.pause_workers.load() && processing.is_empty() {
                 #[cfg(feature = "tracing")]
                 info!(
                     "pausing job_schedular_loop with  {delayed} delayed_jobs and {processing} running_jobs",
-                    delayed = queue.current_metrics.delayed.load(Ordering::Acquire),
+                    delayed = queue.current_metrics.delayed.load(),
                     processing = processing.len(),
                 );
-                to_pause.store(true, Ordering::Release);
+                to_pause.store(true);
                 if cancellation_token
                     .run_until_cancelled(paused_here.notified())
                     .await
@@ -519,7 +517,7 @@ where
                 #[cfg(feature = "tracing")]
                 info!("resumed job_schedular_loop");
 
-                to_pause.store(false, Ordering::Release);
+                to_pause.store(false);
             }
             // yield, so other tasks run
             tokio::task::yield_now().await;
@@ -760,14 +758,13 @@ where
 }
 pub fn resume_helper(
     current_metrics: &QueueMetrics,
-    pause_workers: &AtomicBool,
+    pause_workers: &AtomicCell<bool>,
     worker_notifier: &Notify,
 ) {
-    use std::sync::atomic::Ordering;
-    let workers_paused = pause_workers.load(Ordering::Acquire);
+    let workers_paused = pause_workers.load();
     if current_metrics.queue_has_work() && workers_paused {
         worker_notifier.notify_waiters();
-        pause_workers.store(false, Ordering::Release);
+        pause_workers.store(false);
     }
 }
 
@@ -832,7 +829,7 @@ pub async fn create_listener_handle<D, R, P, S>(
     emitter: EventEmitter<R, P>,
     notifier: Arc<Notify>,
     metrics: Arc<QueueMetrics>,
-    pause_workers: Arc<AtomicBool>,
+    pause_workers: Arc<AtomicCell<bool>>,
     event_mode: QueueEventMode,
 ) -> KioResult<JoinHandle<KioResult<()>>>
 where
@@ -847,7 +844,7 @@ where
         async move {
             let block_interval = 5000; // 100 seconds
             let notifier = notifier.clone();
-            let is_inital = AtomicBool::new(true);
+            let is_inital: AtomicCell<bool> = AtomicCell::new(true);
 
             loop {
                 let args: ReadStreamArgs<R, P> =
@@ -880,20 +877,15 @@ where
 pub fn pause_or_resume_workers(
     notifier: &Notify,
     metrics: &QueueMetrics,
-    pause_workers: &AtomicBool,
-    is_inital: &AtomicBool,
+    pause_workers: &AtomicCell<bool>,
+    is_inital: &AtomicCell<bool>,
 ) {
-    use std::sync::atomic::Ordering;
-    if metrics.is_idle()
-        && !is_inital.load(Ordering::Acquire)
-        && pause_workers
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
+    if metrics.is_idle() && !is_inital.load() && pause_workers.compare_exchange(false, true).is_ok()
     {
         #[cfg(feature = "tracing")]
         info!("sent pause signal to workers ");
     } else {
         resume_helper(metrics, pause_workers, notifier);
     }
-    let _ = is_inital.compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire);
+    let _ = is_inital.compare_exchange(true, false);
 }
