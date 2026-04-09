@@ -16,8 +16,6 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::{BTreeMap, VecDeque};
 use std::marker::PhantomData;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -64,7 +62,7 @@ pub struct Queue<D, R, P, S> {
     #[cfg(feature = "tracing")]
     resource_span: Span,
     /// `true` when the queue is in the paused state.
-    pub paused: Arc<AtomicBool>,
+    pub paused: Arc<AtomicCell<bool>>,
     /// In-memory snapshot of queue state counts; updated by [`Queue::get_metrics`].
     pub current_metrics: Arc<QueueMetrics>,
     /// Queue-level configuration supplied at construction time.
@@ -80,7 +78,7 @@ pub struct Queue<D, R, P, S> {
     pub(crate) worker_notifier: Arc<Notify>,
     /// Atomic flag set to `true` to signal attached workers to pause picking
     /// up new jobs.
-    pub pause_workers: Arc<AtomicBool>,
+    pub pause_workers: Arc<AtomicCell<bool>>,
     _data: PhantomData<D>,
 }
 
@@ -136,8 +134,8 @@ impl<
         let resource_span = debug_span!("Queue", _queue_name);
         let worker_notifier: Arc<Notify> = Arc::default();
         let current_metrics = Arc::new(metrics);
-        let pause_workers: Arc<AtomicBool> = Arc::default();
-        let is_paused = current_metrics.is_paused.load(Ordering::Relaxed);
+        let pause_workers: Arc<AtomicCell<bool>> = Arc::default();
+        let is_paused = current_metrics.is_paused.load();
         let store = Arc::new(store);
         #[cfg(feature = "tracing")]
         let task = store
@@ -146,7 +144,7 @@ impl<
                 worker_notifier.clone(),
                 current_metrics.clone(),
                 pause_workers.clone(),
-                event_mode.load(Ordering::Acquire),
+                event_mode.load(),
             )
             .instrument(resource_span.clone())
             .await?;
@@ -173,7 +171,7 @@ impl<
             current_metrics,
             stream_listener,
             emitter,
-            paused: Arc::new(AtomicBool::new(is_paused)),
+            paused: Arc::new(AtomicCell::new(is_paused)),
             _data: PhantomData,
         })
     }
@@ -370,7 +368,6 @@ impl<
             }
         }
         let mut fields: Vec<JobField<R>> = vec![JobField::State(to)];
-
         if let Some(backtrace) = backtrace.as_ref() {
             //job.stack_trace.push(backtrace.clone());
             fields.push(JobField::BackTrace(backtrace.clone()));
@@ -422,7 +419,7 @@ impl<
     pub async fn pause_or_resume(&self) -> Result<(), KioError> {
         // if its paused
         let metrics = self.get_metrics().await?;
-        let pause = !metrics.is_paused.load(Ordering::Acquire);
+        let pause = !metrics.is_paused.load();
         let event_mode = self.event_mode.load();
         self.store.pause(pause, event_mode).await?;
         let state = if pause {
@@ -434,8 +431,7 @@ impl<
             event: state,
             ..Default::default()
         };
-        self.paused
-            .store(pause, std::sync::atomic::Ordering::Relaxed);
+        self.paused.store(pause);
         self.store.publish_event(event_mode, event).await?;
         Ok(())
     }
@@ -784,7 +780,7 @@ impl<
         self.store.clear_collections().await?;
         let event_mode = self.event_mode.load();
         let event = JobState::Obliterated;
-        let last_id = self.current_metrics.last_id.load(Ordering::Acquire);
+        let last_id = self.current_metrics.last_id.load();
         let item: QueueStreamEvent<R, P> = QueueStreamEvent {
             job_id: last_id,
             event,
@@ -797,7 +793,7 @@ impl<
     }
     #[allow(clippy::future_not_send)]
     async fn delete_all_jobs(&self) -> KioResult<()> {
-        let last_id = self.current_metrics.last_id.load(Ordering::Acquire);
+        let last_id = self.current_metrics.last_id.load();
         self.store.clear_jobs(last_id).await
     }
 
@@ -1051,7 +1047,7 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     /// continue to completion.
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
     pub fn pause_active_workers(&self) {
-        self.pause_workers.store(true, Ordering::Release);
+        self.pause_workers.store(true);
     }
     /// Allows workers to resume picking up new jobs after a pause.
     ///
