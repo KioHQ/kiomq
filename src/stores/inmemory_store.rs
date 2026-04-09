@@ -1,7 +1,7 @@
 use super::{
-    Arc, ArcSwapOption, BTreeMap, CollectionSuffix, EventEmitter, Job, JobField,
-    JobOptions, JobState, JobToken, JoinHandle, KioResult, Lock, Notify, QueueEventMode,
-    QueueMetrics, QueueOpts, QueueStreamEvent, SharedEmitter, Store, WorkerMetrics,
+    Arc, ArcSwapOption, BTreeMap, CollectionSuffix, EventEmitter, Job, JobField, JobOptions,
+    JobState, JobToken, JoinHandle, KioResult, Lock, Notify, QueueEventMode, QueueMetrics,
+    QueueOpts, QueueStreamEvent, SharedEmitter, Store, WorkerMetrics,
 };
 use crate::timers::TimedMap;
 use crate::utils::{

@@ -39,7 +39,6 @@ use tokio::sync::Mutex;
 /// variable.  Returns `None` when the variable is unset.
 #[must_use]
 pub fn fetch_redis_pass() -> Option<String> {
-    use dotenv;
     if let Err(_err) = dotenv::dotenv() {
         // dothing; continue
     }
