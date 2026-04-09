@@ -20,7 +20,6 @@ pub use metrics::*;
 use crate::error::WorkerError;
 use crate::events::EventParameters;
 use arc_swap::ArcSwapOption;
-//use crossbeam_skiplist::SkipMap;
 use hdrhistogram::Histogram;
 use tokio::{
     sync::{Mutex, Notify},
@@ -36,6 +35,7 @@ type JobMeta<D, R, P> = (
     TaskMonitor,
     Mutex<Histogram<u64>>,
 );
+use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 pub type JobMap<D, R, P> = Arc<DashMap<u64, JobMeta<D, R, P>>>;
 pub type Task = JoinHandle<KioResult<()>>;
@@ -43,11 +43,10 @@ pub type TaskHandle = ArcSwapOption<Task>;
 pub type SharedTaskHandle = Arc<TaskHandle>;
 /// Alias for the `processing_queue`. changed from (`Futures::FuturesUnordered` -> `TaskTracker`)
 pub type ProcessingQueue = TaskTracker;
-use atomig::{Atom, Atomic};
 use derive_more::IsVariant;
 pub use worker_opts::WorkerOpts;
 /// The current lifecycle state of a [`Worker`].
-#[derive(Atom, IsVariant, Default, Debug)]
+#[derive(IsVariant, Default, Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum WorkerState {
     /// The worker is actively polling and processing jobs.
@@ -122,7 +121,7 @@ pub struct Worker<D, R, P, S> {
     pub opts: WorkerOpts,
     cancellation_token: Arc<CancellationToken>,
     /// Current lifecycle state of the worker.
-    pub state: Arc<Atomic<WorkerState>>,
+    pub state: Arc<AtomicCell<WorkerState>>,
     processing: ProcessingQueue,
     timer_pauser: Arc<AtomicBool>,
     timers: DelayQueueTimer<D, R, P, S>,
@@ -270,7 +269,7 @@ impl<
         let cancellation_token: Arc<CancellationToken> = Arc::default();
         let continue_notifier = queue.worker_notifier.clone();
         let notifier = continue_notifier.clone();
-        let state: Arc<Atomic<WorkerState>> = Arc::default();
+        let state: Arc<AtomicCell<WorkerState>> = Arc::default();
         let worker_state = state.clone();
         let timer_pauser: Arc<AtomicBool> = Arc::default();
         let processing = TaskTracker::new();
@@ -332,17 +331,12 @@ impl<
     /// Returns `true` if the worker is actively processing jobs.
     #[must_use]
     pub fn is_running(&self) -> bool {
-        self.state
-            .load(std::sync::atomic::Ordering::Acquire)
-            .is_active()
-            && !self.cancellation_token.is_cancelled()
+        self.state.load().is_active() && !self.cancellation_token.is_cancelled()
     }
     /// Returns `true` if the worker is idle (started but waiting for work).
     #[must_use]
     pub fn is_idle(&self) -> bool {
-        self.state
-            .load(std::sync::atomic::Ordering::Acquire)
-            .is_idle()
+        self.state.load().is_idle()
     }
     /// Starts the worker's job-processing loop.
     ///
@@ -379,12 +373,9 @@ impl<
     /// # }
     /// ```
     pub fn run(&self) -> KioResult<()> {
-        let prev = self.state.compare_exchange(
-            WorkerState::Idle,
-            WorkerState::Active,
-            std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Acquire,
-        );
+        let prev = self
+            .state
+            .compare_exchange(WorkerState::Idle, WorkerState::Active);
         if let Err(current) = prev {
             if current.is_active() && !self.cancellation_token.is_cancelled() {
                 return Err(WorkerError::WorkerAlreadyRunningWithId(self.id).into());
@@ -438,11 +429,7 @@ impl<
     /// Returns `true` if the worker has been closed (cancelled).
     #[must_use]
     pub fn closed(&self) -> bool {
-        self.cancellation_token.is_cancelled()
-            || self
-                .state
-                .load(std::sync::atomic::Ordering::Acquire)
-                .is_closed()
+        self.cancellation_token.is_cancelled() || self.state.load().is_closed()
     }
 
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
