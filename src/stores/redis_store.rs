@@ -7,6 +7,7 @@ use crate::utils::{
     create_listener_handle, prepare_for_insert, process_each_event, query_all_batched,
     update_job_opts,
 };
+use crate::Counter;
 use chrono::Utc;
 use crossbeam::atomic::AtomicCell;
 use deadpool_redis::{Config, Pool, Runtime};
@@ -20,15 +21,12 @@ use redis::{
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
-/// a counter for adding bulk jobs,
-static START: AtomicU64 = AtomicU64::new(0);
-static PC_COUNTER: AtomicU64 = AtomicU64::new(0);
-use tokio::sync::Mutex;
 /// A [`Store`] implementation backed by Redis.
 ///
 /// `RedisStore` uses a deadpool connection pool for async operations and a
@@ -68,6 +66,11 @@ pub struct RedisStore {
     #[debug(skip)]
     pub(crate) conn_pool: Arc<Pool>,
     redis_client: redis::Client,
+    ///  job-id counter  -> updated whenever a job is added
+    id_counter: Counter,
+    ///  priority  counter  -> updated whenever a job is added
+    pc_counter: Counter,
+
     /// The redis version of redis this store is initialized with.
     pub redis_version: RedisVersion,
 }
@@ -115,8 +118,12 @@ impl RedisStore {
 
         let redis_version = RedisVersion::parse(&raw)
             .ok_or_else(|| std::io::Error::other("failed to fetch redis-version info "))?;
+        let pc_counter = Arc::default();
+        let id_counter = Arc::default();
 
         Ok(Self {
+            pc_counter,
+            id_counter,
             prefix,
             name,
             consumer_group,
@@ -390,21 +397,21 @@ where
         let end: usize = conn.incr(&id_key, max_len_hint).await?;
         let counter: Option<u64> = conn.get(&priority_counter_key).await?;
         let pc = counter.unwrap_or_default() + 1;
-        PC_COUNTER.store(pc, Ordering::Relaxed);
+        self.pc_counter.store(pc);
         let start = (end - max_len_hint) + 1;
-        START.store(start as u64, Ordering::Relaxed);
+        self.id_counter.store(start as u64);
         let mut is_prioritized = false;
         //let mut iter = iter.par_bridge();
         for (ref name, opts, data) in iter {
             let mut opts = opts.unwrap_or_default();
             update_job_opts(&queue_opts, &mut opts);
             let queue_name = format!("{}:{}", self.prefix, self.name);
-            let id = START.fetch_add(1, Ordering::AcqRel);
+            let id = self.id_counter.fetch_add(1);
             let prior_counter = if opts.priority > 0 {
                 is_prioritized = true;
-                PC_COUNTER.fetch_add(1, Ordering::AcqRel)
+                self.pc_counter.fetch_add(1)
             } else {
-                PC_COUNTER.load(Ordering::Acquire)
+                self.pc_counter.load()
             };
             let mut job = Job::<D, R, P>::new(name, Some(data), opts.id, Some(&queue_name));
             prepare_for_insert(
@@ -421,7 +428,7 @@ where
             job.id = Some(id);
         }
         if is_prioritized {
-            pipeline.incr(&priority_counter_key, PC_COUNTER.load(Ordering::Acquire));
+            pipeline.incr(&priority_counter_key, self.pc_counter.load());
         }
 
         query_all_batched(conn, pipeline).await?;
@@ -445,21 +452,21 @@ where
         let end: usize = conn.incr(&id_key, max_len_hint).await?;
         let counter: Option<u64> = conn.get(&priority_counter_key).await?;
         let pc = counter.unwrap_or_default() + 1;
-        PC_COUNTER.store(pc, Ordering::Relaxed);
+        self.pc_counter.store(pc);
         let start = (end - max_len_hint) + 1;
-        START.store(start as u64, Ordering::Relaxed);
+        self.id_counter.store(start as u64);
         let mut is_prioritized = false;
         //let mut iter = iter.par_bridge();
         for (ref name, opts, data) in iter {
             let mut opts = opts.unwrap_or_default();
             update_job_opts(&queue_opts, &mut opts);
             let queue_name = format!("{}:{}", self.prefix, self.name);
-            let id = START.fetch_add(1, Ordering::AcqRel);
+            let id = self.id_counter.fetch_add(1);
             let prior_counter = if opts.priority > 0 {
                 is_prioritized = true;
-                PC_COUNTER.fetch_add(1, Ordering::AcqRel)
+                self.pc_counter.fetch_add(1)
             } else {
-                PC_COUNTER.load(Ordering::Acquire)
+                self.pc_counter.load()
             };
             let mut job = Job::<D, R, P>::new(name, Some(data), opts.id, Some(&queue_name));
             prepare_for_insert(
@@ -477,7 +484,7 @@ where
             result.push(job);
         }
         if is_prioritized {
-            pipeline.incr(&priority_counter_key, PC_COUNTER.load(Ordering::Acquire));
+            pipeline.incr(&priority_counter_key, self.pc_counter.load());
         }
 
         query_all_batched(conn, pipeline).await?;
