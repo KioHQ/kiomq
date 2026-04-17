@@ -18,10 +18,7 @@ use crate::events::EventParameters;
 use crate::Counter;
 use arc_swap::ArcSwapOption;
 use hdrhistogram::Histogram;
-use tokio::{
-    sync::{Mutex, Notify},
-    task::JoinHandle,
-};
+use tokio::{sync::Notify, task::JoinHandle};
 use tokio_metrics::TaskMonitor;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
@@ -30,7 +27,7 @@ type JobMeta<D, R, P> = (
     JobToken,
     TaskHandle,
     TaskMonitor,
-    Mutex<Histogram<u64>>,
+    Histogram<u64>,
 );
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
