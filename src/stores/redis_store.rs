@@ -16,15 +16,14 @@ use futures::StreamExt;
 use redis::aio::{PubSubSink, PubSubStream};
 use redis::streams::{StreamReadOptions, StreamReadReply};
 use redis::{
-    AsyncCommands, Commands, FieldExistenceCheck, HashFieldExpirationOptions, LposOptions,
-    SetExpiry,
+    AsyncCommands, FieldExistenceCheck, HashFieldExpirationOptions, LposOptions, SetExpiry,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::Mutex;
-use tokio::sync::Notify;
+use tokio::runtime::Handle;
+use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 /// A [`Store`] implementation backed by Redis.
@@ -38,12 +37,13 @@ use uuid::Uuid;
 /// # Examples
 ///
 /// ```rust,no_run
-/// use kiomq::{Config, Queue, QueueOpts, RedisStore, fetch_redis_pass};
+/// use kiomq::{Config, Queue, QueueOpts, RedisStore, fetch_redis_pass, SharedRedis};
 ///
 /// #[tokio::main]
 /// async fn main() -> kiomq::KioResult<()> {
 ///     let mut cfg = Config::from_url("redis://127.0.0.1/");
-///     let store = RedisStore::new(None, "my-queue", &cfg).await?;
+///     let  mut redis_conn  =  SharedRedis::create(&cfg);
+///     let store = RedisStore::new(None, "my-queue", &redis_conn).await?;
 ///     let queue: Queue<String, String, (), _> =
 ///         Queue::new(store, Some(QueueOpts::default())).await?;
 ///     Ok(())
@@ -65,7 +65,6 @@ pub struct RedisStore {
     subscribed: Arc<AtomicBool>,
     #[debug(skip)]
     pub(crate) conn_pool: Arc<Pool>,
-    redis_client: redis::Client,
     ///  job-id counter  -> updated whenever a job is added
     id_counter: Counter,
     ///  priority  counter  -> updated whenever a job is added
@@ -76,7 +75,7 @@ pub struct RedisStore {
 }
 
 impl RedisStore {
-    /// Creates a new `RedisStore` connected to the Redis instance described by `cfg`.
+    /// Creates a new `RedisStore` connected to the Redis instance described by `shared_conn`.
     ///
     /// A deadpool-redis connection pool is created for async use and a consumer
     /// group is registered on the queue's event stream so that this instance
@@ -86,25 +85,26 @@ impl RedisStore {
     ///
     /// * `prefix` – key namespace prefix (defaults to `"{kio}"` when `None`).
     /// * `name` – queue name; converted to lowercase automatically.
-    /// * `cfg` – deadpool-redis [`Config`] describing the connection URL and pool settings.
+    /// * `shared_conn` – shared redis connection [`SharedRedis`] with shared pool and  redis-client.
     ///
     /// # Errors
     ///
     /// Returns [`crate::KioError`] if the pool cannot be created or the initial Redis
     /// connection fails.
-    pub async fn new(prefix: Option<&str>, name: &str, cfg: &Config) -> KioResult<Self> {
-        let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
+    pub async fn new(
+        prefix: Option<&str>,
+        name: &str,
+        shared_conn: &SharedRedis,
+    ) -> KioResult<Self> {
         let name = name.to_lowercase();
         let prefix = prefix.unwrap_or("{kio}").to_lowercase();
-        let conn_pool = Arc::new(pool);
-        let connection_info = cfg.connection.clone().unwrap_or_default();
-        let redis_client = redis::Client::open(connection_info)?;
+        let conn_pool = shared_conn.conn_pool.clone();
         let id = Uuid::new_v4();
         let consumer_group = format!("{prefix}-{prefix}-group-{id}");
         let consumer_name = format!("consumer-{id}");
         let mut connection = conn_pool.get().await?;
         let stream_key = CollectionSuffix::Events.to_collection_name(&prefix, &name);
-        let (sink, source) = redis_client.get_async_pubsub().await?.split();
+        let (sink, source) = shared_conn.redis_client.get_async_pubsub().await?.split();
         let pubsub_sink = Arc::new(Mutex::new(sink));
         let pubsub_source = Arc::new(Mutex::new(source));
         connection
@@ -122,8 +122,6 @@ impl RedisStore {
         let id_counter = Arc::default();
 
         Ok(Self {
-            pc_counter,
-            id_counter,
             prefix,
             name,
             consumer_group,
@@ -133,22 +131,12 @@ impl RedisStore {
             pubsub_sink,
             subscribed,
             conn_pool,
-            redis_client,
+            id_counter,
+            pc_counter,
             redis_version,
         })
     }
-    /// Returns a synchronous (blocking) Redis connection.
-    ///
-    /// Useful for operations that cannot be performed asynchronously. Prefer
-    /// [`get_connection`](RedisStore::get_connection) for all async code paths.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::KioError`] if the connection cannot be established.
-    pub fn get_blocking_connection(&self) -> KioResult<redis::Connection> {
-        let conn = self.redis_client.get_connection()?;
-        Ok(conn)
-    }
+
     /// Borrows an async connection from the deadpool connection pool.
     ///
     /// # Errors
@@ -169,24 +157,29 @@ where
     Self: Send,
 {
     fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
-        let mut conn = self.get_blocking_connection()?;
-        let key = CollectionSuffix::WorkerMetrics.to_collection_name(&self.prefix, &self.name);
-        let results: Vec<WorkerMetrics> = conn.hvals(key)?;
-        Ok(results
-            .into_iter()
-            .filter_map(|metrics| {
-                let now = Utc::now();
-                if now
-                    .signed_duration_since(metrics.last_updated)
-                    .num_milliseconds()
-                    <= (metrics.ttl_ms.cast_signed() + 20)
-                {
-                    return Some((metrics.worker_id, metrics));
-                }
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut conn = self.get_connection().await?;
+                let key =
+                    CollectionSuffix::WorkerMetrics.to_collection_name(&self.prefix, &self.name);
+                let results: Vec<WorkerMetrics> = conn.hvals(key).await?;
+                Ok(results
+                    .into_iter()
+                    .filter_map(|metrics| {
+                        let now = Utc::now();
+                        if now
+                            .signed_duration_since(metrics.last_updated)
+                            .num_milliseconds()
+                            <= (metrics.ttl_ms.cast_signed() + 20)
+                        {
+                            return Some((metrics.worker_id, metrics));
+                        }
 
-                None
+                        None
+                    })
+                    .collect())
             })
-            .collect())
+        })
     }
     async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()> {
         let key = CollectionSuffix::WorkerMetrics.to_collection_name(&self.prefix, &self.name);
@@ -253,46 +246,52 @@ where
     }
     fn update_job_progress(&self, job: &mut Job<D, R, P>, value: P) -> KioResult<()> {
         use crate::QueueEventMode;
-        use redis::Commands;
-        let mut conn = self.get_blocking_connection()?;
-        if let Some(id) = job.id {
-            let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
-            let mut pipeline = redis::pipe();
-            pipeline.atomic();
-            let progress_str = simd_json::to_string_pretty(&value)?;
-            let events_stream_key =
-                CollectionSuffix::Events.to_collection_name(&self.prefix, &self.name);
-            pipeline.hset(job_key, "progress", &progress_str);
-            let meta_key = CollectionSuffix::Meta.to_collection_name(&self.prefix, &self.name);
-            let event_mode: Option<QueueEventMode> = conn.hget(&meta_key, "event_mode")?;
-            // check for the queue_event_mode
-            let event_mode = event_mode.unwrap_or_default();
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut conn = self.get_connection().await?;
+                if let Some(id) = job.id {
+                    let job_key =
+                        CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
+                    let mut pipeline = redis::pipe();
+                    pipeline.atomic();
+                    let progress_str = simd_json::to_string_pretty(&value)?;
+                    let events_stream_key =
+                        CollectionSuffix::Events.to_collection_name(&self.prefix, &self.name);
+                    pipeline.hset(job_key, "progress", &progress_str);
+                    let meta_key =
+                        CollectionSuffix::Meta.to_collection_name(&self.prefix, &self.name);
+                    let event_mode: Option<QueueEventMode> =
+                        conn.hget(&meta_key, "event_mode").await?;
+                    // check for the queue_event_mode
+                    let event_mode = event_mode.unwrap_or_default();
 
-            match event_mode {
-                QueueEventMode::PubSub => {
-                    let event = QueueStreamEvent::<R, P> {
-                        job_id: id,
-                        event: JobState::Progress,
-                        name: Some(self.name.clone()),
-                        progress_data: Some(value.clone()),
-                        ..Default::default()
-                    };
-                    pipeline.publish(&events_stream_key, event);
+                    match event_mode {
+                        QueueEventMode::PubSub => {
+                            let event = QueueStreamEvent::<R, P> {
+                                job_id: id,
+                                event: JobState::Progress,
+                                name: Some(self.name.clone()),
+                                progress_data: Some(value.clone()),
+                                ..Default::default()
+                            };
+                            pipeline.publish(&events_stream_key, event);
+                        }
+                        QueueEventMode::Stream => {
+                            let items = [
+                                ("event", JobState::Progress.to_string().to_lowercase()),
+                                ("job_id", id.to_string()),
+                                ("data", progress_str),
+                                ("name", self.name.clone()),
+                            ];
+                            pipeline.xadd(&events_stream_key, "*", &items);
+                        }
+                    }
+                    let _: () = pipeline.query_async(&mut conn).await?;
+                    job.progress = Some(value);
                 }
-                QueueEventMode::Stream => {
-                    let items = [
-                        ("event", JobState::Progress.to_string().to_lowercase()),
-                        ("job_id", id.to_string()),
-                        ("data", progress_str),
-                        ("name", self.name.clone()),
-                    ];
-                    pipeline.xadd(&events_stream_key, "*", &items);
-                }
-            }
-            let _: () = pipeline.query(&mut conn)?;
-            job.progress = Some(value);
-        }
-        Ok(())
+                Ok(())
+            })
+        })
     }
     async fn get_delayed_at(&self, start: i64, stop: i64) -> KioResult<(Vec<u64>, Vec<u64>)> {
         let [delayed_key] = [CollectionSuffix::Delayed]
@@ -519,9 +518,13 @@ where
     }
     fn remove(&self, key: CollectionSuffix) -> KioResult<()> {
         let key = key.to_collection_name(&self.prefix, &self.name);
-        let mut conn = self.get_blocking_connection()?;
-        let _: () = conn.del(key)?;
-        Ok(())
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut conn = self.get_connection().await?;
+                let _: () = conn.del(key).await?;
+                Ok(())
+            })
+        })
     }
     async fn set_lock(
         &self,
@@ -547,31 +550,36 @@ where
     }
     async fn set_fields(&self, job_id: u64, fields: Vec<JobField<R>>) -> KioResult<()> {
         let mut conn = self.get_connection().await?;
-        let mut blocking_con = self.redis_client.get_connection()?;
         let job_key = CollectionSuffix::Job(job_id).to_collection_name(&self.prefix, &self.name);
-        let fields: Vec<_> = fields
-            .into_iter()
-            .filter_map(|field| {
-                let name = field.name();
-                if let JobField::BackTrace(trace) = field {
-                    let mut previous: Vec<u8> = blocking_con.hget(&job_key, "stackTrace").ok()?;
-                    let mut previous: Vec<Trace> = simd_json::from_slice(&mut previous).ok()?;
+        let mut next_fields = vec![];
+        for field in fields {
+            let name = field.name();
+            let pair = match field {
+                JobField::Payload(ProcessedResult::Success(result, _)) => {
+                    simd_json::to_string(&result).map(move |result| (name, result))?
+                }
+                JobField::BackTrace(trace) => {
+                    let mut raw_bytes = conn
+                        .hget::<_, _, Vec<u8>>(&job_key, "stackTrace")
+                        .await
+                        .unwrap_or_default();
+
+                    let mut previous = if raw_bytes.is_empty() {
+                        Vec::new()
+                    } else {
+                        simd_json::from_slice::<Vec<Trace>>(&mut raw_bytes).unwrap_or_default()
+                    };
+
                     previous.push(trace);
-                    return simd_json::to_string(&previous)
-                        .ok()
-                        .map(move |result| (name, result));
+                    simd_json::to_string(&previous).map(move |result| (name, result))?
                 }
-                if let JobField::Payload(ProcessedResult::Success(result, _)) = field {
-                    return simd_json::to_string(&result)
-                        .ok()
-                        .map(move |result| (name, result));
-                }
-                simd_json::to_string(&field)
-                    .ok()
-                    .map(move |result| (name, result))
-            })
-            .collect();
-        let _: () = conn.hset_multiple(&job_key, &fields).await?;
+
+                _ => simd_json::to_string(&field).map(move |result| (name, result))?,
+            };
+
+            next_fields.push(pair);
+        }
+        let _: () = conn.hset_multiple(&job_key, &next_fields).await?;
         Ok(())
     }
     async fn incr(
@@ -630,43 +638,52 @@ where
         start: Option<usize>,
         end: Option<usize>,
     ) -> KioResult<VecDeque<u64>> {
-        let mut conn = self.get_blocking_connection()?;
-        let start = start.unwrap_or_default();
-        let col: CollectionSuffix = state.into();
-        let key = col.to_collection_name(&self.prefix, &self.name);
-        match state {
-            JobState::Prioritized | JobState::Completed | JobState::Failed | JobState::Delayed => {
-                let list_len: usize = conn.zcard(&key)?;
-                if list_len > 0 {
-                    let end = end.map_or(list_len, |value| value + 1);
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut conn = self.get_connection().await?;
+                let start = start.unwrap_or_default();
+                let col: CollectionSuffix = state.into();
+                let key = col.to_collection_name(&self.prefix, &self.name);
+                match state {
+                    JobState::Prioritized
+                    | JobState::Completed
+                    | JobState::Failed
+                    | JobState::Delayed => {
+                        let list_len: usize = conn.zcard(&key).await?;
+                        if list_len > 0 {
+                            let end = end.map_or(list_len, |value| value + 1);
 
-                    let items: Vec<u64> =
-                        conn.zrange(key, start.cast_signed(), end.cast_signed())?;
-                    return Ok(VecDeque::from_iter(items));
-                }
-            }
-            JobState::Stalled => {
-                let set: Vec<u64> = conn.smembers(key)?;
-                if !set.is_empty() {
-                    let set = VecDeque::from(set);
-                    let end = end.unwrap_or(set.len());
+                            let items: Vec<u64> = conn
+                                .zrange(key, start.cast_signed(), end.cast_signed())
+                                .await?;
+                            return Ok(VecDeque::from_iter(items));
+                        }
+                    }
+                    JobState::Stalled => {
+                        let set: Vec<u64> = conn.smembers(key).await?;
+                        if !set.is_empty() {
+                            let set = VecDeque::from(set);
+                            let end = end.unwrap_or(set.len());
 
-                    return Ok(set.range(start..=end).copied().collect());
-                }
-            }
+                            return Ok(set.range(start..=end).copied().collect());
+                        }
+                    }
 
-            JobState::Active | JobState::Wait | JobState::Paused => {
-                let list_len: usize = conn.llen(&key)?;
-                if list_len > 0 {
-                    let end = end.map_or(list_len, |value| value + 1);
-                    let items: Vec<u64> =
-                        conn.lrange(key, start.cast_signed(), end.cast_signed())?;
-                    return Ok(VecDeque::from_iter(items));
+                    JobState::Active | JobState::Wait | JobState::Paused => {
+                        let list_len: usize = conn.llen(&key).await?;
+                        if list_len > 0 {
+                            let end = end.map_or(list_len, |value| value + 1);
+                            let items: Vec<u64> = conn
+                                .lrange(key, start.cast_signed(), end.cast_signed())
+                                .await?;
+                            return Ok(VecDeque::from_iter(items));
+                        }
+                    }
+                    _ => {}
                 }
-            }
-            _ => {}
-        }
-        Ok(VecDeque::new())
+                Ok(VecDeque::new())
+            })
+        })
     }
     async fn pop_set(&self, col: CollectionSuffix, min: bool) -> KioResult<Vec<(u64, u64)>> {
         let key = col.to_collection_name(&self.prefix, &self.name);
@@ -822,17 +839,22 @@ where
         if ids.is_empty() {
             return Ok(VecDeque::new());
         }
-        let mut conn = self.get_blocking_connection()?;
-        let mut pipeline = redis::pipe();
-        pipeline.atomic();
-        for id in ids {
-            let key = CollectionSuffix::Job(*id).to_collection_name(&self.prefix, &self.name);
-            pipeline.hgetall(key);
-        }
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(async {
+                let mut conn = self.get_connection().await?;
+                let mut pipeline = redis::pipe();
+                pipeline.atomic();
+                for id in ids {
+                    let key =
+                        CollectionSuffix::Job(*id).to_collection_name(&self.prefix, &self.name);
+                    pipeline.hgetall(key);
+                }
 
-        let list: Vec<Job<D, R, P>> = pipeline.query(&mut conn)?;
+                let list: Vec<Job<D, R, P>> = pipeline.query_async(&mut conn).await?;
 
-        Ok(VecDeque::from_iter(list))
+                Ok(VecDeque::from_iter(list))
+            })
+        })
     }
 }
 /// Represents a parsed Redis server version with major, minor, and patch components.
@@ -931,5 +953,60 @@ impl RedisVersion {
             patch: parts.next().unwrap_or("0").parse().ok()?,
         };
         Some(self >= &other)
+    }
+}
+/// A shared Redis connection wrapper that provides both a pooled connection manager
+/// and a direct Redis client for flexible interaction with a Redis instance.
+///
+/// `SharedRedis` is designed to be cloned and shared across async tasks, as the
+/// connection pool is wrapped in an [`Arc`].
+///
+/// # Fields
+///
+/// * `conn_pool` - A thread-safe, reference-counted connection pool for efficient
+///   reuse of Redis connections across concurrent tasks.
+/// * `redis_client` - A direct Redis client, used for operations that require a
+///   dedicated connection outside of the pool (e.g. pub/sub, blocking commands).
+#[derive(Debug, Clone)]
+pub struct SharedRedis {
+    /// An  connection pool managed by `deadpool-redis`.
+    #[debug(skip)]
+    pub conn_pool: Arc<Pool>,
+    pub(crate) redis_client: redis::Client,
+}
+impl SharedRedis {
+    /// Creates a new [`SharedRedis`] instance from the provided configuration.
+    ///
+    /// Initialises both the connection pool (backed by Tokio) and a standalone
+    /// Redis client using the connection info in `cfg`.
+    ///
+    /// # Arguments
+    ///
+    /// * `cfg` - A reference to a [`Config`] deadpool config.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`KioResult`] error if:
+    /// - The connection pool cannot be created (e.g. invalid config or runtime error).
+    /// - The Redis client fails to open (e.g. malformed connection URL).
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use kiomq::{SharedRedis};
+    /// let mut cfg = deadpool_redis::Config::from_url("redis://127.0.0.1/");
+    /// let redis = SharedRedis::create(&config);
+    /// ```
+    #[must_use]
+    pub fn create(cfg: &Config) -> KioResult<Self> {
+        let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
+        let conn_pool = Arc::new(pool);
+        let connection_info = cfg.connection.clone().unwrap_or_default();
+        let redis_client = redis::Client::open(connection_info)?;
+
+        Ok(Self {
+            conn_pool,
+            redis_client,
+        })
     }
 }

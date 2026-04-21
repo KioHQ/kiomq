@@ -14,7 +14,7 @@ pub use inmemory_store::InMemoryStore;
 #[cfg(feature = "redis-store")]
 mod redis_store;
 #[cfg(feature = "redis-store")]
-pub use redis_store::{RedisStore, RedisVersion};
+pub use redis_store::{RedisStore, RedisVersion, SharedRedis};
 #[cfg(feature = "rocksdb-store")]
 pub use rocksdb_store::{ivec_to_number, temporary_rocks_db, RocksDbStore};
 use tokio::{sync::Notify, task::JoinHandle};
