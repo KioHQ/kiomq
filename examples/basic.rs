@@ -16,7 +16,7 @@ use kiomq::{
 };
 
 #[cfg(all(feature = "redis-store", not(feature = "default")))]
-use kiomq::{fetch_redis_pass, Config, RedisStore};
+use kiomq::{fetch_redis_pass, Config, RedisStore, SharedRedis};
 #[cfg(feature = "rocksdb-store")]
 use kiomq::{temporary_rocks_db, RocksDbStore};
 use uuid::Uuid;
@@ -55,7 +55,9 @@ async fn main() -> KioResult<()> {
         cfg.redis.password = password;
     }
     #[cfg(all(feature = "redis-store", not(feature = "default")))]
-    let _store = RedisStore::new(None, "trial", &config).await?;
+    let _redis_con = SharedRedis::create(&config)?;
+    #[cfg(all(feature = "redis-store", not(feature = "default")))]
+    let _store = RedisStore::new(None, "trial", &_redis_con).await?;
     #[cfg(feature = "rocksdb-store")]
     let db = Arc::new(temporary_rocks_db());
     #[cfg(feature = "rocksdb-store")]

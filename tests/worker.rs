@@ -11,20 +11,20 @@ worker_store_suite!(worker_inmemory_store, async {
 #[cfg(all(feature = "redis-store", not(feature = "default")))]
 mod worker_redis {
     use super::*;
-    use kiomq::{fetch_redis_pass, Config, RedisStore};
+    use kiomq::{fetch_redis_pass, Config, RedisStore, SharedRedis};
     use std::sync::LazyLock;
 
-    pub static CONFIG: LazyLock<Config> = LazyLock::new(|| {
+    pub static SHARED_REDIS: LazyLock<SharedRedis> = LazyLock::new(|| {
         let password = fetch_redis_pass();
         let mut config = Config::default();
         if let Some(cfg) = config.connection.as_mut() {
             cfg.redis.password = password;
         }
-        config
+        SharedRedis::create(&config).expect("failed to create connection")
     });
 
     worker_store_suite!(redis_store, async {
         let name = Uuid::new_v4().to_string();
-        RedisStore::new(None, &name, &CONFIG).await
+        RedisStore::new(None, &name, &SHARED_REDIS).await
     });
 }
