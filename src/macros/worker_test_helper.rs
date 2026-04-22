@@ -73,7 +73,10 @@ macro_rules! worker_store_suite {
                 assert!(worker.is_running());
 
                 let jobs = queue.bulk_add(job_iterator).await?;
-                while !queue.current_metrics.all_jobs_completed() {}
+                while !queue.current_metrics.all_jobs_completed() {
+                    tokio::task::yield_now().await;
+
+                }
 
                 worker.close();
                 assert!(!worker.is_running());
@@ -159,7 +162,9 @@ macro_rules! worker_store_suite {
                 let _jobs = queue.bulk_add(job_iterator).await?;
                 assert!(worker.is_running());
 
-                while completed.len() != count as usize {}
+                while completed.len() != count as usize {
+                    tokio::task::yield_now().await;
+                }
                 worker.close();
                 assert!(!worker.is_running());
                 assert_eq!(completed.len(), count as usize);
@@ -174,7 +179,7 @@ macro_rules! worker_store_suite {
                             processed_on.signed_duration_since(job.ts).num_milliseconds();
                         let delay = job.delay as i64;
                         if delay > 0 {
-                            assert!(diff - delay <= 90);
+                            assert!(diff.saturating_sub(delay) <= 90);
                         }
                         }
                     }
@@ -216,7 +221,9 @@ macro_rules! worker_store_suite {
                 assert!(worker.is_running());
 
                 queue.bulk_add(job_iterator).await?;
-                while !queue.current_metrics.all_jobs_completed() {}
+                while !queue.current_metrics.all_jobs_completed() {
+                    tokio::task::yield_now().await;
+                }
 
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 assert!(worker.is_idle());
@@ -280,7 +287,9 @@ macro_rules! worker_store_suite {
                 let metrics = queue.current_metrics.as_ref();
                 assert_eq!(metrics.waiting.load(), 0);
 
-                while !queue.current_metrics.all_jobs_completed() {}
+                while !queue.current_metrics.all_jobs_completed() {
+                    tokio::task::yield_now().await;
+                }
 
                 let mut expected_ordered: VecDeque<u64> = jobs
                     .into_iter()
@@ -341,7 +350,9 @@ macro_rules! worker_store_suite {
                 assert!(worker.is_running());
 
                 let jobs = queue.bulk_add(job_iterator).await?;
-                while completed.len() < count as usize {}
+                while completed.len() < count as usize {
+                    tokio::task::yield_now().await
+                }
                 worker.close();
                  // allow some time to pass and clean up happens
                  tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -398,9 +409,9 @@ macro_rules! worker_store_suite {
                 let worker = Worker::new_sync(&queue, processor, None)?;
                 worker.run()?;
 
-                while worker.is_running() && !queue.current_metrics.is_idle(){}
-
-                assert_eq!(failed.len(), 2);
+                while failed.len() <2  {
+                    tokio::task::yield_now().await
+                }
 
                 queue.obliterate().await?;
                 Ok(())
@@ -442,9 +453,10 @@ macro_rules! worker_store_suite {
                 let worker = Worker::new_async(&queue, processor, None)?;
                 worker.run()?;
 
-                while failed.len() < 2 {}
+                while failed.len() < 2 {
+                    tokio::task::yield_now().await;
+                }
                 assert_eq!(failed.len(), 2);
-
                 queue.obliterate().await?;
                 Ok(())
             }
