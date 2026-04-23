@@ -1,6 +1,6 @@
-use derive_more::Debug;
+use crossbeam::atomic::AtomicCell;
+use derive_more::{Debug, IsVariant};
 use futures::future::{BoxFuture, Future, FutureExt};
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -11,6 +11,13 @@ pub use delay_queue_map::TimedMap;
 pub use delay_queue_timer::DelayQueueTimer;
 pub use delay_queue_timer::{TimerSender, TimerType};
 pub type EmptyCb = dyn Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static;
+#[derive(Debug, Copy, Clone, IsVariant, Default)]
+pub enum TimerState {
+    #[default]
+    Stopped,
+    Active,
+    Paused,
+}
 use tokio_util::sync::CancellationToken;
 /// A repeating async timer that fires a callback at a fixed interval.
 ///
@@ -23,12 +30,10 @@ pub struct Timer {
     interval: Duration,
     #[debug(skip)]
     callback: Arc<EmptyCb>,
-    is_active: Arc<AtomicBool>,
-    /// `true` when the timer has been suspended via [`Timer::pause`].
-    pub paused: Arc<AtomicBool>,
+    pub(crate) state: Arc<AtomicCell<TimerState>>,
     /// `true` after [`Timer::should_skip_first_tick`] has been called; causes
     /// the callback to fire before the first interval tick.
-    pub skip_first_tick: Arc<AtomicBool>,
+    pub skip_first_tick: Arc<AtomicCell<bool>>,
     /// Notifier used to wake the timer loop when [`Timer::resume`] is called.
     pub notifier: Arc<Notify>,
     cancel: CancellationToken,
@@ -46,13 +51,11 @@ impl Timer {
         let interval = Duration::from_millis(delay_ms);
         #[allow(clippy::redundant_closure)]
         let parsed_cb = move || cb().boxed();
-        let is_active = Arc::default();
-        let paused = Arc::default();
+        let state = Arc::default();
         let notifier = Arc::default();
         Self {
             notifier,
-            paused,
-            is_active,
+            state,
             interval,
             callback: Arc::new(parsed_cb),
             cancel: CancellationToken::default(),
@@ -67,12 +70,7 @@ impl Timer {
     #[must_use]
     pub fn should_skip_first_tick(&self) -> bool {
         self.skip_first_tick
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::Relaxed,
-                std::sync::atomic::Ordering::Relaxed,
-            )
+            .compare_exchange(false, true)
             .unwrap_or_default()
     }
 
@@ -80,19 +78,10 @@ impl Timer {
     ///
     /// If the timer is already paused or not running, this is a no-op.
     pub fn pause(&self) {
-        let _ = self.paused.compare_exchange(
-            false,
-            true,
-            std::sync::atomic::Ordering::Relaxed,
-            std::sync::atomic::Ordering::Relaxed,
-        );
-        // set running to false
-        let _ = self.is_active.compare_exchange(
-            true,
-            false,
-            std::sync::atomic::Ordering::Relaxed,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        if self.state.load().is_paused() {
+            return;
+        }
+        self.state.store(TimerState::Paused);
     }
 
     /// Starts the timer loop in a background Tokio task.
@@ -107,26 +96,32 @@ impl Timer {
         let mut interval = tokio::time::interval(self.interval);
         let callback = Arc::clone(&self.callback);
         let token = self.cancel.clone();
-        let skip_first_tick = self
-            .skip_first_tick
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let is_paused = self.paused.clone();
+        let skip_first_tick = self.skip_first_tick.load();
         let notifier = self.notifier.clone();
+        let state = self.state.clone();
         let task = task::spawn(async move {
             // wait for the first tick to ensure the initial delay;
             if !skip_first_tick {
                 interval.tick().await;
             }
             while !token.is_cancelled() {
-                if is_paused.load(std::sync::atomic::Ordering::Relaxed) {
-                    notifier.notified().await;
+                if state.load().is_paused() {
+                    if token
+                        .run_until_cancelled(notifier.notified())
+                        .await
+                        .is_none()
+                    {
+                        state.store(TimerState::Stopped);
+                        break;
+                    }
+
+                    state.store(TimerState::Active);
                 }
                 callback().await;
                 interval.tick().await;
             }
         });
-        self.is_active
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.state.store(TimerState::Active);
         Some(task)
     }
 
@@ -137,28 +132,22 @@ impl Timer {
     pub fn stop(&self) {
         self.cancel.cancel();
         if self.cancel.is_cancelled() {
-            self.is_active
-                .store(false, std::sync::atomic::Ordering::Relaxed);
+            self.state.store(TimerState::Stopped);
         }
     }
     /// Returns `true` if the timer is currently ticking (not paused or stopped).
     #[must_use]
     pub fn is_running(&self) -> bool {
-        self.is_active.load(std::sync::atomic::Ordering::Relaxed)
+        self.state.load().is_active()
     }
     /// Resumes a previously paused timer.
     ///
     /// If the timer is already running or has been stopped, this is a no-op.
     pub fn resume(&self) {
-        if self.is_running() || !self.paused.load(std::sync::atomic::Ordering::Relaxed) {
+        if matches!(self.state.load(), TimerState::Active | TimerState::Stopped) {
             return;
         }
-
         self.notifier.notify_waiters();
-        self.is_active
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        self.paused
-            .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -191,9 +180,7 @@ mod tests {
         });
         let _ = timer.should_skip_first_tick();
         let _ = timer.run();
-        assert!(timer
-            .skip_first_tick
-            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(timer.skip_first_tick.load());
 
         tokio::time::sleep(Duration::from_millis(100)).await;
         timer.stop();
@@ -213,16 +200,31 @@ mod tests {
         });
         let _ = timer.should_skip_first_tick();
         let _ = timer.run();
-        assert!(timer
-            .skip_first_tick
-            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(timer.skip_first_tick.load());
 
         tokio::time::sleep(Duration::from_millis(100)).await;
         timer.pause();
-        assert!(!timer.is_running());
+        assert!(timer.state.load().is_paused());
         tokio::time::sleep(Duration::from_millis(100)).await;
         timer.resume();
+        tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(timer.is_running());
-        assert_eq!(counter.load(std::sync::atomic::Ordering::Acquire), 2);
+        assert_eq!(counter.load(std::sync::atomic::Ordering::Acquire), 4);
+    }
+    #[tokio::test]
+    async fn stops_when_paused() {
+        let timer = Timer::new(100, || async {
+            println!("hello");
+        });
+        let state = timer.state.clone();
+        let _ = timer.run();
+        dbg!(state.load());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        timer.pause();
+        dbg!(state.load());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        timer.stop();
+        dbg!(state.load());
+        assert!(timer.state.load().is_stopped());
     }
 }
