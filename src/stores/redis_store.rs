@@ -97,7 +97,7 @@ impl RedisStore {
         let connection_info = cfg.connection.clone().unwrap_or_default();
         let redis_client = redis::Client::open(connection_info)?;
         let id = Uuid::new_v4();
-        let consumer_group = format!("{prefix}-{prefix}-group-{id}",);
+        let consumer_group = format!("{prefix}-{prefix}-group-{id}");
         let consumer_name = format!("consumer-{id}");
         let mut connection = conn_pool.get().await?;
         let stream_key = CollectionSuffix::Events.to_collection_name(&prefix, &name);
