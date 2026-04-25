@@ -505,7 +505,8 @@ impl<
             .await?;
         let stalled = self
             .store
-            .get_job_ids_in_state(JobState::Stalled, None, None)?;
+            .get_job_ids_in_state(JobState::Stalled, None, None)
+            .await?;
         if stalled.is_empty() {
             for id in stalled {
                 let job_key = CollectionSuffix::Job(id);
@@ -549,7 +550,8 @@ impl<
             // move all active jobs to stalled
             let active_elements = self
                 .store
-                .get_job_ids_in_state(JobState::Active, None, None)?;
+                .get_job_ids_in_state(JobState::Active, None, None)
+                .await?;
             for id in active_elements {
                 let lock = CollectionSuffix::Lock(id);
                 if !self.store.exists_in(lock, id).await? {
@@ -686,7 +688,7 @@ impl<
             if local != token {
                 return Err(JobError::JobLockMismatch.into());
             }
-            self.store.remove(CollectionSuffix::Lock(job_id))?;
+            self.store.remove(CollectionSuffix::Lock(job_id)).await?;
             self.store
                 .remove_item(CollectionSuffix::Stalled, job_id)
                 .await?;
@@ -822,7 +824,7 @@ impl<
             return Ok(Some(job_id));
         }
 
-        let _: () = self.store.remove(CollectionSuffix::PriorityCounter)?;
+        let _: () = self.store.remove(CollectionSuffix::PriorityCounter).await?;
 
         Ok(None)
     }
@@ -844,14 +846,14 @@ impl<
             match remove_options {
                 RemoveOnCompletionOrFailure::Bool(remove_immediately) => {
                     if remove_immediately {
-                        self.store.remove(CollectionSuffix::Job(job_id))?;
+                        self.store.remove(CollectionSuffix::Job(job_id)).await?;
                     }
                 }
                 RemoveOnCompletionOrFailure::Int(max_to_keep) => {
                     if max_to_keep.is_positive()
                         && i64::try_from(id).unwrap_or(i64::MAX) > max_to_keep
                     {
-                        self.store.remove(CollectionSuffix::Job(job_id))?;
+                        self.store.remove(CollectionSuffix::Job(job_id)).await?;
                     }
                 }
                 RemoveOnCompletionOrFailure::Opts(KeepJobs { age, count }) => {
@@ -864,7 +866,7 @@ impl<
                         if max_to_keep.is_positive()
                             && i64::try_from(id).unwrap_or(i64::MAX) > max_to_keep
                         {
-                            self.store.remove(CollectionSuffix::Job(job_id))?;
+                            self.store.remove(CollectionSuffix::Job(job_id)).await?;
                         }
                     }
                 }
@@ -880,8 +882,8 @@ impl<
     /// # Errors
     ///
     /// Returns [`KioError`] if the store lookup fails.
-    pub fn fetch_jobs(&self, ids: &[u64]) -> KioResult<VecDeque<Job<D, R, P>>> {
-        self.store.fetch_jobs(ids)
+    pub async fn fetch_jobs(&self, ids: &[u64]) -> KioResult<VecDeque<Job<D, R, P>>> {
+        self.store.fetch_jobs(ids).await
     }
     /// Returns the IDs of jobs currently in the given `state`.
     ///
@@ -891,13 +893,13 @@ impl<
     /// # Errors
     ///
     /// Returns [`KioError`] if the store lookup fails.
-    pub fn get_job_ids_in_state(
+    pub async fn get_job_ids_in_state(
         &self,
         state: JobState,
         start: Option<usize>,
         end: Option<usize>,
     ) -> KioResult<VecDeque<u64>> {
-        self.store.get_job_ids_in_state(state, start, end)
+        self.store.get_job_ids_in_state(state, start, end).await
     }
     /// Returns the name of this queue (as provided to the store constructor).
     #[must_use]
@@ -1087,8 +1089,8 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     /// # Errors
     ///
     /// Returns [`KioError`] if the store lookup fails.
-    pub fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
-        self.store.fetch_worker_metrics()
+    pub async fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
+        self.store.fetch_worker_metrics().await
     }
     /// Persists the given worker metrics to the backing store with a TTL.
     ///

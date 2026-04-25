@@ -22,7 +22,6 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::runtime::Handle;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -64,7 +63,7 @@ pub struct RedisStore {
     pubsub_sink: Arc<Mutex<PubSubSink>>,
     subscribed: Arc<AtomicBool>,
     #[debug(skip)]
-    pub(crate) conn_pool: Arc<Pool>,
+    pub(crate) connection: SharedRedis,
     ///  job-id counter  -> updated whenever a job is added
     id_counter: Counter,
     ///  priority  counter  -> updated whenever a job is added
@@ -120,6 +119,7 @@ impl RedisStore {
             .ok_or_else(|| std::io::Error::other("failed to fetch redis-version info "))?;
         let pc_counter = Arc::default();
         let id_counter = Arc::default();
+        let connection = shared_conn.clone();
 
         Ok(Self {
             prefix,
@@ -130,7 +130,7 @@ impl RedisStore {
             pubsub_source,
             pubsub_sink,
             subscribed,
-            conn_pool,
+            connection,
             id_counter,
             pc_counter,
             redis_version,
@@ -143,7 +143,7 @@ impl RedisStore {
     ///
     /// Returns [`crate::KioError`] if the pool is exhausted or the connection fails.
     pub async fn get_connection(&self) -> KioResult<deadpool_redis::Connection> {
-        let conn = self.conn_pool.get().await?;
+        let conn = self.connection.conn_pool.get().await?;
         Ok(conn)
     }
 }
@@ -156,30 +156,25 @@ impl<
 where
     Self: Send,
 {
-    fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
-        tokio::task::block_in_place(|| {
-            Handle::current().block_on(async {
-                let mut conn = self.get_connection().await?;
-                let key =
-                    CollectionSuffix::WorkerMetrics.to_collection_name(&self.prefix, &self.name);
-                let results: Vec<WorkerMetrics> = conn.hvals(key).await?;
-                Ok(results
-                    .into_iter()
-                    .filter_map(|metrics| {
-                        let now = Utc::now();
-                        if now
-                            .signed_duration_since(metrics.last_updated)
-                            .num_milliseconds()
-                            <= (metrics.ttl_ms.cast_signed() + 20)
-                        {
-                            return Some((metrics.worker_id, metrics));
-                        }
+    async fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
+        let mut conn = self.get_connection().await?;
+        let key = CollectionSuffix::WorkerMetrics.to_collection_name(&self.prefix, &self.name);
+        let results: Vec<WorkerMetrics> = conn.hvals(key).await?;
+        Ok(results
+            .into_iter()
+            .filter_map(|metrics| {
+                let now = Utc::now();
+                if now
+                    .signed_duration_since(metrics.last_updated)
+                    .num_milliseconds()
+                    <= (metrics.ttl_ms.cast_signed() + 20)
+                {
+                    return Some((metrics.worker_id, metrics));
+                }
 
-                        None
-                    })
-                    .collect())
+                None
             })
-        })
+            .collect())
     }
     async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()> {
         let key = CollectionSuffix::WorkerMetrics.to_collection_name(&self.prefix, &self.name);
@@ -244,53 +239,91 @@ where
     fn queue_prefix(&self) -> &str {
         &self.prefix
     }
-    fn update_job_progress(&self, job: &mut Job<D, R, P>, value: P) -> KioResult<()> {
-        use crate::QueueEventMode;
-        tokio::task::block_in_place(|| {
-            Handle::current().block_on(async {
-                let mut conn = self.get_connection().await?;
-                if let Some(id) = job.id {
-                    let job_key =
-                        CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
-                    let mut pipeline = redis::pipe();
-                    pipeline.atomic();
-                    let progress_str = simd_json::to_string_pretty(&value)?;
-                    let events_stream_key =
-                        CollectionSuffix::Events.to_collection_name(&self.prefix, &self.name);
-                    pipeline.hset(job_key, "progress", &progress_str);
-                    let meta_key =
-                        CollectionSuffix::Meta.to_collection_name(&self.prefix, &self.name);
-                    let event_mode: Option<QueueEventMode> =
-                        conn.hget(&meta_key, "event_mode").await?;
-                    // check for the queue_event_mode
-                    let event_mode = event_mode.unwrap_or_default();
+    async fn update_job_progress(&self, job: &mut Job<D, R, P>, value: P) -> KioResult<()> {
+        let mut conn = self.connection.conn_pool.get().await?;
+        if let Some(id) = job.id {
+            let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
+            let mut pipeline = redis::pipe();
+            pipeline.atomic();
+            let progress_str = simd_json::to_string_pretty(&value)?;
+            let events_stream_key =
+                CollectionSuffix::Events.to_collection_name(&self.prefix, &self.name);
+            pipeline.hset(job_key, "progress", &progress_str);
+            let meta_key = CollectionSuffix::Meta.to_collection_name(&self.prefix, &self.name);
+            let event_mode: Option<QueueEventMode> = conn.hget(&meta_key, "event_mode").await?;
+            // check for the queue_event_mode
+            let event_mode = event_mode.unwrap_or_default();
 
-                    match event_mode {
-                        QueueEventMode::PubSub => {
-                            let event = QueueStreamEvent::<R, P> {
-                                job_id: id,
-                                event: JobState::Progress,
-                                name: Some(self.name.clone()),
-                                progress_data: Some(value.clone()),
-                                ..Default::default()
-                            };
-                            pipeline.publish(&events_stream_key, event);
-                        }
-                        QueueEventMode::Stream => {
-                            let items = [
-                                ("event", JobState::Progress.to_string().to_lowercase()),
-                                ("job_id", id.to_string()),
-                                ("data", progress_str),
-                                ("name", self.name.clone()),
-                            ];
-                            pipeline.xadd(&events_stream_key, "*", &items);
-                        }
-                    }
-                    let _: () = pipeline.query_async(&mut conn).await?;
-                    job.progress = Some(value);
+            match event_mode {
+                QueueEventMode::PubSub => {
+                    let event = QueueStreamEvent::<R, P> {
+                        job_id: id,
+                        event: JobState::Progress,
+                        name: Some(self.name.clone()),
+                        progress_data: Some(value.clone()),
+                        ..Default::default()
+                    };
+                    pipeline.publish(&events_stream_key, event);
                 }
-                Ok(())
-            })
+                QueueEventMode::Stream => {
+                    let items = [
+                        ("event", JobState::Progress.to_string().to_lowercase()),
+                        ("job_id", id.to_string()),
+                        ("data", progress_str),
+                        ("name", self.name.clone()),
+                    ];
+                    pipeline.xadd(&events_stream_key, "*", &items);
+                }
+            }
+            let _: () = pipeline.query_async(&mut conn).await?;
+            job.progress = Some(value);
+        }
+        Ok(())
+    }
+    fn update_job_progress_sync(&self, job: &mut Job<D, R, P>, value: P) -> KioResult<()> {
+        use crate::QueueEventMode;
+        use redis::Commands;
+        tokio::task::block_in_place(|| {
+            let mut conn = self.connection.redis_client.get_connection()?;
+            if let Some(id) = job.id {
+                let job_key =
+                    CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
+                let mut pipeline = redis::pipe();
+                pipeline.atomic();
+                let progress_str = simd_json::to_string_pretty(&value)?;
+                let events_stream_key =
+                    CollectionSuffix::Events.to_collection_name(&self.prefix, &self.name);
+                pipeline.hset(job_key, "progress", &progress_str);
+                let meta_key = CollectionSuffix::Meta.to_collection_name(&self.prefix, &self.name);
+                let event_mode: Option<QueueEventMode> = conn.hget(&meta_key, "event_mode")?;
+                // check for the queue_event_mode
+                let event_mode = event_mode.unwrap_or_default();
+
+                match event_mode {
+                    QueueEventMode::PubSub => {
+                        let event = QueueStreamEvent::<R, P> {
+                            job_id: id,
+                            event: JobState::Progress,
+                            name: Some(self.name.clone()),
+                            progress_data: Some(value.clone()),
+                            ..Default::default()
+                        };
+                        pipeline.publish(&events_stream_key, event);
+                    }
+                    QueueEventMode::Stream => {
+                        let items = [
+                            ("event", JobState::Progress.to_string().to_lowercase()),
+                            ("job_id", id.to_string()),
+                            ("data", progress_str),
+                            ("name", self.name.clone()),
+                        ];
+                        pipeline.xadd(&events_stream_key, "*", &items);
+                    }
+                }
+                let _: () = pipeline.query(&mut conn)?;
+                job.progress = Some(value);
+            }
+            Ok(())
         })
     }
     async fn get_delayed_at(&self, start: i64, stop: i64) -> KioResult<(Vec<u64>, Vec<u64>)> {
@@ -496,7 +529,7 @@ where
     }
     async fn get_job(&self, id: u64) -> Option<Job<D, R, P>> {
         let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
-        let mut conn = self.conn_pool.get().await.ok()?;
+        let mut conn = self.connection.conn_pool.get().await.ok()?;
         let value: Option<Job<_, _, _>> = conn.hgetall(job_key).await.ok()?;
         value
     }
@@ -507,7 +540,6 @@ where
         if let Ok(result) = conn.get(job_lock_key).await {
             return Some(result);
         }
-        // try fetch token from job hash;
         let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
         conn.hget(job_key, "token").await.ok()
     }
@@ -516,15 +548,11 @@ where
         let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
         conn.hget(&job_key, "state").await.ok()
     }
-    fn remove(&self, key: CollectionSuffix) -> KioResult<()> {
+    async fn remove(&self, key: CollectionSuffix) -> KioResult<()> {
         let key = key.to_collection_name(&self.prefix, &self.name);
-        tokio::task::block_in_place(|| {
-            Handle::current().block_on(async {
-                let mut conn = self.get_connection().await?;
-                let _: () = conn.del(key).await?;
-                Ok(())
-            })
-        })
+        let mut conn = self.get_connection().await?;
+        let _: () = conn.del(key).await?;
+        Ok(())
     }
     async fn set_lock(
         &self,
@@ -632,58 +660,51 @@ where
         let _: () = pipeline.query_async(&mut conn).await?;
         Ok(())
     }
-    fn get_job_ids_in_state(
+    async fn get_job_ids_in_state(
         &self,
         state: JobState,
         start: Option<usize>,
         end: Option<usize>,
     ) -> KioResult<VecDeque<u64>> {
-        tokio::task::block_in_place(|| {
-            Handle::current().block_on(async {
-                let mut conn = self.get_connection().await?;
-                let start = start.unwrap_or_default();
-                let col: CollectionSuffix = state.into();
-                let key = col.to_collection_name(&self.prefix, &self.name);
-                match state {
-                    JobState::Prioritized
-                    | JobState::Completed
-                    | JobState::Failed
-                    | JobState::Delayed => {
-                        let list_len: usize = conn.zcard(&key).await?;
-                        if list_len > 0 {
-                            let end = end.map_or(list_len, |value| value + 1);
+        let mut conn = self.get_connection().await?;
+        let start = start.unwrap_or_default();
+        let col: CollectionSuffix = state.into();
+        let key = col.to_collection_name(&self.prefix, &self.name);
+        match state {
+            JobState::Prioritized | JobState::Completed | JobState::Failed | JobState::Delayed => {
+                let list_len: usize = conn.zcard(&key).await?;
+                if list_len > 0 {
+                    let end = end.map_or(list_len, |value| value + 1);
 
-                            let items: Vec<u64> = conn
-                                .zrange(key, start.cast_signed(), end.cast_signed())
-                                .await?;
-                            return Ok(VecDeque::from_iter(items));
-                        }
-                    }
-                    JobState::Stalled => {
-                        let set: Vec<u64> = conn.smembers(key).await?;
-                        if !set.is_empty() {
-                            let set = VecDeque::from(set);
-                            let end = end.unwrap_or(set.len());
-
-                            return Ok(set.range(start..=end).copied().collect());
-                        }
-                    }
-
-                    JobState::Active | JobState::Wait | JobState::Paused => {
-                        let list_len: usize = conn.llen(&key).await?;
-                        if list_len > 0 {
-                            let end = end.map_or(list_len, |value| value + 1);
-                            let items: Vec<u64> = conn
-                                .lrange(key, start.cast_signed(), end.cast_signed())
-                                .await?;
-                            return Ok(VecDeque::from_iter(items));
-                        }
-                    }
-                    _ => {}
+                    let items: Vec<u64> = conn
+                        .zrange(key, start.cast_signed(), end.cast_signed())
+                        .await?;
+                    return Ok(VecDeque::from_iter(items));
                 }
-                Ok(VecDeque::new())
-            })
-        })
+            }
+            JobState::Stalled => {
+                let set: Vec<u64> = conn.smembers(key).await?;
+                if !set.is_empty() {
+                    let set = VecDeque::from(set);
+                    let end = end.unwrap_or(set.len());
+
+                    return Ok(set.range(start..=end).copied().collect());
+                }
+            }
+
+            JobState::Active | JobState::Wait | JobState::Paused => {
+                let list_len: usize = conn.llen(&key).await?;
+                if list_len > 0 {
+                    let end = end.map_or(list_len, |value| value + 1);
+                    let items: Vec<u64> = conn
+                        .lrange(key, start.cast_signed(), end.cast_signed())
+                        .await?;
+                    return Ok(VecDeque::from_iter(items));
+                }
+            }
+            _ => {}
+        }
+        Ok(VecDeque::new())
     }
     async fn pop_set(&self, col: CollectionSuffix, min: bool) -> KioResult<Vec<(u64, u64)>> {
         let key = col.to_collection_name(&self.prefix, &self.name);
@@ -708,7 +729,7 @@ where
     }
 
     async fn clear_collections(&self) -> KioResult<()> {
-        let mut conn = self.conn_pool.get().await?;
+        let mut conn = self.connection.conn_pool.get().await?;
         let mut pipeline = redis::pipe();
         for name in [
             CollectionSuffix::Delayed,
@@ -797,7 +818,7 @@ where
         Ok(())
     }
     async fn clear_jobs(&self, last_id: u64) -> KioResult<()> {
-        let mut conn = self.conn_pool.get().await?;
+        let mut conn = self.connection.conn_pool.get().await?;
         let mut pipeline = redis::pipe();
         pipeline.atomic();
 
@@ -817,8 +838,7 @@ where
             CollectionSuffix::Paused,
         ]
         .map(|s| s.to_collection_name(&self.prefix, &self.name));
-        // Plan: rename wait collection to paused
-        let mut conn = self.conn_pool.get().await?;
+        let mut conn = self.connection.conn_pool.get().await?;
         let src = if pause { &wait_key } else { &paused_key };
         let dst = if pause { &paused_key } else { &wait_key };
         let mut pipeline = redis::pipe();
@@ -835,26 +855,21 @@ where
         Ok(())
     }
 
-    fn fetch_jobs(&self, ids: &[u64]) -> KioResult<VecDeque<Job<D, R, P>>> {
+    async fn fetch_jobs(&self, ids: &[u64]) -> KioResult<VecDeque<Job<D, R, P>>> {
         if ids.is_empty() {
             return Ok(VecDeque::new());
         }
-        tokio::task::block_in_place(|| {
-            Handle::current().block_on(async {
-                let mut conn = self.get_connection().await?;
-                let mut pipeline = redis::pipe();
-                pipeline.atomic();
-                for id in ids {
-                    let key =
-                        CollectionSuffix::Job(*id).to_collection_name(&self.prefix, &self.name);
-                    pipeline.hgetall(key);
-                }
+        let mut conn = self.get_connection().await?;
+        let mut pipeline = redis::pipe();
+        pipeline.atomic();
+        for id in ids {
+            let key = CollectionSuffix::Job(*id).to_collection_name(&self.prefix, &self.name);
+            pipeline.hgetall(key);
+        }
 
-                let list: Vec<Job<D, R, P>> = pipeline.query_async(&mut conn).await?;
+        let list: Vec<Job<D, R, P>> = pipeline.query_async(&mut conn).await?;
 
-                Ok(VecDeque::from_iter(list))
-            })
-        })
+        Ok(VecDeque::from_iter(list))
     }
 }
 /// Represents a parsed Redis server version with major, minor, and patch components.

@@ -374,12 +374,28 @@ impl<D, R, P> Job<D, R, P> {
     /// # Errors
     ///
     /// Returns [`KioError`](crate::KioError) if the store update fails.
-    pub fn update_progress<C>(&mut self, value: P, store: &C) -> Result<(), KioError>
+    pub fn update_progress_sync<C>(&mut self, value: P, store: &C) -> Result<(), KioError>
     where
         P: Serialize + Clone,
         C: Store<D, R, P>,
     {
-        store.update_job_progress(self, value)
+        store.update_job_progress_sync(self, value)
+    }
+    /// Updates the job's progress value and persists it to the store.
+    ///
+    /// Call this from inside your processor function to report incremental
+    /// progress.  Listeners subscribed to [`JobState::Progress`] events will
+    /// receive the update.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`](crate::KioError) if the store update fails.
+    pub async fn update_progress<C>(&mut self, value: P, store: &C) -> Result<(), KioError>
+    where
+        P: Serialize + Clone,
+        C: Store<D, R, P>,
+    {
+        store.update_job_progress(self, value).await
     }
 }
 #[cfg(feature = "redis-store")]

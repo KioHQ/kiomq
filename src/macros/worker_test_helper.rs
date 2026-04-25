@@ -485,7 +485,7 @@ macro_rules! worker_store_suite {
                 let mut found_non_zero = false;
                 for _ in 0..50 {
                     tokio::time::sleep(Duration::from_millis(30)).await;
-                    let metrics_map = queue.fetch_worker_metrics()?;
+                    let metrics_map = queue.fetch_worker_metrics().await?;
                     if let Some(worker_metrics) = metrics_map.values().next() {
                         if let Some(task_info) = worker_metrics.tasks.first() {
                             if task_info.metrics.total_poll_count >= 2 {

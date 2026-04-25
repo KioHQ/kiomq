@@ -175,7 +175,7 @@ fn process_callback<S: Store<ProcessData, ReturnData, Progress>>(
                         current_progress.current_duration = parsed_duration;
                     }
                 }
-                store.update_job_progress(&mut job, current_progress)?;
+                store.update_job_progress_sync(&mut job, current_progress)?;
             }
 
             FfmpegEvent::Log(log_level, msg) => {
