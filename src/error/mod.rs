@@ -1,5 +1,3 @@
-#[cfg(feature = "redis-store")]
-use deadpool_redis::redis;
 use derive_more::Display;
 use std::io;
 use thiserror::Error;
@@ -18,6 +16,10 @@ pub enum KioError {
     #[error(transparent)]
     /// A Redis client error.
     RedisError(#[from] redis::RedisError),
+    #[cfg(feature = "redis-store")]
+    #[error(transparent)]
+    /// A Redis client error.
+    RedisParsingError(#[from] redis::ParsingError),
     #[cfg(feature = "redis-store")]
     #[error(transparent)]
     /// A connection-pool error from deadpool-redis.

@@ -1089,6 +1089,7 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     /// # Errors
     ///
     /// Returns [`KioError`] if the store lookup fails.
+    #[allow(clippy::future_not_send)]
     pub async fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
         self.store.fetch_worker_metrics().await
     }

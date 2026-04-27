@@ -1012,7 +1012,6 @@ impl SharedRedis {
     /// let mut cfg = deadpool_redis::Config::from_url("redis://127.0.0.1/");
     /// let redis = SharedRedis::create(&config);
     /// ```
-    #[must_use]
     pub fn create(cfg: &Config) -> KioResult<Self> {
         let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
         let conn_pool = Arc::new(pool);

@@ -1,7 +1,9 @@
+#[cfg(feature = "redis-store")]
+use crate::utils::to_redis_parsing_error;
 use crate::Dt;
 use chrono::Utc;
 #[cfg(feature = "redis-store")]
-use redis::{self, FromRedisValue, RedisResult};
+use redis::{self, FromRedisValue, ParsingError};
 use serde::{
     de::{self, Visitor},
     Deserialize, Serialize,
@@ -119,11 +121,11 @@ impl TaskStats {
 
 #[cfg(feature = "redis-store")]
 impl FromRedisValue for WorkerMetrics {
-    fn from_redis_value(v: &redis::Value) -> RedisResult<Self> {
+    fn from_redis_value(v: redis::Value) -> Result<Self, ParsingError> {
         use std::sync::Arc;
         let mut bytes: Arc<[u8]> = redis::from_redis_value(v)?;
         let bytes = Arc::make_mut(&mut bytes);
-        let metrics = simd_json::from_slice(bytes).map_err(std::io::Error::other)?;
+        let metrics = simd_json::from_slice(bytes).map_err(to_redis_parsing_error)?;
         Ok(metrics)
     }
 }

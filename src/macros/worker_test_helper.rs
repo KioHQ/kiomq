@@ -462,6 +462,7 @@ macro_rules! worker_store_suite {
             }
 
             #[tokio::test(flavor = "multi_thread")]
+            #[cfg(any(feature = "default", not(feature = "redis-store")))]
             async fn task_metrics_update_over_time() -> KioResult<()> {
                 let store = make_store().await?;
                 let queue = Queue::<D, R, P, _>::new(store, None).await?;

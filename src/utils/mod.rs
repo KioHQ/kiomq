@@ -14,6 +14,8 @@ use chrono::Utc;
 use crossbeam::atomic::AtomicCell;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
+#[cfg(feature = "redis-store")]
+use redis::ParsingError;
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio_metrics::TaskMonitor;
@@ -885,4 +887,10 @@ pub fn pause_or_resume_workers(
         resume_helper(metrics, pause_workers, notifier);
     }
     let _ = is_inital.compare_exchange(true, false);
+}
+
+#[cfg(feature = "redis-store")]
+#[allow(clippy::needless_pass_by_value)]
+pub fn to_redis_parsing_error(err: impl ToString) -> ParsingError {
+    ParsingError::from(err.to_string())
 }
