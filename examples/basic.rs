@@ -129,11 +129,11 @@ async fn main() -> KioResult<()> {
 }
 #[framed]
 async fn process_callback<S: Store<i32, i32, i32>>(
-    store: Arc<S>,
-    mut job: Job<i32, i32, i32>,
+    _store: Arc<S>,
+    job: Job<i32, i32, i32>,
 ) -> Result<i32, std::io::Error> {
-    let progress = job.progress.unwrap_or_default();
-    let _ = store.update_job_progress(&mut job, progress + 1);
+    // let progress = job.progress.unwrap_or_default();
+    // store.update_job_progress(&mut job, progress + 1).await?;
     //let id: u64 = job.id.unwrap_or_default().parse().unwrap_or_default();
     //if id % 2 == 0 && job.attempts_made < job.opts.attempts - 1 {
     //    //uncomment the line below to test to catching panics

@@ -15,6 +15,8 @@ use crossbeam::atomic::AtomicCell;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
 #[cfg(feature = "redis-store")]
+use redis::aio::ConnectionLike;
+#[cfg(feature = "redis-store")]
 use redis::ParsingError;
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
@@ -788,8 +790,9 @@ fn split_pipeline(mut p: Pipeline, chunk_size: usize) -> Vec<Pipeline> {
         .collect()
 }
 #[cfg(feature = "redis-store")]
-pub async fn query_all_batched(
-    conn: deadpool_redis::Connection,
+#[allow(clippy::future_not_send)]
+pub async fn query_all_batched<C: ConnectionLike + Clone>(
+    conn: &C,
     p: Pipeline,
 ) -> redis::RedisResult<()>
 where

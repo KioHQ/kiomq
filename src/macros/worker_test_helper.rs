@@ -196,16 +196,26 @@ macro_rules! worker_store_suite {
                 let queue = Queue::<D, R, P, _>::new(store, Some(queue_opts)).await?;
 
                 let count = 4;
-                let completed: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(count as usize));
-                let jobs = completed.clone();
+                let active: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(5 as usize));
+                let completed: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(5 as usize));
+                let jobs = active.clone();
+                let completed_clone = completed.clone();
 
-                queue.on(
-                    kiomq::JobState::Completed,
+                queue.on_all_events(
                     move |state: kiomq::EventParameters<D, R>| {
-                        let completed = jobs.clone();
+                        let active = jobs.clone();
+                        let completed = completed_clone.clone();
                         async move {
-                            if let EventParameters::Completed { job_id, .. } = state {
-                                let _ = completed.push(job_id);
+                            match state {
+                                EventParameters::Active {job_id, ..} => {
+                                    active.push(job_id);
+                                },
+                                EventParameters::Completed {job_id, ..} => {
+                                    completed.push(job_id);
+                                },
+                                _=> {
+                                }
+
                             }
                         }
                     },
@@ -221,23 +231,29 @@ macro_rules! worker_store_suite {
                 assert!(worker.is_running());
 
                 queue.bulk_add(job_iterator).await?;
-                while !queue.current_metrics.all_jobs_completed() {
+                while completed.len() <4 {
                     tokio::task::yield_now().await;
                 }
 
+                queue.pause_active_workers();
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                assert!(worker.is_idle());
+                assert!(worker.is_idle(), "meant to be Idle");
 
                 queue.add_job("test", 1, None).await?;
-                while queue.get_metrics().await?.queue_has_work() {}
+                while active.len()<5 {
+                    tokio::task::yield_now().await;
+                }
 
-                assert!(!worker.is_idle());
+                assert!(!worker.is_idle(), "meant to be Idle");
                 assert!(worker.is_running());
 
                 let metrics = queue.get_metrics().await?;
                 assert_eq!(metrics.waiting.load(), 0);
 
-                while !queue.current_metrics.all_jobs_completed() {}
+                while completed.len() < 5{
+                    tokio::task::yield_now().await;
+
+                }
                 queue.obliterate().await?;
                 Ok(())
             }
