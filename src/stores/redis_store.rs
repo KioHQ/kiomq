@@ -7,13 +7,12 @@ use crate::utils::{
     create_listener_handle, prepare_for_insert, process_each_event, query_all_batched,
     update_job_opts,
 };
-use crate::Counter;
 use chrono::Utc;
 use crossbeam::atomic::AtomicCell;
 use deadpool_redis::{Config, Pool, Runtime};
 use derive_more::Debug;
-use futures::StreamExt;
-use redis::aio::{PubSubSink, PubSubStream};
+use futures::{FutureExt, StreamExt};
+use redis::aio::{transaction_async, PubSubSink, PubSubStream};
 use redis::streams::{StreamReadOptions, StreamReadReply};
 use redis::{
     AsyncCommands, FieldExistenceCheck, HashFieldExpirationOptions, LposOptions, SetExpiry,
@@ -64,10 +63,6 @@ pub struct RedisStore {
     subscribed: Arc<AtomicBool>,
     #[debug(skip)]
     pub(crate) connection: SharedRedis,
-    ///  job-id counter  -> updated whenever a job is added
-    id_counter: Counter,
-    ///  priority  counter  -> updated whenever a job is added
-    pc_counter: Counter,
 
     /// The redis version of redis this store is initialized with.
     pub redis_version: RedisVersion,
@@ -117,8 +112,6 @@ impl RedisStore {
 
         let redis_version = RedisVersion::parse(&raw)
             .ok_or_else(|| std::io::Error::other("failed to fetch redis-version info "))?;
-        let pc_counter = Arc::default();
-        let id_counter = Arc::default();
         let connection = shared_conn.clone();
 
         Ok(Self {
@@ -131,8 +124,6 @@ impl RedisStore {
             pubsub_sink,
             subscribed,
             connection,
-            id_counter,
-            pc_counter,
             redis_version,
         })
     }
@@ -145,6 +136,93 @@ impl RedisStore {
     pub async fn get_connection(&self) -> KioResult<deadpool_redis::Connection> {
         let conn = self.connection.conn_pool.get().await?;
         Ok(conn)
+    }
+    async fn add<
+        D: Clone + Serialize + DeserializeOwned + Send + 'static,
+        R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
+        P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
+    >(
+        &self,
+        iter: Box<dyn Iterator<Item = (String, Option<JobOptions>, D)> + Send>,
+        queue_opts: QueueOpts,
+        event_mode: QueueEventMode,
+        is_paused: bool,
+        return_jobs: bool,
+    ) -> KioResult<Vec<Job<D, R, P>>> {
+        let deadpool_conn = self.get_connection().await?;
+        let conn = deadpool_redis::Connection::take(deadpool_conn);
+        let id_key = CollectionSuffix::Id.to_collection_name(&self.prefix, &self.name);
+        let pc_key = CollectionSuffix::PriorityCounter.to_collection_name(&self.prefix, &self.name);
+        let items = iter.collect::<Vec<_>>();
+        let jobs = transaction_async(
+            conn,
+            &[id_key.clone(), pc_key.clone()],
+            move |mut conn: redis::aio::MultiplexedConnection, mut pipeline: redis::Pipeline| {
+                let id_key = id_key.clone();
+                let priority_counter_key = pc_key.clone();
+                let queue_opts = queue_opts.clone();
+                let items = items.clone();
+
+                async move {
+                    let mut jobs = Vec::with_capacity(items.len());
+                    let id: u64 = conn
+                        .get::<_, Option<u64>>(&id_key)
+                        .await?
+                        .unwrap_or_default();
+                    let id_counter: AtomicCell<u64> = AtomicCell::new(id + 1);
+                    let prior_counter: u64 = conn
+                        .get::<_, Option<u64>>(&priority_counter_key)
+                        .await?
+                        .unwrap_or_default();
+                    let pc_counter: AtomicCell<u64> = AtomicCell::new(prior_counter + 1);
+                    let mut to_priorize = false;
+                    for (ref name, opts, data) in items {
+                        let mut opts = opts.unwrap_or_default();
+                        update_job_opts(&queue_opts, &mut opts);
+                        let queue_name = format!("{}:{}", self.prefix, self.name);
+                        let id = id_counter.fetch_add(1);
+                        let prior_counter = if opts.priority > 0 {
+                            to_priorize = true;
+                            pc_counter.fetch_add(1)
+                        } else {
+                            pc_counter.load()
+                        };
+                        let mut job = Job::<D, R, P>::new(
+                            name,
+                            Some(data.clone()),
+                            opts.id,
+                            Some(&queue_name),
+                        );
+                        let _ = prepare_for_insert(
+                            &queue_name,
+                            event_mode,
+                            is_paused,
+                            id,
+                            prior_counter,
+                            opts,
+                            &mut job,
+                            name,
+                            &mut pipeline,
+                        );
+
+                        job.id = Some(id);
+                        if return_jobs {
+                            jobs.push(job);
+                        }
+                    }
+                    pipeline.incr(&id_key, id_counter.load().saturating_sub(1));
+                    if to_priorize {
+                        pipeline.incr(&priority_counter_key, pc_counter.load().saturating_sub(1));
+                    }
+                    let _: () = query_all_batched(&conn, pipeline).await?;
+
+                    Ok(Some(jobs))
+                }
+                .boxed()
+            },
+        )
+        .await?;
+        Ok(jobs)
     }
 }
 #[async_trait::async_trait]
@@ -419,51 +497,9 @@ where
         event_mode: QueueEventMode,
         is_paused: bool,
     ) -> KioResult<()> {
-        let mut conn = self.get_connection().await?;
-        let id_key = CollectionSuffix::Id.to_collection_name(&self.prefix, &self.name);
-        let priority_counter_key =
-            CollectionSuffix::PriorityCounter.to_collection_name(&self.prefix, &self.name);
-        let max_len_hint = iter.size_hint().1.unwrap_or_default();
-        let mut pipeline = redis::Pipeline::with_capacity((max_len_hint * 3) + 1);
-        pipeline.atomic();
-        let end: usize = conn.incr(&id_key, max_len_hint).await?;
-        let counter: Option<u64> = conn.get(&priority_counter_key).await?;
-        let pc = counter.unwrap_or_default() + 1;
-        self.pc_counter.store(pc);
-        let start = (end - max_len_hint) + 1;
-        self.id_counter.store(start as u64);
-        let mut is_prioritized = false;
-        //let mut iter = iter.par_bridge();
-        for (ref name, opts, data) in iter {
-            let mut opts = opts.unwrap_or_default();
-            update_job_opts(&queue_opts, &mut opts);
-            let queue_name = format!("{}:{}", self.prefix, self.name);
-            let id = self.id_counter.fetch_add(1);
-            let prior_counter = if opts.priority > 0 {
-                is_prioritized = true;
-                self.pc_counter.fetch_add(1)
-            } else {
-                self.pc_counter.load()
-            };
-            let mut job = Job::<D, R, P>::new(name, Some(data), opts.id, Some(&queue_name));
-            prepare_for_insert(
-                &queue_name,
-                event_mode,
-                is_paused,
-                id,
-                prior_counter,
-                opts,
-                &mut job,
-                name,
-                &mut pipeline,
-            )?;
-            job.id = Some(id);
-        }
-        if is_prioritized {
-            pipeline.incr(&priority_counter_key, self.pc_counter.load());
-        }
-
-        query_all_batched(conn, pipeline).await?;
+        let _done = self
+            .add::<D, R, P>(iter, queue_opts, event_mode, is_paused, false)
+            .await?;
         Ok(())
     }
     async fn add_bulk(
@@ -473,54 +509,10 @@ where
         event_mode: QueueEventMode,
         is_paused: bool,
     ) -> KioResult<Vec<Job<D, R, P>>> {
-        let mut conn = self.get_connection().await?;
-        let mut result = vec![];
-        let id_key = CollectionSuffix::Id.to_collection_name(&self.prefix, &self.name);
-        let priority_counter_key =
-            CollectionSuffix::PriorityCounter.to_collection_name(&self.prefix, &self.name);
-        let max_len_hint = iter.size_hint().1.unwrap_or_default();
-        let mut pipeline = redis::Pipeline::with_capacity((max_len_hint * 3) + 1);
-        pipeline.atomic();
-        let end: usize = conn.incr(&id_key, max_len_hint).await?;
-        let counter: Option<u64> = conn.get(&priority_counter_key).await?;
-        let pc = counter.unwrap_or_default() + 1;
-        self.pc_counter.store(pc);
-        let start = (end - max_len_hint) + 1;
-        self.id_counter.store(start as u64);
-        let mut is_prioritized = false;
-        //let mut iter = iter.par_bridge();
-        for (ref name, opts, data) in iter {
-            let mut opts = opts.unwrap_or_default();
-            update_job_opts(&queue_opts, &mut opts);
-            let queue_name = format!("{}:{}", self.prefix, self.name);
-            let id = self.id_counter.fetch_add(1);
-            let prior_counter = if opts.priority > 0 {
-                is_prioritized = true;
-                self.pc_counter.fetch_add(1)
-            } else {
-                self.pc_counter.load()
-            };
-            let mut job = Job::<D, R, P>::new(name, Some(data), opts.id, Some(&queue_name));
-            prepare_for_insert(
-                &queue_name,
-                event_mode,
-                is_paused,
-                id,
-                prior_counter,
-                opts,
-                &mut job,
-                name,
-                &mut pipeline,
-            )?;
-            job.id = Some(id);
-            result.push(job);
-        }
-        if is_prioritized {
-            pipeline.incr(&priority_counter_key, self.pc_counter.load());
-        }
-
-        query_all_batched(conn, pipeline).await?;
-        Ok(result)
+        let jobs = self
+            .add::<D, R, P>(iter, queue_opts, event_mode, is_paused, false)
+            .await?;
+        Ok(jobs)
     }
 
     async fn get_metrics(&self) -> KioResult<QueueMetrics> {
