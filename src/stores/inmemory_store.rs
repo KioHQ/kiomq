@@ -228,7 +228,7 @@ where
     R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
     P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
 {
-    fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
+    async fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
         let stored_metrics = self
             .worker_metrics
             .inner
@@ -281,7 +281,7 @@ where
     fn queue_prefix(&self) -> &str {
         &self.prefix
     }
-    fn fetch_jobs(&self, ids: &[u64]) -> KioResult<VecDeque<Job<D, R, P>>> {
+    async fn fetch_jobs(&self, ids: &[u64]) -> KioResult<VecDeque<Job<D, R, P>>> {
         if ids.is_empty() {
             return Ok(VecDeque::new());
         }
@@ -545,7 +545,19 @@ where
             .map(|entry| entry.value().value.state)
     }
 
-    fn update_job_progress(&self, job: &mut Job<D, R, P>, value: P) -> KioResult<()> {
+    async fn update_job_progress(&self, job: &mut Job<D, R, P>, value: P) -> KioResult<()> {
+        if let Some(id) = job.id {
+            let job_key = CollectionSuffix::Job(id).tag();
+            let jobs = self.jobs.clone();
+            let value_clone = value.clone();
+            if let Some(mut entry) = jobs.inner.get_mut(&job_key) {
+                entry.value_mut().value.progress = Some(value_clone);
+            }
+            job.progress = Some(value);
+        }
+        Ok(())
+    }
+    fn update_job_progress_sync(&self, job: &mut Job<D, R, P>, value: P) -> KioResult<()> {
         if let Some(id) = job.id {
             let job_key = CollectionSuffix::Job(id).tag();
             let jobs = self.jobs.clone();
@@ -650,7 +662,7 @@ where
     }
 
     #[allow(clippy::too_many_lines)]
-    fn get_job_ids_in_state(
+    async fn get_job_ids_in_state(
         &self,
         state: JobState,
         start: Option<usize>,
@@ -999,7 +1011,7 @@ where
         Ok(())
     }
 
-    fn remove(&self, key: CollectionSuffix) -> KioResult<()> {
+    async fn remove(&self, key: CollectionSuffix) -> KioResult<()> {
         // do thing here
         match key {
             CollectionSuffix::Active | CollectionSuffix::Completed => self.active.clear(),
