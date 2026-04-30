@@ -267,7 +267,8 @@ async fn processor<S: Store<u64, u64, u8>>(
     mut job: Job<u64, u64, u8>,
 ) -> Result<u64, KioError> {
     // update_progress persists to the store and emits a progress event.
-    job.update_progress(50u8, store.as_ref())?; // 50% done
+    job.update_progress(50u8, store.as_ref()).await?; // 50% done
+    // use job.update_progress_sync when using the Sync Worker
     Ok(job.data.unwrap_or_default() * 2)
 }
 ```
@@ -289,15 +290,15 @@ docker run --rm -p 6379:6379 redis:latest
 ```
 
 ```rust,no_run
-use kiomq::{Config, KioResult, Queue, RedisStore};
+use kiomq::{Config, KioResult, Queue, RedisStore, SharedRedis};
 
 #[tokio::main]
 async fn main() -> KioResult<()> {
     // `Config` can be imported from `kiomq` or from `deadpool_redis`
     // (if you already use it in your app).
     let config = Config::default();
-
-    let store = RedisStore::new(None, "my-queue", &config).await?;
+    let redis_conn = SharedRedis::create(&config)?;
+    let store = RedisStore::new(None, "my-queue", &redis_conn).await?;
     let queue:Queue<(), (), (),_> = Queue::new(store, None).await?;
     // ... worker logic below here
     Ok(())

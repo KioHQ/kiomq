@@ -64,7 +64,7 @@ version = "3.0.0"
 features = ["serde"]
 
 [dependencies.deadpool-redis]
-version = "0.22.0"
+version = "0.23.0"
 default-features = false
 features = ["serde", "rt_tokio_1"]
 optional = true
@@ -78,8 +78,8 @@ version = "0.3.31"
 features = ["executor"]
 
 [dependencies.redis]
-version = "0.32.3"
-features = ["tokio-comp", "streams", "json"]
+version = "1.2.0"
+features = ["tokio-comp", "streams", "ahash"]
 optional = true
 
 [dependencies.serde]

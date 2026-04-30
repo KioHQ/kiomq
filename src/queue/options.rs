@@ -5,7 +5,7 @@ use crate::{
     RemoveOnCompletionOrFailure, Repeat, Trace,
 };
 #[cfg(feature = "redis-store")]
-use redis::{FromRedisValue, RedisResult, ToRedisArgs, Value};
+use redis::{FromRedisValue, ParsingError, ToRedisArgs, ToSingleRedisArg, Value};
 use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(untagged)]
@@ -218,7 +218,7 @@ impl From<JobState> for CollectionSuffix {
 }
 
 #[cfg(feature = "redis-store")]
-use deadpool_redis::redis::RedisWrite;
+use redis::RedisWrite;
 #[cfg(feature = "redis-store")]
 impl ToRedisArgs for CollectionSuffix {
     fn write_redis_args<W>(&self, out: &mut W)
@@ -228,6 +228,10 @@ impl ToRedisArgs for CollectionSuffix {
         out.write_arg_fmt(self.to_string().to_lowercase());
     }
 }
+#[cfg(feature = "redis-store")]
+impl ToSingleRedisArg for CollectionSuffix {}
+#[cfg(feature = "redis-store")]
+impl ToSingleRedisArg for QueueEventMode {}
 /// Controls how events are published and consumed within a queue.
 ///
 /// Set this via [`QueueOpts::event_mode`].
@@ -255,7 +259,7 @@ impl TryFrom<u8> for QueueEventMode {
 }
 #[cfg(feature = "redis-store")]
 impl FromRedisValue for QueueEventMode {
-    fn from_redis_value(v: &Value) -> RedisResult<Self> {
+    fn from_redis_value(v: Value) -> Result<Self, ParsingError> {
         let value = if matches!(v, Value::Nil) {
             0
         } else {

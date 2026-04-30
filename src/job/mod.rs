@@ -1,10 +1,12 @@
 use crate::stores::Store;
-use chrono::{DateTime, Utc};
 #[cfg(feature = "redis-store")]
-use deadpool_redis::redis::ToRedisArgs;
+use crate::utils::to_redis_parsing_error;
+use chrono::{DateTime, Utc};
 use derive_more::{Display, FromStr};
 #[cfg(feature = "redis-store")]
-use redis::{FromRedisValue, RedisResult, Value};
+use redis::ToRedisArgs;
+#[cfg(feature = "redis-store")]
+use redis::{FromRedisValue, ParsingError, ToSingleRedisArg, Value};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 mod backoff;
@@ -87,11 +89,13 @@ pub enum JobState {
 impl ToRedisArgs for JobState {
     fn write_redis_args<W>(&self, out: &mut W)
     where
-        W: ?Sized + deadpool_redis::redis::RedisWrite,
+        W: ?Sized + redis::RedisWrite,
     {
         out.write_arg_fmt(self.to_string().to_lowercase());
     }
 }
+#[cfg(feature = "redis-store")]
+impl ToSingleRedisArg for JobState {}
 /// Per-job configuration options.
 ///
 /// Supply this to [`crate::Queue::add_job`] or [`crate::Queue::bulk_add`] to customise
@@ -241,11 +245,11 @@ pub struct Job<D, R, P> {
 }
 #[cfg(feature = "redis-store")]
 impl FromRedisValue for JobState {
-    fn from_redis_value(v: &Value) -> RedisResult<Self> {
+    fn from_redis_value(v: Value) -> Result<Self, ParsingError> {
         let mut bytes: Vec<u8> = Vec::from_redis_value(v)?;
         let state = Self::from_str(&String::from_utf8(bytes.clone())?)
             .or_else(|_| simd_json::from_slice(&mut bytes))
-            .map_err(std::io::Error::other)?;
+            .map_err(to_redis_parsing_error)?;
 
         Ok(state)
     }
@@ -275,13 +279,12 @@ use uuid::Uuid;
 pub struct JobToken(pub Uuid, pub Uuid, pub u64);
 #[cfg(feature = "redis-store")]
 impl FromRedisValue for JobToken {
-    fn from_redis_value(v: &Value) -> RedisResult<Self> {
+    fn from_redis_value(v: Value) -> Result<Self, ParsingError> {
         let mut bytes: Vec<u8> = Vec::from_redis_value(v)?;
         if bytes == b"null" {
-            return Err(std::io::Error::other("null passed").into());
+            return Err(ParsingError::from("null passed"));
         }
-        let token = simd_json::from_slice(&mut bytes)
-            .map_err(|_| std::io::Error::other("failed to parse"))?;
+        let token = simd_json::from_slice(&mut bytes).map_err(to_redis_parsing_error)?;
         Ok(token)
     }
 }
@@ -300,6 +303,8 @@ impl ToRedisArgs for JobToken {
         out.write_arg_fmt(simd_json::to_string(self).unwrap_or_default());
     }
 }
+#[cfg(feature = "redis-store")]
+impl ToSingleRedisArg for JobToken {}
 // skip comparing the data,progress and return_value field;
 impl<D, R, P> Job<D, R, P> {
     /// Boxes this job on the heap, returning `Box<Job<D, R, P>>`.
@@ -374,12 +379,29 @@ impl<D, R, P> Job<D, R, P> {
     /// # Errors
     ///
     /// Returns [`KioError`](crate::KioError) if the store update fails.
-    pub fn update_progress<C>(&mut self, value: P, store: &C) -> Result<(), KioError>
+    pub fn update_progress_sync<C>(&mut self, value: P, store: &C) -> Result<(), KioError>
     where
         P: Serialize + Clone,
         C: Store<D, R, P>,
     {
-        store.update_job_progress(self, value)
+        store.update_job_progress_sync(self, value)
+    }
+    /// Updates the job's progress value and persists it to the store.
+    ///
+    /// Call this from inside your processor function to report incremental
+    /// progress.  Listeners subscribed to [`JobState::Progress`] events will
+    /// receive the update.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`](crate::KioError) if the store update fails.
+    #[allow(clippy::future_not_send)]
+    pub async fn update_progress<C>(&mut self, value: P, store: &C) -> Result<(), KioError>
+    where
+        P: Serialize + Clone,
+        C: Store<D, R, P>,
+    {
+        store.update_job_progress(self, value).await
     }
 }
 #[cfg(feature = "redis-store")]
@@ -389,13 +411,12 @@ where
     R: for<'de> Deserialize<'de>, // and have a Default if they are Optional in Rust
     P: for<'de> Deserialize<'de>,
 {
-    fn from_redis_value(v: &Value) -> redis::RedisResult<Self> {
-        use std::io::Error;
-        let other = Error::other;
+    fn from_redis_value(v: Value) -> Result<Self, ParsingError> {
+        let other = to_redis_parsing_error;
         let mut job: Self = Self::new("", None, None, None);
         let map = v
             .as_map_iter()
-            .ok_or_else(|| std::io::Error::other("failed to extract map"))?;
+            .ok_or_else(|| ParsingError::from("failed to extract map"))?;
         for (key, value) in map {
             if let (Value::BulkString(key), Value::BulkString(bytes)) = (key, value) {
                 let mut bytes = bytes.clone();
@@ -412,7 +433,7 @@ where
                     b"queuename" | b"queueName" => {
                         job.queue_name = simd_json::from_slice(&mut bytes).map_err(other)?;
                     }
-                    b"state" => job.state = JobState::from_redis_value(value)?,
+                    b"state" => job.state = JobState::from_redis_value_ref(value)?,
                     b"token" => {
                         job.token = simd_json::from_slice(&mut bytes).unwrap_or_default();
                     }

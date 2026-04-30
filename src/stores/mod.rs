@@ -14,7 +14,7 @@ pub use inmemory_store::InMemoryStore;
 #[cfg(feature = "redis-store")]
 mod redis_store;
 #[cfg(feature = "redis-store")]
-pub use redis_store::{RedisStore, RedisVersion};
+pub use redis_store::{RedisStore, RedisVersion, SharedRedis};
 #[cfg(feature = "rocksdb-store")]
 pub use rocksdb_store::{ivec_to_number, temporary_rocks_db, RocksDbStore};
 use tokio::{sync::Notify, task::JoinHandle};
@@ -46,7 +46,7 @@ pub trait Store<D, R, P> {
     /// # Errors
     ///
     /// Returns [`KioResult`] error if any job lookup fails.
-    fn fetch_jobs(&self, ids: &[u64]) -> KioResult<VecDeque<Job<D, R, P>>>;
+    async fn fetch_jobs(&self, ids: &[u64]) -> KioResult<VecDeque<Job<D, R, P>>>;
     /// Removes entries whose TTL has elapsed (no-op for backends without TTL support).
     async fn purge_expired(&self) {}
     /// Returns per-worker metric snapshots stored with a TTL.
@@ -54,7 +54,7 @@ pub trait Store<D, R, P> {
     /// # Errors
     ///
     /// Returns [`KioResult`] error if the store lookup fails.
-    fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>>;
+    async fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>>;
     /// Persists a worker's metrics with a time-to-live of `ttl_ms` milliseconds.
     async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()>;
     /// Returns `true` if a metadata field with the given name exists.
@@ -68,7 +68,7 @@ pub trait Store<D, R, P> {
     /// # Errors
     ///
     /// Returns [`KioResult`] error if the store lookup fails.
-    fn get_job_ids_in_state(
+    async fn get_job_ids_in_state(
         &self,
         state: JobState,
         start: Option<usize>,
@@ -129,7 +129,13 @@ pub trait Store<D, R, P> {
     /// # Errors
     ///
     /// Returns [`KioResult`] error if the store write fails.
-    fn update_job_progress(&self, job: &mut Job<D, R, P>, value: P) -> KioResult<()>;
+    fn update_job_progress_sync(&self, job: &mut Job<D, R, P>, value: P) -> KioResult<()>;
+    /// Writes a progress update for `job` to the store in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioResult`] error if the store write fails.
+    async fn update_job_progress(&self, job: &mut Job<D, R, P>, value: P) -> KioResult<()>;
     /// Inserts `item` into the sorted collection `col` with the given optional
     /// `score`. Pass `append = true` to push to the tail of a list.
     async fn add_item(
@@ -182,7 +188,7 @@ pub trait Store<D, R, P> {
     /// # Errors
     ///
     /// Returns [`KioResult`] error if the store operation fails.
-    fn remove(&self, key: CollectionSuffix) -> KioResult<()>;
+    async fn remove(&self, key: CollectionSuffix) -> KioResult<()>;
     /// Drops all auxiliary collections (active, waiting, delayed, etc.) but
     /// leaves job records intact.
     async fn clear_collections(&self) -> KioResult<()>;

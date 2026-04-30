@@ -1,5 +1,5 @@
 #[cfg(all(feature = "redis-store", not(feature = "default")))]
-use kiomq::{fetch_redis_pass, Config, RedisStore};
+use kiomq::{fetch_redis_pass, Config, RedisStore, SharedRedis};
 use kiomq::{
     framed, EventParameters, InMemoryStore, Job, KioResult, Queue, Store, Worker, WorkerOpts,
 };
@@ -68,7 +68,9 @@ async fn main() -> KioResult<()> {
         cfg.redis.password = password;
     }
     #[cfg(all(feature = "redis-store", not(feature = "default")))]
-    let _store = RedisStore::new(None, "video-processing", &config).await?;
+    let _redis_con = SharedRedis::create(&config)?;
+    #[cfg(all(feature = "redis-store", not(feature = "default")))]
+    let _store = RedisStore::new(None, "trial", &_redis_con).await?;
     #[cfg(feature = "rocksdb-store")]
     let db = Arc::new(temporary_rocks_db());
     #[cfg(feature = "rocksdb-store")]
@@ -173,7 +175,7 @@ fn process_callback<S: Store<ProcessData, ReturnData, Progress>>(
                         current_progress.current_duration = parsed_duration;
                     }
                 }
-                store.update_job_progress(&mut job, current_progress)?;
+                store.update_job_progress_sync(&mut job, current_progress)?;
             }
 
             FfmpegEvent::Log(log_level, msg) => {

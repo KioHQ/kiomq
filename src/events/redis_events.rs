@@ -1,7 +1,11 @@
+#[cfg(feature = "redis-store")]
+use crate::utils::to_redis_parsing_error;
 use crate::{Dt, JobMetrics};
 use crate::{FailedDetails, JobState, KioError, KioResult};
 use chrono::Utc;
 use derive_more::Debug;
+#[cfg(feature = "redis-store")]
+use redis::{ParsingError, ToSingleRedisArg};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::str::FromStr;
 use uuid::Uuid;
@@ -63,12 +67,14 @@ impl<R: Serialize, P: Serialize> ToRedisArgs for QueueStreamEvent<R, P> {
         out.write_arg_fmt(simd_json::to_string_pretty(self).unwrap_or_default());
     }
 }
+#[cfg(feature = "redis-store")]
+impl<R: Serialize, P: Serialize> ToSingleRedisArg for QueueStreamEvent<R, P> {}
 
 #[cfg(feature = "redis-store")]
 impl<R: DeserializeOwned, P: DeserializeOwned> FromRedisValue for QueueStreamEvent<R, P> {
-    fn from_redis_value(v: &redis::Value) -> redis::RedisResult<Self> {
+    fn from_redis_value(v: redis::Value) -> Result<Self, ParsingError> {
         let mut msg: Vec<u8> = Vec::from_redis_value(v)?;
-        let value = simd_json::from_slice(&mut msg).map_err(std::io::Error::other)?;
+        let value = simd_json::from_slice(&mut msg).map_err(to_redis_parsing_error)?;
         Ok(value)
     }
 }
@@ -122,13 +128,13 @@ impl<R: DeserializeOwned, P: DeserializeOwned> TryFrom<&mut StreamId> for QueueS
         for (key, val) in &mut value.map {
             if let redis::Value::BulkString(bytes) = val {
                 match key.to_lowercase().as_str() {
-                    "job_id" | "jobid" => event.job_id = u64::from_redis_value(val)?,
-                    "name" => event.name = Option::from_redis_value(val)?,
-                    "delay" => event.delay = Option::from_redis_value(val)?,
+                    "job_id" | "jobid" => event.job_id = u64::from_redis_value_ref(val)?,
+                    "name" => event.name = Option::from_redis_value_ref(val)?,
+                    "delay" => event.delay = Option::from_redis_value_ref(val)?,
                     "worker_id" | "workerid" => {
                         event.worker_id = simd_json::from_slice(bytes).map_err(Error::other)?;
                     }
-                    "priority" => event.priority = Option::from_redis_value(val)?,
+                    "priority" => event.priority = Option::from_redis_value_ref(val)?,
                     "data" => event.progress_data = simd_json::from_slice(bytes)?,
 
                     "returnedvalue" | "returned_value" => {
@@ -139,10 +145,10 @@ impl<R: DeserializeOwned, P: DeserializeOwned> TryFrom<&mut StreamId> for QueueS
                     }
 
                     "event" => {
-                        let parsed = JobState::from_redis_value(val)?;
+                        let parsed = JobState::from_redis_value_ref(val)?;
                         event.event = parsed;
                     }
-                    "prev" => event.prev = Option::from_redis_value(val)?,
+                    "prev" => event.prev = Option::from_redis_value_ref(val)?,
                     "metrics" | "Metrics" => event.metrics = simd_json::from_slice(bytes)?,
 
                     _ => { /* Ignore unknown fields if your hash might contain others */ }
