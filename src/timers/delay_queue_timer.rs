@@ -14,7 +14,6 @@ use tokio::sync::{
     oneshot,
 };
 use tokio::task::JoinHandle;
-use tokio_util::time::FutureExt as OtherExt;
 use tokio_util::{
     sync::CancellationToken,
     time::{delay_queue::Key, DelayQueue},
@@ -40,7 +39,7 @@ pub enum TimerType {
     PromotedDelayed(u64),
     CollectMetrics,
 }
-use tokio::time::{Instant, Timeout};
+use tokio::time::Instant;
 
 use crate::{
     worker::{JobMap, Task},
@@ -91,7 +90,7 @@ impl TimerSender {
         let inner = Arc::new(SenderInner::new(tx));
         Self { inner, opts }
     }
-    pub async fn send(&self, timer: TimerType) -> KioResult<()> {
+    pub async fn send(&self, timer: TimerType) {
         let duration = self.next_duration(timer);
         let (ack, rx) = oneshot::channel();
         let cmd = Cmd::Insert {
@@ -99,16 +98,11 @@ impl TimerSender {
             ack,
             duration,
         };
-        self.inner
-            .tx
-            .send(cmd)
-            .await
-            .map_err(std::io::Error::other)?;
-        let timeout = Duration::from_millis(1);
-        if let Ok(Ok(key)) = rx.timeout(timeout).await {
+        self.inner.tx.send(cmd).await.ok();
+        let key = rx.await.ok();
+        if let Some(key) = key {
             self.set_key(timer, key);
         }
-        Ok(())
     }
     pub async fn forward_clear(&self) -> KioResult<()> {
         let (ack, rx) = oneshot::channel();
@@ -207,13 +201,13 @@ impl<
         timer
     }
     #[cfg_attr(feature = "tracing", instrument(parent = &self.resource_span, skip(self)))]
-    pub(crate) async fn insert(&self, timer: TimerType) -> KioResult<()> {
+    pub(crate) async fn insert(&self, timer: TimerType) {
         #[cfg(feature = "tracing")]
         {
             let duration = self.sender.next_duration(timer);
             info!("Started {timer:?} timer running every {duration:?}");
         }
-        self.sender.send(timer).await
+        self.sender.send(timer).await;
     }
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
     pub(crate) async fn clear(&self) {
@@ -222,7 +216,9 @@ impl<
 
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
     pub(crate) async fn close(&self) {
-        self.clear().await;
+        tokio::time::timeout(Duration::from_millis(1), self.clear())
+            .await
+            .ok();
         let task_handle = self.task_handle.swap(None);
         if let Some(task_handle) = task_handle {
             task_handle.abort();
@@ -255,51 +251,37 @@ impl<
             let mut delay_queue: DelayQueue<TimerType> = DelayQueue::new();
             while !token.is_cancelled() {
                 let date_time = Utc::now();
-                // tokio::try_join!(
-                //     async {
-                //         while let Ok(Some(expired)) = rx.receive().timeout(timeout).await {
-                //         }
-                //         Ok::<(), KioError>(())
-                //     },
-                //     async {
-                //         queue.store.purge_expired().await;
-                //         Ok::<(), KioError>(())
-                //     }
-                // )?;
-                let timeout = Duration::from_millis(1);
-                tokio::try_join!(
-                    async {
-                        tokio::select! {
-                            Ok(Some(cmd))  = rx.recv().timeout(timeout) =>  {
-                                match cmd {
-                                    Cmd::Insert {
-                                        timer,
-                                        duration,
-                                        ack,
-                                    } => {
-                                        let key = delay_queue.insert(timer, duration);
-                                        let _= ack.send(key);
-                                    }
-                                    Cmd::Clear { ack  } => {
-                                        delay_queue.clear();
-                                        let _= ack.send(());
-                                    }
-                                }
-                            },
-                             Some(expired) = delay_queue.next() => {
-                                let key = expired.into_inner();
-                               process_timer(key, &queue, &jobs, opts, worker_id, &sender).await?;
-                            },
-
+                // let mut tick_interval = tokio::time::interval(Duration::from_millis(5));
+                queue
+                    .promote_delayed_jobs(date_time, interval_ms, &sender)
+                    .await?;
+                tokio::select! {
+                    incoming_cmd  = rx.recv() =>  {
+                    let Some(cmd) = incoming_cmd else {break};
+                        match cmd {
+                            Cmd::Insert {
+                                timer,
+                                duration,
+                                ack,
+                            } => {
+                                let key = delay_queue.insert(timer, duration);
+                                 let _ =ack.send(key);
+                            }
+                            Cmd::Clear { ack  } => {
+                                delay_queue.clear();
+                                 let _ = ack.send(());
+                            }
                         }
-                        Ok::<(), KioError>(())
                     },
-                    queue.promote_delayed_jobs(date_time, interval_ms, &sender),
-                    async {
-                        queue.store.purge_expired().await;
-                        Ok::<(), KioError>(())
+                     Some(expired) = delay_queue.next() => {
+                        let key = expired.into_inner();
+                       process_timer(key, &queue, &jobs, opts, worker_id, &sender).await?;
+                    },
+                    _ = queue.store.purge_expired() => {
+
                     }
-                )?;
+
+                }
                 if pause_schedular.load() && processing.is_empty() {
                     #[cfg(feature = "tracing")]
                     debug!("pausing ... ");
@@ -327,13 +309,12 @@ impl<
     }
 
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
-    pub(crate) async fn start_timers(&self) -> KioResult<()> {
+    pub(crate) async fn start_timers(&self) {
         let instant = Instant::now();
-        self.insert(TimerType::ExtendLock(instant)).await?;
-        self.insert(TimerType::StalledCheck(instant)).await?;
-        self.insert(TimerType::CollectMetrics).await?;
         self.start_signal.notify_one();
-        Ok(())
+        self.insert(TimerType::ExtendLock(instant)).await;
+        self.insert(TimerType::StalledCheck(instant)).await;
+        self.insert(TimerType::CollectMetrics).await;
     }
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(rx, self)))]
     fn create_timer_task(&self, rx: Receiver<Cmd>) -> JoinHandle<KioResult<()>> {
@@ -427,7 +408,7 @@ where
         }
     }
     if let Some(timer) = next_timer {
-        sender.send(timer).await?;
+        sender.send(timer).await;
     }
     Ok(())
 }
