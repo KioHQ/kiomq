@@ -6,13 +6,19 @@ use chrono::Utc;
 use crossbeam::atomic::AtomicCell;
 use derive_more::{Debug, Display};
 use futures::FutureExt;
-use futures_delay_queue::{delay_queue, DelayHandle, DelayQueue, Receiver};
-use futures_intrusive::buffer::GrowingHeapBuf;
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::{
+    mpsc::{Receiver, Sender},
+    oneshot,
+};
 use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
+use tokio_util::time::FutureExt as OtherExt;
+use tokio_util::{
+    sync::CancellationToken,
+    time::{delay_queue::Key, DelayQueue},
+};
 #[cfg(feature = "tracing")]
 use tracing::{debug, info, info_span, instrument, Span};
 use uuid::Uuid;
@@ -34,47 +40,86 @@ pub enum TimerType {
     PromotedDelayed(u64),
     CollectMetrics,
 }
-use tokio::time::Instant;
+use tokio::time::{Instant, Timeout};
 
 use crate::{
     worker::{JobMap, Task},
     Queue, Store, WorkerOpts,
 };
+
+#[derive(Debug)]
+pub enum Cmd {
+    Insert {
+        timer: TimerType,
+        ack: oneshot::Sender<Key>,
+        duration: Duration,
+    },
+
+    Clear {
+        ack: oneshot::Sender<()>,
+    },
+}
+
 #[derive(Debug)]
 struct SenderInner {
-    tx: DelayQueue<TimerType, GrowingHeapBuf<TimerType>>,
+    tx: Sender<Cmd>,
     keys: (
-        ArcSwapOption<DelayHandle>,
-        ArcSwapOption<DelayHandle>,
-        ArcSwapOption<DelayHandle>,
+        AtomicCell<Option<Key>>,
+        AtomicCell<Option<Key>>,
+        AtomicCell<Option<Key>>,
     ),
 }
 impl SenderInner {
-    fn new(tx: DelayQueue<TimerType, GrowingHeapBuf<TimerType>>) -> Self {
+    fn new(tx: Sender<Cmd>) -> Self {
         let keys = (
-            ArcSwapOption::default(),
-            ArcSwapOption::default(),
-            ArcSwapOption::default(),
+            AtomicCell::default(),
+            AtomicCell::default(),
+            AtomicCell::default(),
         );
         Self { tx, keys }
     }
 }
 
-use tokio::sync::Notify;
+use tokio::sync::{mpsc, Notify};
 #[derive(Clone, Debug)]
 pub struct TimerSender {
     inner: Arc<SenderInner>,
     opts: WorkerOpts,
 }
 impl TimerSender {
-    pub fn new(tx: DelayQueue<TimerType, GrowingHeapBuf<TimerType>>, opts: WorkerOpts) -> Self {
+    pub fn new(tx: Sender<Cmd>, opts: WorkerOpts) -> Self {
         let inner = Arc::new(SenderInner::new(tx));
         Self { inner, opts }
     }
-    pub fn send(&self, timer: TimerType) {
+    pub async fn send(&self, timer: TimerType) -> KioResult<()> {
         let duration = self.next_duration(timer);
-        let handle = self.inner.tx.insert(timer, duration);
-        self.set_key(timer, handle);
+        let (ack, rx) = oneshot::channel();
+        let cmd = Cmd::Insert {
+            timer,
+            ack,
+            duration,
+        };
+        self.inner
+            .tx
+            .send(cmd)
+            .await
+            .map_err(std::io::Error::other)?;
+        let timeout = Duration::from_millis(1);
+        if let Ok(Ok(key)) = rx.timeout(timeout).await {
+            self.set_key(timer, key);
+        }
+        Ok(())
+    }
+    pub async fn forward_clear(&self) -> KioResult<()> {
+        let (ack, rx) = oneshot::channel();
+        let clear_cmd = Cmd::Clear { ack };
+        self.inner
+            .tx
+            .send(clear_cmd)
+            .await
+            .map_err(std::io::Error::other)?;
+        rx.await.map_err(std::io::Error::other)?;
+        Ok(())
     }
     pub const fn next_duration(&self, timer: TimerType) -> Duration {
         match timer {
@@ -84,7 +129,7 @@ impl TimerSender {
             TimerType::PromotedDelayed(_) => Duration::from_millis(EVICTION_INTERVAL_MS),
         }
     }
-    pub fn set_key(&self, timer: TimerType, key: DelayHandle) {
+    pub fn set_key(&self, timer: TimerType, key: Key) {
         match timer {
             TimerType::StalledCheck(_) => self.inner.keys.1.store(Some(key.into())),
             TimerType::ExtendLock(_) => self.inner.keys.0.store(Some(key.into())),
@@ -98,7 +143,6 @@ impl TimerSender {
 #[derive(Clone, Debug)]
 pub struct DelayQueueTimer<D, R, P, S> {
     pub(crate) sender: TimerSender,
-    reciever: Receiver<TimerType>,
     #[debug(skip)]
     task_handle: Arc<ArcSwapOption<Task>>,
     #[cfg(feature = "tracing")]
@@ -140,10 +184,9 @@ impl<
         #[cfg(feature = "tracing")]
         let resource_span = info_span!("Timers");
         let start_signal: Arc<Notify> = Arc::default();
-        let (tx, reciever) = delay_queue();
+        let (tx, rx) = mpsc::channel(100000);
         let sender = TimerSender::new(tx, opts);
         let timer = Self {
-            reciever,
             start_signal,
             task_handle: Arc::default(),
             sender,
@@ -159,28 +202,22 @@ impl<
             pause_schedular,
             processing,
         };
-        let task_handle = timer.create_timer_task();
+        let task_handle = timer.create_timer_task(rx);
         timer.task_handle.store(Some(Arc::new(task_handle)));
         timer
     }
     #[cfg_attr(feature = "tracing", instrument(parent = &self.resource_span, skip(self)))]
-    pub(crate) fn insert(&self, timer: TimerType) {
+    pub(crate) async fn insert(&self, timer: TimerType) -> KioResult<()> {
         #[cfg(feature = "tracing")]
         {
             let duration = self.sender.next_duration(timer);
             info!("Started {timer:?} timer running every {duration:?}");
         }
-        self.sender.send(timer);
+        self.sender.send(timer).await
     }
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
     pub(crate) async fn clear(&self) {
-        let (a, b, c) = &self.sender.inner.keys;
-        let keys = [a, b, c];
-        for stored_key in keys {
-            if let Some(handle) = stored_key.swap(None).and_then(Arc::into_inner) {
-                let _ = handle.cancel().await;
-            }
-        }
+        _ = self.sender.forward_clear().await;
     }
 
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
@@ -190,16 +227,18 @@ impl<
         if let Some(task_handle) = task_handle {
             task_handle.abort();
         }
-        self.reciever.close();
     }
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
-    fn timer_task(&self) -> impl std::future::Future<Output = KioResult<()>> {
-        use tokio_util::time::FutureExt as OtherExt;
+    fn timer_task(
+        &self,
+        mut rx: Receiver<Cmd>,
+    ) -> impl std::future::Future<Output = KioResult<()>> {
+        use futures::StreamExt;
         let processing = self.processing.clone();
         let notifier = self.notifier.clone();
         let queue = self.queue.clone();
         let start_signal = self.start_signal.clone();
-        let (worker_id, opts, pause_schedular, worker_state, jobs, token, sender, rx) = (
+        let (worker_id, opts, pause_schedular, worker_state, jobs, token, sender) = (
             self.worker_id,
             self.opts,
             self.pause_schedular.clone(),
@@ -207,24 +246,55 @@ impl<
             self.jobs.clone(),
             self.token.clone(),
             self.sender.clone(),
-            self.reciever.clone(),
         );
         async move {
             start_signal.notified().await;
             let interval_ms = EVICTION_INTERVAL_MS.cast_signed();
             #[cfg(feature = "tracing")]
             info!("starting ...");
-            let timeout = Duration::from_millis(5);
+            let mut delay_queue: DelayQueue<TimerType> = DelayQueue::new();
             while !token.is_cancelled() {
                 let date_time = Utc::now();
+                // tokio::try_join!(
+                //     async {
+                //         while let Ok(Some(expired)) = rx.receive().timeout(timeout).await {
+                //         }
+                //         Ok::<(), KioError>(())
+                //     },
+                //     async {
+                //         queue.store.purge_expired().await;
+                //         Ok::<(), KioError>(())
+                //     }
+                // )?;
+                let timeout = Duration::from_millis(1);
                 tokio::try_join!(
-                    queue.promote_delayed_jobs(date_time, interval_ms, &sender),
                     async {
-                        while let Ok(Some(expired)) = rx.receive().timeout(timeout).await {
-                            process_timer(expired, &queue, &jobs, opts, worker_id, &sender).await?;
+                        tokio::select! {
+                            Ok(Some(cmd))  = rx.recv().timeout(timeout) =>  {
+                                match cmd {
+                                    Cmd::Insert {
+                                        timer,
+                                        duration,
+                                        ack,
+                                    } => {
+                                        let key = delay_queue.insert(timer, duration);
+                                        let _= ack.send(key);
+                                    }
+                                    Cmd::Clear { ack  } => {
+                                        delay_queue.clear();
+                                        let _= ack.send(());
+                                    }
+                                }
+                            },
+                             Some(expired) = delay_queue.next() => {
+                                let key = expired.into_inner();
+                               process_timer(key, &queue, &jobs, opts, worker_id, &sender).await?;
+                            },
+
                         }
                         Ok::<(), KioError>(())
                     },
+                    queue.promote_delayed_jobs(date_time, interval_ms, &sender),
                     async {
                         queue.store.purge_expired().await;
                         Ok::<(), KioError>(())
@@ -257,16 +327,17 @@ impl<
     }
 
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
-    pub(crate) fn start_timers(&self) {
+    pub(crate) async fn start_timers(&self) -> KioResult<()> {
         let instant = Instant::now();
-        self.insert(TimerType::ExtendLock(instant));
-        self.insert(TimerType::StalledCheck(instant));
-        self.insert(TimerType::CollectMetrics);
+        self.insert(TimerType::ExtendLock(instant)).await?;
+        self.insert(TimerType::StalledCheck(instant)).await?;
+        self.insert(TimerType::CollectMetrics).await?;
         self.start_signal.notify_one();
+        Ok(())
     }
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(rx, self)))]
-    fn create_timer_task(&self) -> JoinHandle<KioResult<()>> {
-        let t_task = self.timer_task();
+    fn create_timer_task(&self, rx: Receiver<Cmd>) -> JoinHandle<KioResult<()>> {
+        let t_task = self.timer_task(rx);
         #[cfg(feature = "tracing")]
         let sub_span = info_span!(parent: &self.resource_span, "runner_task");
         #[cfg(feature = "tracing")]
@@ -356,7 +427,7 @@ where
         }
     }
     if let Some(timer) = next_timer {
-        sender.send(timer);
+        sender.send(timer).await?;
     }
     Ok(())
 }

@@ -434,7 +434,7 @@ where
         "Worker Starting with concurrency set to {}",
         opts.concurrency
     );
-    timers.start_timers();
+    timers.start_timers().await?;
     let semaphore = Arc::new(Semaphore::new(opts.concurrency));
     while !cancellation_token.is_cancelled() {
         while !cancellation_token.is_cancelled()
@@ -562,7 +562,9 @@ where
         queue.store.get_delayed_at(start, stop).await?;
     if !jobs.is_empty() {
         for job_id in jobs {
-            timer_sender.send(crate::timers::TimerType::PromotedDelayed(job_id));
+            timer_sender
+                .send(crate::timers::TimerType::PromotedDelayed(job_id))
+                .await?;
         }
     }
     if !missed_deadline.is_empty() {
