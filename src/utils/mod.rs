@@ -26,6 +26,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 use uuid::Uuid;
 
+mod concurrent_structures;
+pub use concurrent_structures::ConcurrentDeque;
 pub mod processor_types;
 use crate::KioResult;
 use crate::MoveToActiveResult;

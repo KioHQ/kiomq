@@ -6,6 +6,7 @@ use super::{
 use crate::timers::TimedMap;
 use crate::utils::{
     calculate_next_priority_score, pause_or_resume_workers, process_each_event, update_job_opts,
+    ConcurrentDeque,
 };
 use crate::worker::MIN_DELAY_MS_LIMIT;
 use crate::ProcessedResult;
@@ -20,7 +21,7 @@ use std::time::Duration;
 use uuid::Uuid;
 type StoredMap = SkipMap<u64, u64>;
 type TimedJobMap<D, R, P> = TimedMap<u64, Job<D, R, P>>;
-type ListQueue = SkipMap<i64, u64>;
+type ListQueue = ConcurrentDeque<u64>;
 /// An in-memory [`Store`] implementation.
 ///
 /// `InMemoryStore` holds all queue data in heap-allocated concurrent data
@@ -297,11 +298,11 @@ where
 
     async fn exists_in(&self, col: CollectionSuffix, item: u64) -> KioResult<bool> {
         let result = match col {
-            CollectionSuffix::Active => self.active.iter().any(|entry| *entry.value() == item),
+            CollectionSuffix::Active => self.active.contains_value(&item),
 
-            CollectionSuffix::Wait => self.waiting.iter().any(|entry| *entry.value() == item),
+            CollectionSuffix::Wait => self.waiting.contains_value(&item),
 
-            CollectionSuffix::Paused => self.paused.iter().any(|entry| *entry.value() == item),
+            CollectionSuffix::Paused => self.paused.contains_value(&item),
             CollectionSuffix::Completed => {
                 self.completed.iter().any(|entry| *entry.value() == item)
             }
@@ -505,12 +506,12 @@ where
             self.id_counter.load(),
             self.processing.load(),
             self.active.len() as u64,
-            self.stalled.len() as u64,
-            self.completed.len() as u64,
-            self.delayed.len() as u64,
-            self.prioritized.len() as u64,
+            self.stalled.iter().count() as u64,
+            self.completed.iter().count() as u64,
+            self.delayed.iter().count() as u64,
+            self.prioritized.iter().count() as u64,
             self.paused.len() as u64,
-            self.failed.len() as u64,
+            self.failed.iter().count() as u64,
             self.waiting.len() as u64,
             self.is_paused.load(),
             self.event_mode,
@@ -577,31 +578,27 @@ where
         score: Option<i64>,
         append: bool,
     ) -> KioResult<()> {
-        let mut now = Utc::now().timestamp_millis();
         match col {
             CollectionSuffix::Active => {
                 if append {
-                    if let Some(first_entry) = self.active.front() {
-                        now = *first_entry.key() - 50;
-                    }
+                    self.active.push_front(item);
+                    return Ok(());
                 }
-                self.active.insert(now, item);
+                self.active.push_back(item);
             }
             CollectionSuffix::Wait => {
                 if append {
-                    if let Some(first_entry) = self.waiting.front() {
-                        now = *first_entry.key() - 50;
-                    }
+                    self.waiting.push_front(item);
+                    return Ok(());
                 }
-                self.waiting.insert(now, item);
+                self.waiting.push_back(item);
             }
             CollectionSuffix::Paused => {
                 if append {
-                    if let Some(first_entry) = self.paused.front() {
-                        now = *first_entry.key() - 50;
-                    }
+                    self.paused.push_front(item);
+                    return Ok(());
                 }
-                self.paused.insert(now, item);
+                self.paused.push_back(item);
             }
             CollectionSuffix::Completed => {
                 if let Some(score) = score {
@@ -639,9 +636,8 @@ where
         match (src, dst) {
             (CollectionSuffix::Wait, CollectionSuffix::Active) => {
                 let value = self.waiting.pop_back()?;
-                let ts_now = Utc::now().timestamp_millis();
-                self.active.insert(ts_now, *value.value());
-                return Some(*value.value());
+                self.active.push_front(value);
+                return Some(value);
             }
             _ => return None,
         }
@@ -1057,15 +1053,11 @@ where
         // only move items when the state changes
         if matches!(src, CollectionSuffix::Wait) {
             while let Some(entry) = self.waiting.pop_front() {
-                let key = *entry.key();
-                let value = *entry.value();
-                self.paused.insert(key, value);
+                self.paused.push_back(entry);
             }
         } else {
             while let Some(entry) = self.paused.pop_front() {
-                let key = *entry.key();
-                let value = *entry.value();
-                self.waiting.insert(key, value);
+                self.waiting.push_back(entry);
             }
         }
         self.is_paused.store(pause);
