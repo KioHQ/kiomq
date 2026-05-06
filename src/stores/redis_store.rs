@@ -40,7 +40,7 @@ use uuid::Uuid;
 /// #[tokio::main]
 /// async fn main() -> kiomq::KioResult<()> {
 ///     let mut cfg = Config::from_url("redis://127.0.0.1/");
-///     let  mut redis_conn  =  SharedRedis::create(&cfg);
+///     let  mut redis_conn  =  SharedRedis::create(&cfg)?;
 ///     let store = RedisStore::new(None, "my-queue", &redis_conn).await?;
 ///     let queue: Queue<String, String, (), _> =
 ///         Queue::new(store, Some(QueueOpts::default())).await?;
@@ -1002,7 +1002,7 @@ impl SharedRedis {
     /// ```rust,no_run
     /// use kiomq::{SharedRedis};
     /// let mut cfg = deadpool_redis::Config::from_url("redis://127.0.0.1/");
-    /// let redis = SharedRedis::create(&config);
+    /// let redis = SharedRedis::create(&cfg);
     /// ```
     pub fn create(cfg: &Config) -> KioResult<Self> {
         let pool = cfg.create_pool(Some(Runtime::Tokio1))?;
