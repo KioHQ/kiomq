@@ -65,7 +65,7 @@ async fn my_test() { /* ... */ }
 
 ```toml
 [dependencies]
-kiomq = "0.1.3"
+kiomq = "0.2.0"
 ```
 
 Cargo features: `redis-store` _(default)_, `rocksdb-store`, `tracing`.
