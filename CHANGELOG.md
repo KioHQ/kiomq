@@ -1,6 +1,83 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## v0.2.0 (2026-05-06)
+
+
+
+### Bug Fixes
+
+- yield in busy-wait loops and use saturating_sub by @spencerjibz ([d88463b](https://github.com/KioHQ/kiomq/commit/d88463bdaddd48a6a2ed4a91c64ecc4cde383940)) _(worker_test_helper)_
+
+
+### Chores
+
+- remove atomig as dependency by @spencerjibz ([b212508](https://github.com/KioHQ/kiomq/commit/b2125087423daef2c250f68ff2fad2aaccbd3d75))
+
+- make dotenv an optional dependency by @spencerjibz ([#75](https://github.com/KioHQ/kiomq/pull/75))
+
+- remove trailing comma by @spencerjibz ([182eacf](https://github.com/KioHQ/kiomq/commit/182eacf910eccc9d1aaff075ba1fda217f71ae08)) _(clippy)_
+
+- remove static counters (id-counter && pc-counter) by @spencerjibz ([8b525b7](https://github.com/KioHQ/kiomq/commit/8b525b76da5880f0c7c693c2e5c45f9576c7aedb)) _(redis-store)_
+
+- update tests and examples to use a shared redis connection by @spencerjibz ([052af3f](https://github.com/KioHQ/kiomq/commit/052af3fd5d1decafe37fbbca7985c7a22722b846))
+
+- update README.md to reflect updates to the ``RedisStore`` and ``update_progress`` method by @spencerjibz ([3ae61da](https://github.com/KioHQ/kiomq/commit/3ae61daea1e8444af24a8ebc81316c80db203182)) _(docs)_
+
+- update redis & deadpool-redis to v1.2.0 and v0.230 respectively; update everything to reflect this by @spencerjibz ([c6237d7](https://github.com/KioHQ/kiomq/commit/c6237d7b1420b3372b277d0e534e9a1b32830da0)) _(deps)_
+
+- bump rustls-webpki from 0.103.10 to 0.103.12 by @dependabot[bot] ([#76](https://github.com/KioHQ/kiomq/pull/76)) _(deps)_
+
+
+### Features
+
+- redis connection sharing between different store instance by @spencerjibz ([e827431](https://github.com/KioHQ/kiomq/commit/e827431c98c4be499aea661eb684a880a8645555)) _(RedisStore)_
+
+- add a better implementation of skipmap based deque. by @spencerjibz ([419f62e](https://github.com/KioHQ/kiomq/commit/419f62ea01f6e93bff6ad359c68f8b2acd9ce092)) _(InMemoryStore)_
+
+
+### Other
+
+- Merge branch 'redis-improvements' of https://github.com/KioHQ/kiomq into redis-improvements by @spencerjibz ([1f6c699](https://github.com/KioHQ/kiomq/commit/1f6c69931b939089aa84094e3463e36d2e83a7b0))
+
+- Merge branch 'main' into redis-improvements by @spencerjibz ([a7858ba](https://github.com/KioHQ/kiomq/commit/a7858ba8abb0dcd6a6df1d60c85aa5fd8e4329d8))
+
+- Merge pull request #78 from KioHQ/redis-improvements by @spencerjibz ([#78](https://github.com/KioHQ/kiomq/pull/78))
+
+
+### Refactoring
+
+- replace of all usages for atomig::Atomic with crossbeam::atomic::AtomicCell by @spencerjibz ([2709ba6](https://github.com/KioHQ/kiomq/commit/2709ba6d17b02e71903b25260248a078a956b1dc))
+
+- use ``crossbeam::atomic::AtomicCell`` instead of manual Atomics(AtomicUsize, AtomicBool & AtomicU64) by @spencerjibz ([71bb7af](https://github.com/KioHQ/kiomq/commit/71bb7afff5d7f8910c61e7f2a0c141077074e388))
+
+- remove mutex usage to guard per task metrics-histogram by @spencerjibz ([25580cf](https://github.com/KioHQ/kiomq/commit/25580cf863bdfeec714daacace8daf07dcd3017d)) _(worker)_
+
+- replace boolean flags with `TimerState` by @spencerjibz ([a6a826f](https://github.com/KioHQ/kiomq/commit/a6a826f7a52dede3df65bca740a1b5029000b05e)) _(timers)_
+
+- convert Store trait methods to async by @spencerjibz ([2d87eab](https://github.com/KioHQ/kiomq/commit/2d87eab82991309ef489eb24560513292b0783bd))
+
+- use redis-transactions for atomic job insertion and remove counters per store by @spencerjibz ([5ba4a3d](https://github.com/KioHQ/kiomq/commit/5ba4a3d1312af73b10b116209541b18181cf6f92)) _(redis)_
+
+- use redis-transactions for atomic job insertion and remove counters per store by @spencerjibz ([8ae1b7e](https://github.com/KioHQ/kiomq/commit/8ae1b7e074dd2cc0de471b3985395969f864581a)) _(redis)_
+
+
+### Release
+
+- 0.1.3 by @spencerjibz ([#74](https://github.com/KioHQ/kiomq/pull/74)) _(release)_
+
+
+### Tests
+
+- fix doc-test errors included by shared-redis-connection feature by @spencerjibz ([219a61f](https://github.com/KioHQ/kiomq/commit/219a61fc22014f2fc3ea91e7574621317bc71725)) _(doc-test)_
+
+
+
+### Contributors
+
+- @dependabot[bot]
+
+- @spencerjibz
 ## v0.1.3 (2026-04-05)
 
 
