@@ -361,48 +361,43 @@ where
     fn update_job_progress_sync(&self, job: &mut Job<D, R, P>, value: P) -> KioResult<()> {
         use crate::QueueEventMode;
         use redis::Commands;
-        tokio::task::block_in_place(|| {
-            let mut conn = self.connection.redis_client.get_connection()?;
-            if let Some(id) = job.id {
-                let job_key =
-                    CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
-                let mut pipeline = redis::pipe();
-                pipeline.atomic();
-                let progress_str = simd_json::to_string_pretty(&value)?;
-                let events_stream_key =
-                    CollectionSuffix::Events.to_collection_name(&self.prefix, &self.name);
-                pipeline.hset(job_key, "progress", &progress_str);
-                let meta_key = CollectionSuffix::Meta.to_collection_name(&self.prefix, &self.name);
-                let event_mode: Option<QueueEventMode> = conn.hget(&meta_key, "event_mode")?;
-                // check for the queue_event_mode
-                let event_mode = event_mode.unwrap_or_default();
-
-                match event_mode {
-                    QueueEventMode::PubSub => {
-                        let event = QueueStreamEvent::<R, P> {
-                            job_id: id,
-                            event: JobState::Progress,
-                            name: Some(self.name.clone()),
-                            progress_data: Some(value.clone()),
-                            ..Default::default()
-                        };
-                        pipeline.publish(&events_stream_key, event);
-                    }
-                    QueueEventMode::Stream => {
-                        let items = [
-                            ("event", JobState::Progress.to_string().to_lowercase()),
-                            ("job_id", id.to_string()),
-                            ("data", progress_str),
-                            ("name", self.name.clone()),
-                        ];
-                        pipeline.xadd(&events_stream_key, "*", &items);
-                    }
+        let mut conn = self.connection.redis_client.get_connection()?;
+        if let Some(id) = job.id {
+            let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
+            let mut pipeline = redis::pipe();
+            pipeline.atomic();
+            let progress_str = simd_json::to_string_pretty(&value)?;
+            let events_stream_key =
+                CollectionSuffix::Events.to_collection_name(&self.prefix, &self.name);
+            pipeline.hset(job_key, "progress", &progress_str);
+            let meta_key = CollectionSuffix::Meta.to_collection_name(&self.prefix, &self.name);
+            let event_mode: Option<QueueEventMode> = conn.hget(&meta_key, "event_mode")?;
+            let event_mode = event_mode.unwrap_or_default();
+            match event_mode {
+                QueueEventMode::PubSub => {
+                    let event = QueueStreamEvent::<R, P> {
+                        job_id: id,
+                        event: JobState::Progress,
+                        name: Some(self.name.clone()),
+                        progress_data: Some(value.clone()),
+                        ..Default::default()
+                    };
+                    pipeline.publish(&events_stream_key, event);
                 }
-                let _: () = pipeline.query(&mut conn)?;
-                job.progress = Some(value);
+                QueueEventMode::Stream => {
+                    let items = [
+                        ("event", JobState::Progress.to_string().to_lowercase()),
+                        ("job_id", id.to_string()),
+                        ("data", progress_str),
+                        ("name", self.name.clone()),
+                    ];
+                    pipeline.xadd(&events_stream_key, "*", &items);
+                }
             }
-            Ok(())
-        })
+            let _: () = pipeline.query(&mut conn)?;
+            job.progress = Some(value);
+        }
+        Ok(())
     }
     async fn get_delayed_at(&self, start: i64, stop: i64) -> KioResult<(Vec<u64>, Vec<u64>)> {
         let [delayed_key] = [CollectionSuffix::Delayed]
