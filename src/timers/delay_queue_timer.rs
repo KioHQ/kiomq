@@ -1,5 +1,6 @@
 use crate::worker::{ProcessingQueue, WorkerState, MIN_DELAY_MS_LIMIT as EVICTION_INTERVAL_MS};
-use crate::worker::{TaskInfo, WorkerMetrics, HISTOGRAM_MAX_NS};
+use crate::metrics::{WorkerMetrics, TaskInfo, HISTOGRAM_MAX_NS};
+
 use crate::{KioError, KioResult};
 use arc_swap::ArcSwapOption;
 use chrono::Utc;

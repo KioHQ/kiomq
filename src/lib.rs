@@ -11,6 +11,7 @@ mod events;
 mod job;
 /// Re-exports of test helpers for verifying custom [`Store`] implementations.
 pub mod macros;
+mod metrics;
 mod queue;
 mod stores;
 mod timers;
@@ -62,12 +63,13 @@ pub use error::*;
 pub(crate) use events::EventEmitter;
 pub use events::EventParameters;
 pub use job::*;
+pub use metrics::{TaskInfo, WorkerMetrics};
 pub use queue::*;
 pub use stores::*;
 pub use timers::{TimedMap, Timer};
 #[cfg(feature = "redis-store")]
 pub use utils::{fetch_redis_pass, get_queue_metrics};
-pub use worker::{TaskInfo, Worker, WorkerMetrics, WorkerOpts};
+pub use worker::{Worker, WorkerOpts};
 
 /// Convenience alias for `Result<T, KioError>`.
 pub type KioResult<T> = Result<T, KioError>;

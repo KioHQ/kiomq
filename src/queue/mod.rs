@@ -2,9 +2,10 @@
 use crate::error::{JobError, KioError};
 use crate::events::QueueStreamEvent;
 use crate::job::{Job, JobState};
+use crate::metrics::WorkerMetrics;
 use crate::timers::TimerSender;
 use crate::utils::{promote_jobs, resume_helper};
-use crate::worker::{WorkerMetrics, WorkerOpts};
+use crate::worker::WorkerOpts;
 use crate::{
     BackOff, BackOffJobOptions, Dt, FailedDetails, JobOptions, JobToken, KeepJobs, KioResult,
     RemoveOnCompletionOrFailure, Trace,

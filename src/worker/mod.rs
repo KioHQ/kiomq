@@ -9,9 +9,7 @@ use futures::future::{Future, FutureExt};
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
-mod metrics;
 mod worker_opts;
-pub use metrics::*;
 
 use crate::error::WorkerError;
 use crate::events::EventParameters;
