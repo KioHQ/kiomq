@@ -33,7 +33,7 @@ use crate::KioResult;
 use crate::MoveToActiveResult;
 use crate::{Job, ProcessedResult, Queue};
 
-use crate::worker::{HISTOGRAM_MAX_NS, HISTOGRAM_SIGFIG};
+use crate::metrics::{HISTOGRAM_MAX_NS, HISTOGRAM_SIGFIG};
 use hdrhistogram::Histogram;
 use std::sync::Arc;
 

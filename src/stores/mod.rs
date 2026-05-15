@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
-    events::QueueStreamEvent, worker::WorkerMetrics, CollectionSuffix, EventEmitter, Job, JobField,
+    events::QueueStreamEvent, metrics::WorkerMetrics, CollectionSuffix, EventEmitter, Job, JobField,
     JobOptions, JobState, JobToken, KioResult, ProcessedResult, QueueEventMode, QueueMetrics,
     QueueOpts, Trace,
 };
