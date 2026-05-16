@@ -1,9 +1,9 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
-    events::QueueStreamEvent, metrics::WorkerMetrics, CollectionSuffix, EventEmitter, Job, JobField,
-    JobOptions, JobState, JobToken, KioResult, ProcessedResult, QueueEventMode, QueueMetrics,
-    QueueOpts, Trace,
+    events::QueueStreamEvent, metrics::WorkerMetrics, CollectionSuffix, EventEmitter, Job,
+    JobField, JobOptions, JobState, JobToken, KioResult, ProcessedResult, QueueEventMode,
+    QueueMetrics, QueueOpts, Trace,
 };
 use std::collections::VecDeque;
 mod inmemory_store;

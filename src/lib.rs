@@ -63,7 +63,7 @@ pub use error::*;
 pub(crate) use events::EventEmitter;
 pub use events::EventParameters;
 pub use job::*;
-pub use metrics::{TaskInfo, WorkerMetrics};
+pub use metrics::{NodeMetrics, TaskInfo, WorkerMetrics};
 pub use queue::*;
 pub use stores::*;
 pub use timers::{TimedMap, Timer};
