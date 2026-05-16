@@ -94,13 +94,13 @@ impl ProcessMetricsCollector {
 
 /// Snapshot of node-level metrics.
 ///
-/// [`NodeMetrics`] is a compact, serialisable snapshot that includes hostname,
+/// [`ProcessMetrics`] is a compact, serialisable snapshot that includes hostname,
 /// PID, allocator statistics from the global `Heapster` allocator, observed
 /// CPU usage for the monitored process, Tokio runtime metrics, and a list of
 /// active worker UUIDs. It is intended for monitoring endpoints and health
 /// checks.
 #[derive(Clone, Debug)]
-pub struct NodeMetrics {
+pub struct ProcessMetrics {
     /// Hostname of the machine running the process.
     pub hostname: String,
     /// PID for the process that produced this snapshot.
@@ -115,8 +115,8 @@ pub struct NodeMetrics {
     pub workers: Vec<Uuid>,
 }
 
-impl NodeMetrics {
-    /// Create a new [`NodeMetrics`] snapshot.
+impl ProcessMetrics {
+    /// Create a new [`ProcessMetrics`] snapshot.
     ///
     /// Collects the hostname, allocator stats from the global [`Heapster`], the
     /// CPU usage read from `process`, and the supplied `rt_metrics` and
