@@ -1,5 +1,5 @@
+use crate::metrics::{TaskInfo, WorkerMetrics, HISTOGRAM_MAX_NS};
 use crate::worker::{ProcessingQueue, WorkerState, MIN_DELAY_MS_LIMIT as EVICTION_INTERVAL_MS};
-use crate::metrics::{WorkerMetrics, TaskInfo, HISTOGRAM_MAX_NS};
 
 use crate::{KioError, KioResult};
 use arc_swap::ArcSwapOption;
@@ -218,7 +218,7 @@ impl<
             let timeout = Duration::from_millis(5);
             while !token.is_cancelled() {
                 let date_time = Utc::now();
-                tokio::try_join!(
+                let (promotion_error, timer_error, _) = tokio::join![
                     queue.promote_delayed_jobs(date_time, interval_ms, &sender),
                     async {
                         while let Ok(Some(expired)) = rx.receive().timeout(timeout).await {
@@ -226,11 +226,10 @@ impl<
                         }
                         Ok::<(), KioError>(())
                     },
-                    async {
-                        queue.store.purge_expired().await;
-                        Ok::<(), KioError>(())
-                    }
-                )?;
+                    queue.store.purge_expired(),
+                ];
+                promotion_error?;
+                timer_error?;
                 if pause_schedular.load() && processing.is_empty() {
                     #[cfg(feature = "tracing")]
                     debug!("pausing ... ");

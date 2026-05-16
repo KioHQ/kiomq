@@ -33,7 +33,7 @@ use crate::KioResult;
 use crate::MoveToActiveResult;
 use crate::{Job, ProcessedResult, Queue};
 
-use crate::metrics::{HISTOGRAM_MAX_NS, HISTOGRAM_SIGFIG};
+use crate::metrics::{HISTOGRAM_MAX_NS, HISTOGRAM_SIGFIG, P_METRICS_COLLECTOR};
 use hdrhistogram::Histogram;
 use std::sync::Arc;
 
@@ -434,6 +434,7 @@ where
         "Worker Starting with concurrency set to {}",
         opts.concurrency
     );
+    P_METRICS_COLLECTOR.register_worker(id).await;
     timers.start_timers();
     let semaphore = Arc::new(Semaphore::new(opts.concurrency));
     while !cancellation_token.is_cancelled() {
@@ -534,6 +535,7 @@ where
         processing.wait().await;
         timers.close().await;
         let _ = worker_state.compare_exchange(WorkerState::Active, WorkerState::Closed);
+        P_METRICS_COLLECTOR.unregister_worker(id);
     }
     #[cfg(feature = "tracing")]
     info!("Worker Closed");
