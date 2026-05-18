@@ -2,16 +2,17 @@
 use crate::error::{JobError, KioError};
 use crate::events::QueueStreamEvent;
 use crate::job::{Job, JobState};
-use crate::metrics::WorkerMetrics;
-use crate::timers::TimerSender;
+use crate::metrics::{WorkerMetrics, P_METRICS_COLLECTOR};
+use crate::timers::{DelayQueueTimer, TimerSender};
 use crate::utils::{promote_jobs, resume_helper};
-use crate::worker::WorkerOpts;
+use crate::worker::{JobMap, ProcessingQueue, WorkerOpts, WorkerState};
 use crate::{
     BackOff, BackOffJobOptions, Dt, FailedDetails, JobOptions, JobToken, KeepJobs, KioResult,
     ProcessMetrics, RemoveOnCompletionOrFailure, Trace,
 };
 use chrono::{TimeDelta, Utc};
 use crossbeam::atomic::AtomicCell;
+use crossbeam_skiplist::SkipMap;
 use futures::future::Future;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -20,6 +21,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
 use tracing::{debug_span, info, instrument, Instrument, Span};
 use uuid::Uuid;
@@ -27,9 +29,27 @@ mod options;
 use crate::stores::Store;
 
 use crate::{EventEmitter, EventParameters};
+use arc_swap::ArcSwapOption;
 use derive_more::Debug;
+use futures_delay_queue::DelayHandle;
 pub use options::{CollectionSuffix, QueueEventMode, QueueMetrics, QueueOpts, RetryOptions};
 pub use options::{Counter, JobField, ProcessedResult};
+
+pub(crate) type WorkerMetaData = Arc<
+    SkipMap<
+        Uuid,
+        (
+            WorkerOpts,
+            ProcessingQueue,
+            Arc<AtomicCell<WorkerState>>,
+            (
+                ArcSwapOption<DelayHandle>,
+                ArcSwapOption<DelayHandle>,
+                ArcSwapOption<DelayHandle>,
+            ),
+        ),
+    >,
+>;
 
 /// A task queue that holds and manages jobs.
 ///
@@ -71,6 +91,10 @@ pub struct Queue<D, R, P, S> {
     pub(crate) event_mode: Arc<AtomicCell<QueueEventMode>>,
     emitter: EventEmitter<R, P>,
     pub(crate) store: Arc<S>,
+    pub(crate) workers: WorkerMetaData,
+    pub(crate) jobs_in_progress: JobMap<D, R, P>,
+    pub(crate) cancel_token: CancellationToken,
+    timers: Arc<ArcSwapOption<DelayQueueTimer<D, R, P, S>>>,
     #[debug(skip)]
     /// Handle to the background task that listens for store events and forwards
     /// them to registered listeners.
@@ -90,6 +114,49 @@ impl<
         P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
     > Queue<D, R, P, S>
 {
+    /// add a worker and its usual metadata to the queue
+    pub(crate) async fn add_worker(
+        &self,
+        id: Uuid,
+        processing_queue: ProcessingQueue,
+        state: Arc<AtomicCell<WorkerState>>,
+        opts: WorkerOpts,
+    ) {
+        self.workers.insert(
+            id,
+            (
+                opts,
+                processing_queue,
+                state.clone(),
+                (
+                    ArcSwapOption::default(),
+                    ArcSwapOption::default(),
+                    ArcSwapOption::default(),
+                ),
+            ),
+        );
+        let timers = match self.timers.load_full() {
+            Some(existing) => existing,
+            None => {
+                let timer = Arc::new(DelayQueueTimer::new(
+                    self.jobs_in_progress.clone(),
+                    self.clone(),
+                    self.workers.clone(),
+                    self.cancel_token.clone(),
+                ));
+                self.timers.swap(Some(timer.clone()));
+                timer
+            }
+        };
+        timers.start_timers(id);
+        P_METRICS_COLLECTOR.register_worker(id, state).await;
+    }
+    /// remove a worker and its usual metadata from the queue
+    pub(crate) fn remove_worker(&self, id: Uuid) {
+        self.workers.remove(&id);
+        P_METRICS_COLLECTOR.unregister_worker(id);
+    }
+
     /// Creates a new `Queue` backed by the given `store`.
     ///
     /// Reads existing metrics from the store so that a queue that is re-opened
@@ -122,6 +189,8 @@ impl<
         let opts = queue_opts.unwrap_or_default();
         let emitter = Arc::new(TypedEmitter::new());
         let metrics = store.get_metrics().await.unwrap_or_default();
+        let workers = Arc::default();
+
         let events_mode_exits: bool = store.metadata_field_exists("event_mode").await?;
         let event_mode = metrics.event_mode.clone();
         if let Some(passed_mode) = opts.event_mode {
@@ -138,6 +207,8 @@ impl<
         let pause_workers: Arc<AtomicCell<bool>> = Arc::default();
         let is_paused = current_metrics.is_paused.load();
         let store = Arc::new(store);
+        let jobs_in_progress = Arc::default();
+        let cancel_token = CancellationToken::new();
         #[cfg(feature = "tracing")]
         let task = store
             .create_stream_listener(
@@ -160,7 +231,12 @@ impl<
             )
             .await?;
         let stream_listener = Arc::new(task);
+        let timers = Arc::default();
         Ok(Self {
+            cancel_token,
+            timers,
+            jobs_in_progress,
+            workers,
             #[cfg(feature = "tracing")]
             resource_span,
             store,
@@ -792,6 +868,9 @@ impl<
         self.store.publish_event(event_mode, item).await?;
         self.current_metrics.clear();
         self.store.clear_collections().await?;
+        if let Some(timers) = self.timers.load_full() {
+            timers.close().await;
+        }
         Ok(())
     }
     #[allow(clippy::future_not_send)]

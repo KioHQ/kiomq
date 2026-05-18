@@ -104,7 +104,7 @@ impl ProcessMetricsCollector {
     pub fn intervals(
         &self,
         duration: Duration,
-        cancel_token: Arc<CancellationToken>,
+        cancel_token: CancellationToken,
     ) -> impl Stream<Item = ProcessMetrics> + use<'_> {
         let intervals = self.rt_monitor.intervals();
         let inner = self.inner.clone();
