@@ -7,6 +7,7 @@ use crate::utils::{
     create_listener_handle, prepare_for_insert, process_each_event, query_all_batched,
     update_job_opts,
 };
+use crate::ProcessMetrics;
 use chrono::Utc;
 use crossbeam::atomic::AtomicCell;
 use deadpool_redis::{Config, Pool, Runtime};
@@ -224,6 +225,38 @@ impl RedisStore {
         .await?;
         Ok(jobs)
     }
+
+    async fn store_metrics(&self, metrics: MetricsType, ttl_ms: u64) -> KioResult<()> {
+        let key = metrics
+            .get_collection_suffix()
+            .to_collection_name(&self.prefix, &self.name);
+        let mut conn = self.get_connection().await?;
+        let (field_key, metrics_string) = match metrics {
+            MetricsType::Process(process_metrics) => (
+                format!("{}-Pid({})", process_metrics.hostname, process_metrics.pid),
+                simd_json::to_string(&process_metrics)?,
+            ),
+            MetricsType::Worker(worker_metrics) => (
+                worker_metrics.worker_id.to_string(),
+                simd_json::to_string(&worker_metrics)?,
+            ),
+        };
+        let expiry_opts = HashFieldExpirationOptions::default()
+            .set_existence_check(FieldExistenceCheck::FNX)
+            .set_expiration(SetExpiry::PX(ttl_ms));
+        if self.redis_version.is_at_least("7.4.0").unwrap_or(false) {
+            let _: () = conn
+                .hset_ex(key, &expiry_opts, &[(field_key, metrics_string)])
+                .await?;
+            return Ok(());
+        }
+        let mut pipeline = redis::pipe();
+        pipeline.atomic();
+        pipeline.hset(&key, field_key, metrics_string);
+        pipeline.pexpire(key, ttl_ms.saturating_mul(100).cast_signed());
+        let _: () = pipeline.query_async(&mut conn).await?;
+        Ok(())
+    }
 }
 #[async_trait::async_trait]
 impl<
@@ -255,26 +288,21 @@ where
             .collect())
     }
     async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()> {
-        let key = CollectionSuffix::WorkerMetrics.to_collection_name(&self.prefix, &self.name);
+        self.store_metrics(MetricsType::Worker(metrics), ttl_ms)
+            .await
+    }
+    async fn store_process_metrics(&self, metrics: ProcessMetrics, ttl_ms: u64) -> KioResult<()> {
+        self.store_metrics(MetricsType::Process(metrics.into()), ttl_ms)
+            .await
+    }
+    async fn fetch_process_metrics(&self) -> KioResult<BTreeMap<sysinfo::Pid, ProcessMetrics>> {
         let mut conn = self.get_connection().await?;
-        let field_key = metrics.worker_id.to_string();
-        let metrics_string = simd_json::to_string(&metrics)?;
-
-        let expiry_opts = HashFieldExpirationOptions::default()
-            .set_existence_check(FieldExistenceCheck::FNX)
-            .set_expiration(SetExpiry::PX(ttl_ms));
-        if self.redis_version.is_at_least("7.4.0").unwrap_or(false) {
-            let _: () = conn
-                .hset_ex(key, &expiry_opts, &[(field_key, metrics_string)])
-                .await?;
-            return Ok(());
-        }
-        let mut pipeline = redis::pipe();
-        pipeline.atomic();
-        pipeline.hset(&key, field_key, metrics_string);
-        pipeline.pexpire(key, ttl_ms.saturating_mul(100).cast_signed());
-        let _: () = pipeline.query_async(&mut conn).await?;
-        Ok(())
+        let key = CollectionSuffix::ProcessMetrics.to_collection_name(&self.prefix, &self.name);
+        let results: Vec<ProcessMetrics> = conn.hvals(key).await?;
+        Ok(results
+            .into_iter()
+            .map(|metrics| (metrics.pid, metrics))
+            .collect())
     }
     async fn metadata_field_exists(&self, field: &str) -> KioResult<bool> {
         let mut conn = self.get_connection().await?;
@@ -1009,5 +1037,18 @@ impl SharedRedis {
             conn_pool,
             redis_client,
         })
+    }
+}
+
+enum MetricsType {
+    Process(Box<ProcessMetrics>),
+    Worker(WorkerMetrics),
+}
+impl MetricsType {
+    const fn get_collection_suffix(&self) -> CollectionSuffix {
+        match &self {
+            Self::Process(_) => CollectionSuffix::ProcessMetrics,
+            Self::Worker(_) => CollectionSuffix::WorkerMetrics,
+        }
     }
 }

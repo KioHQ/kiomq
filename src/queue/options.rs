@@ -104,6 +104,9 @@ pub enum CollectionSuffix {
     /// Key storing serialised metrics for a specific worker.
     #[display("worker_metrics")]
     WorkerMetrics,
+    /// Key storing serialised metrics for a specific pid.
+    #[display("process_metrics")]
+    ProcessMetrics,
 }
 
 impl CollectionSuffix {
@@ -133,6 +136,7 @@ impl CollectionSuffix {
             Self::Lock(_) => 16,
             Self::StalledCheck => 17,
             Self::WorkerMetrics => 18,
+            Self::ProcessMetrics => 19,
         }
     }
     /// Encodes this variant as a compact `u64` tag.
@@ -160,7 +164,8 @@ impl CollectionSuffix {
             | Self::Marker
             | Self::Prefix
             | Self::StalledCheck
-            | Self::WorkerMetrics => top,
+            | Self::WorkerMetrics
+            | Self::ProcessMetrics => top,
 
             // Tagged variants → combine variant id + payload in lower 56 bits
             Self::Job(id) | Self::Lock(id) => top | (id & 0x00FF_FFFF_FFFF_FFFF),

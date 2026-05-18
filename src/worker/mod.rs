@@ -16,6 +16,7 @@ use crate::events::EventParameters;
 use crate::Counter;
 use arc_swap::ArcSwapOption;
 use hdrhistogram::Histogram;
+use serde::Deserialize;
 use tokio::{sync::Notify, task::JoinHandle};
 use tokio_metrics::TaskMonitor;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -38,7 +39,7 @@ pub type ProcessingQueue = TaskTracker;
 use derive_more::IsVariant;
 pub use worker_opts::WorkerOpts;
 /// The current lifecycle state of a [`Worker`].
-#[derive(IsVariant, Default, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(IsVariant, Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum WorkerState {
     /// The worker is actively polling and processing jobs.
