@@ -3,7 +3,7 @@ use crate::error::{JobError, KioError};
 use crate::events::QueueStreamEvent;
 use crate::job::{Job, JobState};
 use crate::metrics::{WorkerMetrics, P_METRICS_COLLECTOR};
-use crate::timers::{DelayQueueTimer, TimerSender};
+use crate::timers::{DelayQueueTimer, TimerSender, TimerType};
 use crate::utils::{promote_jobs, resume_helper};
 use crate::worker::{JobMap, ProcessingQueue, WorkerOpts, WorkerState};
 use crate::{
@@ -19,8 +19,12 @@ use serde::Serialize;
 use std::collections::{BTreeMap, VecDeque};
 use std::marker::PhantomData;
 use std::sync::Arc;
-use tokio::sync::Notify;
+use tokio::sync::{
+    broadcast::{self, Sender},
+    Notify,
+};
 use tokio::task::JoinHandle;
+
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
 use tracing::{debug_span, info, instrument, Instrument, Span};
@@ -80,6 +84,8 @@ pub(crate) type WorkerMetaData = Arc<
 /// ```
 #[derive(Debug, Clone)]
 pub struct Queue<D, R, P, S> {
+    /// Unique identifier for the queue
+    pub id: Uuid,
     #[cfg(feature = "tracing")]
     resource_span: Span,
     /// `true` when the queue is in the paused state.
@@ -94,6 +100,7 @@ pub struct Queue<D, R, P, S> {
     pub(crate) workers: WorkerMetaData,
     pub(crate) jobs_in_progress: JobMap<D, R, P>,
     pub(crate) cancel_token: CancellationToken,
+    pub(crate) timer_sender: Sender<TimerType>,
     timers: Arc<ArcSwapOption<DelayQueueTimer<D, R, P, S>>>,
     #[debug(skip)]
     /// Handle to the background task that listens for store events and forwards
@@ -232,7 +239,15 @@ impl<
             .await?;
         let stream_listener = Arc::new(task);
         let timers = Arc::default();
+        let id = Uuid::new_v4();
+        let (timer_sender, _rx) = broadcast::channel(100000);
+        P_METRICS_COLLECTOR
+            .register_queue(id, timer_sender.clone())
+            .await;
+
         Ok(Self {
+            timer_sender,
+            id,
             cancel_token,
             timers,
             jobs_in_progress,
@@ -300,7 +315,6 @@ impl<
     /// # Ok(())
     /// # }
     /// ```
-    #[allow(clippy::future_not_send)]
     #[allow(clippy::future_not_send)]
     pub async fn bulk_add_only<
         I: Iterator<Item = (String, Option<JobOptions>, D)> + Send + 'static,
@@ -871,6 +885,7 @@ impl<
         if let Some(timers) = self.timers.load_full() {
             timers.close().await;
         }
+        P_METRICS_COLLECTOR.unregister_queue(self.id);
         Ok(())
     }
     #[allow(clippy::future_not_send)]
