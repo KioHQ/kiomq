@@ -1,3 +1,4 @@
+use crate::timers::TimerType;
 #[cfg(feature = "redis-store")]
 use crate::utils::to_redis_parsing_error;
 use crate::worker::WorkerState;
@@ -14,6 +15,7 @@ use std::sync::Arc;
 use std::{alloc::System as SystemAlloc, sync::LazyLock, time::Duration};
 use sysinfo::{get_current_pid, Pid, Process, ProcessRefreshKind, System};
 use tokio::runtime::Handle;
+use tokio::sync::broadcast::Sender;
 use tokio::sync::RwLock;
 use tokio_metrics::{RuntimeMetrics, RuntimeMonitor};
 use tokio_util::sync::CancellationToken;
@@ -50,10 +52,10 @@ pub struct CollectorInner {
     pub process_monitor: RwLock<System>,
     /// Timestamp of the last successful metric ffs refresh.
     pub last_updated: AtomicCell<Dt>,
-    /// Registry of active worker IDs mapped to their last-seen timestamp.
+    /// Registry of active worker IDs mapped to their state [`WorkerState`].
     pub workers: TimedMap<Uuid, Arc<AtomicCell<WorkerState>>>,
-    /// Id of the elected worker to publish
-    pub elected_worker_id: AtomicCell<Option<Uuid>>,
+    /// Registry of queues and their TimerSender.
+    pub queues: TimedMap<Uuid, Sender<TimerType>>,
 }
 
 /// Lazily-initialised global [`ProcessMetricsCollector`].
@@ -66,12 +68,13 @@ pub static P_METRICS_COLLECTOR: LazyLock<ProcessMetricsCollector> = LazyLock::ne
     let pid = get_current_pid().unwrap_or_else(|_| Pid::from_u32(0));
     let last_updated = AtomicCell::new(Utc::now());
     let workers = TimedMap::default();
+    let queues = TimedMap::default();
     let process_monitor = RwLock::new(sys);
     let inner = Arc::new(CollectorInner {
+        queues,
         workers,
         process_monitor,
         last_updated,
-        elected_worker_id: AtomicCell::default(),
     });
     ProcessMetricsCollector {
         pid,
@@ -81,23 +84,31 @@ pub static P_METRICS_COLLECTOR: LazyLock<ProcessMetricsCollector> = LazyLock::ne
 });
 
 impl ProcessMetricsCollector {
-    /// Insert or refresh an active worker id.
-    pub async fn register_worker(&self, uuid: Uuid, state: Arc<AtomicCell<WorkerState>>) {
-        let workers = &self.inner.workers;
-        if workers.inner.contains_key(&uuid) {
+    /// adds or refresh th
+    pub async fn register_queue(&self, queue_id: Uuid, sender: Sender<TimerType>) {
+        let queues = &self.inner.queues;
+        if queues.inner.contains_key(&queue_id) {
             return;
         }
         let timeout = Duration::from_millis(WORKER_STATE_TTL as u64);
-        workers.insert_expirable(uuid, state, timeout).await;
-        let elected_worker = &self.inner.elected_worker_id;
-        if elected_worker.load().is_none() {
-            elected_worker.swap(Some(uuid));
+        queues.insert_expirable(queue_id, sender, timeout).await;
+    }
+    /// Insert or refresh an active worker id.
+    pub async fn register_worker(&self, worker_id: Uuid, state: Arc<AtomicCell<WorkerState>>) {
+        let workers = &self.inner.workers;
+        if workers.inner.contains_key(&worker_id) {
+            return;
         }
+        let timeout = Duration::from_millis(WORKER_STATE_TTL as u64);
+        workers.insert_expirable(worker_id, state, timeout).await;
     }
 
     /// Remove a previously-registered worker id.
     pub fn unregister_worker(&self, uuid: Uuid) {
         self.inner.workers.remove(&uuid);
+    }
+    pub fn unregister_queue(&self, queue_id: Uuid) {
+        self.inner.queues.remove(&queue_id);
     }
 
     #[allow(unused)]
