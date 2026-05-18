@@ -8,7 +8,7 @@ use crate::utils::{promote_jobs, resume_helper};
 use crate::worker::WorkerOpts;
 use crate::{
     BackOff, BackOffJobOptions, Dt, FailedDetails, JobOptions, JobToken, KeepJobs, KioResult,
-    RemoveOnCompletionOrFailure, Trace,
+    ProcessMetrics, RemoveOnCompletionOrFailure, Trace,
 };
 use chrono::{TimeDelta, Utc};
 use crossbeam::atomic::AtomicCell;
@@ -1094,6 +1094,17 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     pub async fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
         self.store.fetch_worker_metrics().await
     }
+    /// Retrieves per-process metrics stored in the backing store.
+    ///
+    /// Returns a map from worker [`Pid`] to [`ProcessMetrics`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the store lookup fails.
+    #[allow(clippy::future_not_send)]
+    pub async fn fetch_proess_metrics(&self) -> KioResult<BTreeMap<sysinfo::Pid, ProcessMetrics>> {
+        self.store.fetch_process_metrics().await
+    }
     /// Persists the given worker metrics to the backing store with a TTL.
     ///
     /// Workers call this periodically (controlled by
@@ -1106,6 +1117,19 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     #[allow(clippy::future_not_send)]
     pub async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()> {
         self.store.store_worker_metrics(metrics, ttl_ms).await
+    }
+    /// Persists the given process metrics to the backing store with a TTL.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioError`] if the store write fails.
+    #[allow(clippy::future_not_send)]
+    pub async fn store_process_metrics(
+        &self,
+        metrics: ProcessMetrics,
+        ttl_ms: u64,
+    ) -> KioResult<()> {
+        self.store.store_process_metrics(metrics, ttl_ms).await
     }
     /// Increments or decrements the in-progress counter and publishes a
     /// `Processing` event so that listeners know a worker has started or
