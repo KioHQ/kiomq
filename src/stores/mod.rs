@@ -2,8 +2,8 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
     events::QueueStreamEvent, metrics::WorkerMetrics, CollectionSuffix, EventEmitter, Job,
-    JobField, JobOptions, JobState, JobToken, KioResult, ProcessedResult, QueueEventMode,
-    QueueMetrics, QueueOpts, Trace,
+    JobField, JobOptions, JobState, JobToken, KioResult, ProcessMetrics, ProcessedResult,
+    QueueEventMode, QueueMetrics, QueueOpts, Trace,
 };
 use std::collections::VecDeque;
 mod inmemory_store;
@@ -55,6 +55,14 @@ pub trait Store<D, R, P> {
     ///
     /// Returns [`KioResult`] error if the store lookup fails.
     async fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>>;
+    /// Returns per-process metric snapshots stored with a TTL.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KioResult`] error if the store lookup fails.
+    async fn fetch_process_metrics(&self) -> KioResult<BTreeMap<sysinfo::Pid, ProcessMetrics>>;
+    /// Persists a process's metrics with a time-to-live of `ttls` milliseconds.
+    async fn store_process_metrics(&self, metrics: ProcessMetrics, ttl_ms: u64) -> KioResult<()>;
     /// Persists a worker's metrics with a time-to-live of `ttl_ms` milliseconds.
     async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()>;
     /// Returns `true` if a metadata field with the given name exists.

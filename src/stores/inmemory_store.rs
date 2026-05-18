@@ -9,8 +9,8 @@ use crate::utils::{
     ConcurrentDeque,
 };
 use crate::worker::MIN_DELAY_MS_LIMIT;
-use crate::ProcessedResult;
 use crate::{Counter, Dt, QueueError};
+use crate::{ProcessMetrics, ProcessedResult};
 use chrono::Utc;
 use crossbeam::atomic::AtomicCell;
 use crossbeam_skiplist::{SkipMap, SkipSet};
@@ -55,6 +55,7 @@ pub struct InMemoryStore<D, R, P> {
     is_paused: Arc<AtomicCell<bool>>,
     jobs: Arc<TimedJobMap<D, R, P>>,
     worker_metrics: Arc<TimedMap<Uuid, WorkerMetrics>>,
+    process_metrics: Arc<TimedMap<sysinfo::Pid, ProcessMetrics>>,
     #[debug(skip)]
     locks: Arc<TimedMap<u64, Lock>>, // locks that expires
     #[debug(skip)]
@@ -97,6 +98,7 @@ impl<D: Clone, R: Clone, P: Clone> InMemoryStore<D, R, P> {
         let events = Arc::default();
         let stored_metrics = Arc::default();
         let worker_metrics = Arc::default();
+        let process_metrics = Arc::default();
         let notifier = Arc::default();
         let pause_workers = Arc::default();
         let is_inital = Arc::default();
@@ -108,6 +110,7 @@ impl<D: Clone, R: Clone, P: Clone> InMemoryStore<D, R, P> {
             notifier,
             name,
             stored_metrics,
+            process_metrics,
             prefix,
             processing: Counter::default(),
             priority_counter: Counter::default(),
@@ -249,6 +252,23 @@ where
             .collect();
         Ok(stored_metrics)
     }
+    async fn store_process_metrics(&self, metrics: ProcessMetrics, ttl_ms: u64) -> KioResult<()> {
+        let duration = std::time::Duration::from_millis(ttl_ms);
+        self.process_metrics
+            .insert_expirable(metrics.pid, metrics, duration)
+            .await;
+        Ok(())
+    }
+    async fn fetch_process_metrics(&self) -> KioResult<BTreeMap<sysinfo::Pid, ProcessMetrics>> {
+        let metrics = self
+            .process_metrics
+            .inner
+            .iter()
+            .map(|entry| (*entry.key(), entry.value().value.clone()))
+            .collect();
+        Ok(metrics)
+    }
+
     async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()> {
         let duration = std::time::Duration::from_millis(ttl_ms);
         self.worker_metrics
@@ -269,6 +289,9 @@ where
         let purge_metrics = async {
             if self.worker_metrics.len_expired() > 0 {
                 self.worker_metrics.purge_expired().await;
+            }
+            if self.process_metrics.len_expired() > 0 {
+                self.process_metrics.purge_expired().await;
             }
         };
         let purge_jobs = async move {
