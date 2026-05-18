@@ -1,6 +1,6 @@
 use crate::{
-    stores::Store, timers::DelayQueueTimer, utils::processor_types::SharedStore,
-    worker::processor_types::SyncFn, Job, JobState, JobToken, KioError, KioResult, Queue,
+    stores::Store, utils::processor_types::SharedStore, worker::processor_types::SyncFn, Job,
+    JobState, JobToken, KioError, KioResult, Queue,
 };
 
 use crate::utils::main_loop;
@@ -27,6 +27,7 @@ type JobMeta<D, R, P> = (
     TaskHandle,
     TaskMonitor,
     Histogram<u64>,
+    WorkerOpts,
 );
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
@@ -117,7 +118,6 @@ pub struct Worker<D, R, P, S> {
     pub state: Arc<AtomicCell<WorkerState>>,
     processing: ProcessingQueue,
     timer_pauser: Arc<AtomicCell<bool>>,
-    timers: DelayQueueTimer<D, R, P, S>,
     block_until: Counter,
     active_job_count: Arc<AtomicCell<usize>>,
     continue_notifier: Arc<Notify>,
@@ -252,32 +252,16 @@ impl<
         E: std::error::Error + Send + 'static,
     {
         let queue = Arc::new(queue.clone());
-        let jobs_in_progress: JobMap<_, _, _> = Arc::new(DashMap::new());
         let f: F = processor.into();
         let callback = Callback::from(f);
-
         let id = Uuid::new_v4();
         let opts = worker_opts.unwrap_or_default();
-        let jobs = jobs_in_progress.clone();
+        let jobs_in_progress = queue.jobs_in_progress.clone();
         let cancellation_token: Arc<CancellationToken> = Arc::default();
         let continue_notifier = queue.worker_notifier.clone();
-        let notifier = continue_notifier.clone();
         let state: Arc<AtomicCell<WorkerState>> = Arc::default();
-        let worker_state = state.clone();
         let timer_pauser: Arc<AtomicCell<bool>> = Arc::default();
         let processing = TaskTracker::new();
-        let timers = DelayQueueTimer::new(
-            jobs,
-            id,
-            opts,
-            queue.clone(),
-            cancellation_token.clone(),
-            worker_state,
-            notifier,
-            timer_pauser.clone(),
-            processing.clone(),
-        );
-
         #[cfg(feature = "tracing")]
         let resource_span = {
             let callback_type = match &callback {
@@ -302,7 +286,6 @@ impl<
             main_task,
             #[cfg(feature = "tracing")]
             resource_span,
-            timers,
             continue_notifier,
             block_until: Arc::default(),
             opts,
@@ -391,7 +374,6 @@ impl<
             self.queue.clone(),
             self.state.clone(),
             self.continue_notifier.clone(),
-            self.timers.clone(),
             self.timer_pauser.clone(),
         );
         #[cfg(feature = "tracing")]
@@ -408,7 +390,6 @@ impl<
             self.queue.clone(),
             self.state.clone(),
             self.continue_notifier.clone(),
-            self.timers.clone(),
             self.timer_pauser.clone(),
         );
         #[cfg(feature = "tracing")]
@@ -463,6 +444,7 @@ impl<
             // wait for the main loop to close
             while !handle.is_finished() {}
         }
+        self.queue.remove_worker(self.id);
     }
 
     /// Registers a listener for a specific job-state event on the underlying queue.

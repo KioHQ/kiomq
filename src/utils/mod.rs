@@ -1,7 +1,7 @@
 use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo, JobError, QueueError};
 use crate::events::QueueStreamEvent;
 use crate::stores::Store;
-use crate::timers::{DelayQueueTimer, TimerSender};
+use crate::timers::TimerSender;
 use crate::worker::{
     JobMap, ProcessingQueue, TaskHandle, WorkerCallback, WorkerState, MIN_DELAY_MS_LIMIT,
 };
@@ -33,7 +33,7 @@ use crate::KioResult;
 use crate::MoveToActiveResult;
 use crate::{Job, ProcessedResult, Queue};
 
-use crate::metrics::{HISTOGRAM_MAX_NS, HISTOGRAM_SIGFIG, P_METRICS_COLLECTOR};
+use crate::metrics::{HISTOGRAM_MAX_NS, HISTOGRAM_SIGFIG};
 use hdrhistogram::Histogram;
 use std::sync::Arc;
 
@@ -232,7 +232,7 @@ where
                 )
                 .await?;
             if let Some(entry) = jobs_in_progress.remove(&job_id) {
-                let (_, (job, _, handle, _, _)) = entry;
+                let (_, (job, _, handle, _, _, _)) = entry;
                 if completed.attempts_made < job.opts.attempts {
                     if let Some(repeat_opts) = completed.opts.repeat.as_ref() {
                         //dbg!("job here", job_id, &repeat_opts);
@@ -284,7 +284,7 @@ where
                 )
                 .await?;
             if let Some(entry) = jobs_in_progress.remove(&job_id) {
-                let (_, (job, _, handle, _, _)) = entry;
+                let (_, (job, _, handle, _, _, _)) = entry;
                 // retry failed jobs
                 if failed_job.attempts_made < job.opts.attempts {
                     if let Some(backoff_job_opts) = job.opts.backoff.as_ref() {
@@ -364,7 +364,6 @@ type MainLoopParams<D, R, P, S> = (
     Arc<Queue<D, R, P, S>>,
     Arc<AtomicCell<WorkerState>>,
     Arc<Notify>,
-    DelayQueueTimer<D, R, P, S>,
     Arc<AtomicCell<bool>>,
 );
 
@@ -381,7 +380,6 @@ type MainLoopParams<D, R, P, S> = (
     Arc<Queue<D, R, P, S>>,
     Arc<AtomicCell<WorkerState>>,
     Arc<Notify>,
-    DelayQueueTimer<D, R, P, S>,
     Arc<AtomicCell<bool>>,
 );
 use tokio::task::JoinHandle;
@@ -407,7 +405,6 @@ where
         queue,
         worker_state,
         paused_here,
-        timers,
         to_pause,
     ) = params;
 
@@ -424,7 +421,6 @@ where
         queue,
         worker_state,
         paused_here,
-        timers,
         to_pause,
     ) = params;
 
@@ -433,11 +429,10 @@ where
         "Worker Starting with concurrency set to {}",
         opts.concurrency
     );
-    P_METRICS_COLLECTOR
-        .register_worker(id, worker_state.clone())
-        .await;
-    timers.start_timers();
     let semaphore = Arc::new(Semaphore::new(opts.concurrency));
+    queue
+        .add_worker(id, processing.clone(), worker_state.clone(), opts)
+        .await;
     while !cancellation_token.is_cancelled() {
         while !cancellation_token.is_cancelled()
             && semaphore.available_permits() > 0
@@ -488,12 +483,13 @@ where
                                 TaskHandle::default(),
                                 monitor.clone(),
                                 poll_histogram,
+                                opts,
                             ),
                         );
                         let task = processing
                             .spawn(monitor.instrument(async_backtrace::frame!(process_fn.boxed())));
                         if let Some(re) = jobs_in_progress.get(&id) {
-                            let (_, _, stored_handle, _, _) = re.value();
+                            let (_, _, stored_handle, _, _, _) = re.value();
 
                             stored_handle.swap(Some(task.into()));
                         }
@@ -534,9 +530,7 @@ where
     if cancellation_token.is_cancelled() {
         // wait for all running jobs to finish
         processing.wait().await;
-        timers.close().await;
         let _ = worker_state.compare_exchange(WorkerState::Active, WorkerState::Closed);
-        P_METRICS_COLLECTOR.unregister_worker(id);
     }
     #[cfg(feature = "tracing")]
     info!("Worker Closed");
