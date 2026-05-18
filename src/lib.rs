@@ -63,9 +63,10 @@ pub use error::*;
 pub(crate) use events::EventEmitter;
 pub use events::EventParameters;
 pub use job::*;
-pub use metrics::{ProcessMetrics, TaskInfo, WorkerMetrics};
+pub use metrics::{ProcessMetrics, RawRuntimeMetrics, TaskInfo, WorkerMetrics, WORKER_STATE_TTL};
 pub use queue::*;
 pub use stores::*;
+pub use sysinfo::Pid;
 pub use timers::{TimedMap, Timer};
 #[cfg(feature = "redis-store")]
 pub use utils::{fetch_redis_pass, get_queue_metrics};
