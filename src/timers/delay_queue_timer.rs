@@ -1,4 +1,6 @@
-use crate::metrics::{TaskInfo, WorkerMetrics, HISTOGRAM_MAX_NS};
+use crate::metrics::{
+    TaskInfo, WorkerMetrics, HISTOGRAM_MAX_NS, P_METRICS_COLLECTOR, WORKER_STATE_TTL,
+};
 use crate::worker::{ProcessingQueue, WorkerState, MIN_DELAY_MS_LIMIT as EVICTION_INTERVAL_MS};
 
 use crate::{KioError, KioResult};
@@ -6,7 +8,7 @@ use arc_swap::ArcSwapOption;
 use chrono::Utc;
 use crossbeam::atomic::AtomicCell;
 use derive_more::{Debug, Display};
-use futures::FutureExt;
+use futures::{FutureExt, StreamExt};
 use futures_delay_queue::{delay_queue, DelayHandle, DelayQueue, Receiver};
 use futures_intrusive::buffer::GrowingHeapBuf;
 use serde::{de::DeserializeOwned, Serialize};
@@ -34,6 +36,7 @@ pub enum TimerType {
     )]
     PromotedDelayed(u64),
     CollectMetrics,
+    ReregisterWorker,
 }
 use tokio::time::Instant;
 
@@ -83,6 +86,7 @@ impl TimerSender {
             TimerType::ExtendLock(_) => Duration::from_millis(self.opts.lock_duration),
             TimerType::CollectMetrics => Duration::from_millis(self.opts.metrics_update_interval),
             TimerType::PromotedDelayed(_) => Duration::from_millis(EVICTION_INTERVAL_MS),
+            TimerType::ReregisterWorker => Duration::from_millis(WORKER_STATE_TTL as u64),
         }
     }
     pub fn set_key(&self, timer: TimerType, key: DelayHandle) {
@@ -90,7 +94,7 @@ impl TimerSender {
             TimerType::StalledCheck(_) => self.inner.keys.1.store(Some(key.into())),
             TimerType::ExtendLock(_) => self.inner.keys.0.store(Some(key.into())),
             TimerType::CollectMetrics => self.inner.keys.2.store(Some(key.into())),
-            TimerType::PromotedDelayed(_) => {} // do nothing here, these are temporary one-shot timers
+            TimerType::PromotedDelayed(_) | TimerType::ReregisterWorker => {} // do nothing here, these are temporary one-shot timers
         }
     }
 }
@@ -216,13 +220,36 @@ impl<
             #[cfg(feature = "tracing")]
             info!("starting ...");
             let timeout = Duration::from_millis(5);
+            let interval = sysinfo::MINIMUM_CPU_UPDATE_INTERVAL + Duration::from_millis(100);
+            let metrics_stream = P_METRICS_COLLECTOR
+                .intervals(interval, token.clone())
+                .fuse();
+            tokio::pin!(metrics_stream);
             while !token.is_cancelled() {
                 let date_time = Utc::now();
-                let (promotion_error, timer_error, _) = tokio::join![
+                let (promotion_error, timer_error, stream_error, ()) = tokio::join![
                     queue.promote_delayed_jobs(date_time, interval_ms, &sender),
                     async {
                         while let Ok(Some(expired)) = rx.receive().timeout(timeout).await {
-                            process_timer(expired, &queue, &jobs, opts, worker_id, &sender).await?;
+                            process_timer(
+                                expired,
+                                &queue,
+                                &jobs,
+                                opts,
+                                worker_id,
+                                worker_state.clone(),
+                                &sender,
+                            )
+                            .await?;
+                        }
+                        Ok::<(), KioError>(())
+                    },
+                    async {
+                        while let Ok(Some(metrics)) = metrics_stream.next().timeout(timeout).await {
+                            queue
+                                .store
+                                .store_process_metrics(metrics, interval.as_millis() as u64)
+                                .await?;
                         }
                         Ok::<(), KioError>(())
                     },
@@ -230,6 +257,7 @@ impl<
                 ];
                 promotion_error?;
                 timer_error?;
+                stream_error?;
                 if pause_schedular.load() && processing.is_empty() {
                     #[cfg(feature = "tracing")]
                     debug!("pausing ... ");
@@ -262,6 +290,7 @@ impl<
         self.insert(TimerType::ExtendLock(instant));
         self.insert(TimerType::StalledCheck(instant));
         self.insert(TimerType::CollectMetrics);
+        self.insert(TimerType::ReregisterWorker);
         self.start_signal.notify_one();
     }
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(rx, self)))]
@@ -286,6 +315,7 @@ async fn process_timer<D, R, P, S>(
     jobs: &JobMap<D, R, P>,
     opts: WorkerOpts,
     worker_id: Uuid,
+    worker_state: Arc<AtomicCell<WorkerState>>,
     sender: &TimerSender,
 ) -> KioResult<()>
 where
@@ -353,6 +383,12 @@ where
                 .store
                 .add_item(crate::CollectionSuffix::Wait, job_id, None, true)
                 .await?;
+        }
+        TimerType::ReregisterWorker => {
+            P_METRICS_COLLECTOR
+                .register_worker(worker_id, worker_state)
+                .await;
+            next_timer.replace(key);
         }
     }
     if let Some(timer) = next_timer {

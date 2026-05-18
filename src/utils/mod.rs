@@ -332,7 +332,6 @@ where
     P: DeserializeOwned + Clone + Serialize + Send + 'static + Sync,
     S: Clone + Store<D, R, P> + Send + 'static + Sync,
 {
-    // handle pausing or closing;
     if closed {
         return Ok(None);
     }
@@ -434,7 +433,9 @@ where
         "Worker Starting with concurrency set to {}",
         opts.concurrency
     );
-    P_METRICS_COLLECTOR.register_worker(id).await;
+    P_METRICS_COLLECTOR
+        .register_worker(id, worker_state.clone())
+        .await;
     timers.start_timers();
     let semaphore = Arc::new(Semaphore::new(opts.concurrency));
     while !cancellation_token.is_cancelled() {
