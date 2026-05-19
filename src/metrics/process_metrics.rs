@@ -24,7 +24,7 @@ use tokio_util::time::{delay_queue::Key, DelayQueue};
 use uuid::Uuid;
 /// The TTL for the Worker State stored in [`ProcessMoniterCollector`].
 pub const WORKER_STATE_TTL: u128 =
-    sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.as_millis() + Duration::from_secs(1000).as_millis();
+    sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.as_millis() + Duration::from_secs(100).as_millis();
 /// Global allocator instrumented by [`Heapster`].
 ///
 /// `Heapster` wraps the system allocator and exposes allocation statistics via
