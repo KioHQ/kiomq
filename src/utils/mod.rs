@@ -364,7 +364,6 @@ type MainLoopParams<D, R, P, S> = (
     Arc<Queue<D, R, P, S>>,
     Arc<AtomicCell<WorkerState>>,
     Arc<Notify>,
-    Arc<AtomicCell<bool>>,
 );
 
 #[cfg(not(feature = "tracing"))]
@@ -380,7 +379,6 @@ type MainLoopParams<D, R, P, S> = (
     Arc<Queue<D, R, P, S>>,
     Arc<AtomicCell<WorkerState>>,
     Arc<Notify>,
-    Arc<AtomicCell<bool>>,
 );
 use tokio::task::JoinHandle;
 #[async_backtrace::framed]
@@ -405,7 +403,6 @@ where
         queue,
         worker_state,
         paused_here,
-        to_pause,
     ) = params;
 
     #[cfg(not(feature = "tracing"))]
@@ -421,7 +418,6 @@ where
         queue,
         worker_state,
         paused_here,
-        to_pause,
     ) = params;
 
     #[cfg(feature = "tracing")]
@@ -501,24 +497,25 @@ where
             if queue.pause_workers.load() && processing.is_empty() {
                 #[cfg(feature = "tracing")]
                 info!(
-                    "pausing job_schedular_loop with  {delayed} delayed_jobs and {processing} running_jobs",
+                    "pausing Worker ({id}) with  {delayed} delayed_jobs and {processing} running_jobs",
                     delayed = queue.current_metrics.delayed.load(),
                     processing = processing.len(),
                 );
-                to_pause.store(true);
+                worker_state.store(WorkerState::Idle);
                 if cancellation_token
                     .run_until_cancelled(paused_here.notified())
                     .await
                     .is_none()
                 {
                     #[cfg(feature = "tracing")]
-                    info!("... breaking loop");
+                    info!("... breaking loop to close paused worker");
                     break;
                 }
+                worker_state.store(WorkerState::Active);
                 #[cfg(feature = "tracing")]
-                info!("resumed job_schedular_loop");
-
-                to_pause.store(false);
+                {
+                    info!("resumed worker");
+                }
             }
             // yield, so other tasks run
             tokio::task::yield_now().await;
@@ -530,7 +527,7 @@ where
     if cancellation_token.is_cancelled() {
         // wait for all running jobs to finish
         processing.wait().await;
-        let _ = worker_state.compare_exchange(WorkerState::Active, WorkerState::Closed);
+        worker_state.store(WorkerState::Closed);
     }
     #[cfg(feature = "tracing")]
     info!("Worker Closed");

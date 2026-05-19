@@ -36,7 +36,7 @@ use derive_more::Debug;
 pub use options::{CollectionSuffix, QueueEventMode, QueueMetrics, QueueOpts, RetryOptions};
 pub use options::{Counter, JobField, ProcessedResult};
 
-pub type WorkerMetaData =
+pub(crate) type WorkerMetaData =
     Arc<SkipMap<Uuid, (WorkerOpts, ProcessingQueue, Arc<AtomicCell<WorkerState>>)>>;
 
 /// A task queue that holds and manages jobs.
@@ -854,7 +854,7 @@ impl<
         self.current_metrics.clear();
         self.store.clear_collections().await?;
         if let Some(timers) = self.timers.load_full() {
-            timers.close().await;
+            timers.close();
         }
         P_METRICS_COLLECTOR.unregister_queue(self.id);
         Ok(())
