@@ -5,8 +5,9 @@ use crate::worker::WorkerState;
 use crate::{Dt, TimedMap};
 use chrono::Utc;
 use crossbeam::atomic::AtomicCell;
+use crossbeam_skiplist::{SkipMap, SkipSet};
 use derive_more::Debug;
-use futures::Stream;
+use futures::{FutureExt, Stream, StreamExt};
 use heapster::{Heapster, Stats};
 #[cfg(feature = "redis-store")]
 use redis::{self, FromRedisValue, ParsingError};
@@ -15,14 +16,15 @@ use std::sync::Arc;
 use std::{alloc::System as SystemAlloc, sync::LazyLock, time::Duration};
 use sysinfo::{get_current_pid, Pid, Process, ProcessRefreshKind, System};
 use tokio::runtime::Handle;
-use tokio::sync::broadcast::Sender;
-use tokio::sync::RwLock;
+use tokio::sync::mpsc::Sender;
+use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio_metrics::{RuntimeMetrics, RuntimeMonitor};
 use tokio_util::sync::CancellationToken;
+use tokio_util::time::{delay_queue::Key, DelayQueue};
 use uuid::Uuid;
 /// The TTL for the Worker State stored in [`ProcessMoniterCollector`].
 pub const WORKER_STATE_TTL: u128 =
-    sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.as_millis() + Duration::from_secs(10).as_millis();
+    sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.as_millis() + Duration::from_secs(1000).as_millis();
 /// Global allocator instrumented by [`Heapster`].
 ///
 /// `Heapster` wraps the system allocator and exposes allocation statistics via
@@ -38,26 +40,41 @@ pub static GLOBAL: Heapster<SystemAlloc> = Heapster::new(SystemAlloc);
 /// refresh process-specific CPU/memory figures, and a `TimedMap` that tracks
 /// active worker UUIDs. The collector is deliberately lightweight and is
 /// intended to live for the lifetime of the process.
+#[derive(Clone)]
 pub struct ProcessMetricsCollector {
     /// PID of the process being monitored.
     pub pid: Pid,
-    /// Runtime monitor used to obtain `RuntimeMetrics` for the current runtime.
-    pub rt_monitor: RuntimeMonitor,
     /// Shared wrapper for [`System`], workers and `last_updated`
     pub inner: Arc<CollectorInner>,
+    cancel_token: CancellationToken,
+    /// Timer Sender
+    pub(crate) tx: mpsc::Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
 }
 
 pub struct CollectorInner {
+    /// Runtime monitor used to obtain `RuntimeMetrics` for the current runtime.
+    pub rt_monitor: RuntimeMonitor,
     /// `sysinfo::System` used to refresh process-specific data.
     pub process_monitor: RwLock<System>,
     /// Timestamp of the last successful metric ffs refresh.
     pub last_updated: AtomicCell<Dt>,
     /// Registry of active worker IDs mapped to their state [`WorkerState`].
     pub workers: TimedMap<Uuid, Arc<AtomicCell<WorkerState>>>,
-    /// Registry of queues and their TimerSender.
-    pub queues: TimedMap<Uuid, Sender<TimerType>>,
+    /// Registry of queues and their `TimerSender`.
+    pub queues: TimedMap<Uuid, Sender<TimerCommand>>,
+    /// all timer by Duration
+    pub global_timers: SkipMap<Duration, TimerData>,
 }
-
+#[derive(Debug, Default)]
+pub struct TimerData {
+    pub queues: SkipSet<Uuid>,
+    pub key: AtomicCell<Option<Key>>,
+}
+#[derive(Debug, Clone)]
+pub enum TimerCommand {
+    PostMetrics(Box<ProcessMetrics>),
+    RespondToTimer(TimerType),
+}
 /// Lazily-initialised global [`ProcessMetricsCollector`].
 ///
 /// Use `P_METRICS_COLLECTOR` to register/unregister workers and to access the
@@ -69,23 +86,31 @@ pub static P_METRICS_COLLECTOR: LazyLock<ProcessMetricsCollector> = LazyLock::ne
     let last_updated = AtomicCell::new(Utc::now());
     let workers = TimedMap::default();
     let queues = TimedMap::default();
+    let global_timers = SkipMap::default();
+    let cancel_token = CancellationToken::new();
     let process_monitor = RwLock::new(sys);
+    let (tx, _rx) = mpsc::channel(100000000);
     let inner = Arc::new(CollectorInner {
-        queues,
-        workers,
+        rt_monitor,
         process_monitor,
         last_updated,
+        workers,
+        queues,
+        global_timers,
     });
-    ProcessMetricsCollector {
+    let collector = ProcessMetricsCollector {
         pid,
-        rt_monitor,
         inner,
-    }
+        cancel_token,
+        tx,
+    };
+    collector.create_global_timer_task(_rx);
+    collector
 });
 
 impl ProcessMetricsCollector {
-    /// adds or refresh th
-    pub async fn register_queue(&self, queue_id: Uuid, sender: Sender<TimerType>) {
+    /// adds or refresh
+    pub async fn register_queue(&self, queue_id: Uuid, sender: Sender<TimerCommand>) {
         let queues = &self.inner.queues;
         if queues.inner.contains_key(&queue_id) {
             return;
@@ -109,15 +134,89 @@ impl ProcessMetricsCollector {
     }
     pub fn unregister_queue(&self, queue_id: Uuid) {
         self.inner.queues.remove(&queue_id);
+        self.inner.global_timers.iter().for_each(|entry| {
+            entry.value().queues.remove(&queue_id);
+        });
     }
 
+    fn create_global_timer_task(
+        &self,
+        mut rx: mpsc::Receiver<(Uuid, TimerType, oneshot::Sender<()>)>,
+    ) -> tokio::task::JoinHandle<()> {
+        let processor = self.clone();
+        let token = processor.cancel_token.clone();
+        let interval = sysinfo::MINIMUM_CPU_UPDATE_INTERVAL + Duration::from_millis(100);
+
+        tokio::spawn(async move {
+            let metrics_stream = processor.intervals(interval, token.clone()).fuse();
+            tokio::pin!(metrics_stream);
+
+            let inner = processor.inner.clone();
+            let mut delayed_queue: DelayQueue<(Duration, TimerType)> = DelayQueue::new();
+
+            while !token.is_cancelled() {
+                tokio::select! {
+                    biased;
+
+                    () = token.cancelled() => {
+                        break;
+                    }
+
+                    // Fixed: Handle Lagged error explicitly instead of silently dropping events
+                   Some((queue_id, timer,  ack)) = rx.recv() => {
+                                let duration = timer.next_duration();
+                                let entry = inner.global_timers.get_or_insert_with(duration,TimerData::default);
+                                let value = entry.value();
+                                value.queues.insert(queue_id);
+                                let key = delayed_queue.insert((duration, timer), duration);
+                                value.key.swap(Some(key));
+                                ack.send(()).ok();
+
+                        }
+
+
+                    Some(metrics) = metrics_stream.next() => {
+                        let cmd = TimerCommand::PostMetrics(Box::new(metrics));
+                        for entry in &inner.queues.inner {
+                            let _ = entry.value().value.send(cmd.clone());
+                        }
+                    }
+
+                    Some(expired) = delayed_queue.next() => {
+                        let (duration, timer) = expired.into_inner();
+                        let cmd = TimerCommand::RespondToTimer(timer);
+
+                        if let Some(entry) = inner.global_timers.remove(&duration) {
+
+                            let data = entry.value();
+                            let  targets = &data.queues;
+
+                            if let TimerType::PromotedDelayed(_, queue_id) = timer {
+                                targets.insert(queue_id);
+
+                            }
+
+                            for queue_id in targets {
+                                if let Some(entry) = inner.queues.inner.get(queue_id.value()) {
+                                    let _ = entry.value().value.send(cmd.clone());
+                                }
+                            }
+
+                            // Optional: If you intend to retain durations with other active queues,
+                            // only remove if the specific timer expired, otherwise re-insert.
+                        }
+                    }
+                }
+            }
+        }.boxed())
+    }
     #[allow(unused)]
     pub fn intervals(
         &self,
         duration: Duration,
         cancel_token: CancellationToken,
     ) -> impl Stream<Item = ProcessMetrics> + use<'_> {
-        let intervals = self.rt_monitor.intervals();
+        let intervals = self.inner.rt_monitor.intervals();
         let inner = self.inner.clone();
         enum State<S> {
             Active(S),
@@ -153,6 +252,7 @@ impl ProcessMetricsCollector {
                         let mut intervals = intervals;
                         let rt_metrics = intervals.next()?;
                         inner.workers.purge_expired().await;
+                        inner.queues.purge_expired().await;
                         let workers: Vec<Uuid> = inner.workers
                             .inner
                             .iter()
