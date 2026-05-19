@@ -7,6 +7,7 @@ use chrono::Utc;
 use crossbeam::atomic::AtomicCell;
 use crossbeam_skiplist::{SkipMap, SkipSet};
 use derive_more::Debug;
+use flume::{self, Sender};
 use futures::{FutureExt, Stream, StreamExt};
 use heapster::{Heapster, Stats};
 #[cfg(feature = "redis-store")]
@@ -16,8 +17,7 @@ use std::sync::Arc;
 use std::{alloc::System as SystemAlloc, sync::LazyLock, time::Duration};
 use sysinfo::{get_current_pid, Pid, Process, ProcessRefreshKind, System};
 use tokio::runtime::Handle;
-use tokio::sync::mpsc::Sender;
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{oneshot, RwLock};
 use tokio_metrics::{RuntimeMetrics, RuntimeMonitor};
 use tokio_util::sync::CancellationToken;
 use tokio_util::time::{delay_queue::Key, DelayQueue};
@@ -48,7 +48,7 @@ pub struct ProcessMetricsCollector {
     pub inner: Arc<CollectorInner>,
     cancel_token: CancellationToken,
     /// Timer Sender
-    pub(crate) tx: mpsc::Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
+    pub(crate) tx: Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
 }
 
 pub struct CollectorInner {
@@ -89,7 +89,7 @@ pub static P_METRICS_COLLECTOR: LazyLock<ProcessMetricsCollector> = LazyLock::ne
     let global_timers = SkipMap::default();
     let cancel_token = CancellationToken::new();
     let process_monitor = RwLock::new(sys);
-    let (tx, _rx) = mpsc::channel(100000000);
+    let (tx, _rx) = flume::bounded(100000);
     let inner = Arc::new(CollectorInner {
         rt_monitor,
         process_monitor,
@@ -141,7 +141,7 @@ impl ProcessMetricsCollector {
 
     fn create_global_timer_task(
         &self,
-        mut rx: mpsc::Receiver<(Uuid, TimerType, oneshot::Sender<()>)>,
+        rx: flume::Receiver<(Uuid, TimerType, oneshot::Sender<()>)>,
     ) -> tokio::task::JoinHandle<()> {
         let processor = self.clone();
         let token = processor.cancel_token.clone();
@@ -149,7 +149,9 @@ impl ProcessMetricsCollector {
 
         tokio::spawn(async move {
             let metrics_stream = processor.intervals(interval, token.clone()).fuse();
+            let  incoming_cmd_stream = rx.stream().fuse();
             tokio::pin!(metrics_stream);
+            tokio::pin!(incoming_cmd_stream);
 
             let inner = processor.inner.clone();
             let mut delayed_queue: DelayQueue<(Duration, TimerType)> = DelayQueue::new();
@@ -162,8 +164,7 @@ impl ProcessMetricsCollector {
                         break;
                     }
 
-                    // Fixed: Handle Lagged error explicitly instead of silently dropping events
-                   Some((queue_id, timer,  ack)) = rx.recv() => {
+                   Some((queue_id, timer,  ack)) = incoming_cmd_stream.next() => {
                                 let duration = timer.next_duration();
                                 let entry = inner.global_timers.get_or_insert_with(duration,TimerData::default);
                                 let value = entry.value();
@@ -173,15 +174,6 @@ impl ProcessMetricsCollector {
                                 ack.send(()).ok();
 
                         }
-
-
-                    Some(metrics) = metrics_stream.next() => {
-                        let cmd = TimerCommand::PostMetrics(Box::new(metrics));
-                        for entry in &inner.queues.inner {
-                            let _ = entry.value().value.send(cmd.clone());
-                        }
-                    }
-
                     Some(expired) = delayed_queue.next() => {
                         let (duration, timer) = expired.into_inner();
                         let cmd = TimerCommand::RespondToTimer(timer);
@@ -202,15 +194,19 @@ impl ProcessMetricsCollector {
                                 }
                             }
 
-                            // Optional: If you intend to retain durations with other active queues,
-                            // only remove if the specific timer expired, otherwise re-insert.
+                        }
+                    }
+
+                    Some(metrics) = metrics_stream.next() => {
+                        let cmd = TimerCommand::PostMetrics(Box::new(metrics));
+                        for entry in &inner.queues.inner {
+                            let _ = entry.value().value.send(cmd.clone());
                         }
                     }
                 }
             }
         }.boxed())
     }
-    #[allow(unused)]
     pub fn intervals(
         &self,
         duration: Duration,
@@ -218,10 +214,11 @@ impl ProcessMetricsCollector {
     ) -> impl Stream<Item = ProcessMetrics> + use<'_> {
         let intervals = self.inner.rt_monitor.intervals();
         let inner = self.inner.clone();
+        #[allow(unused)]
         enum State<S> {
             Active(S),
             Done,
-        };
+        }
 
         futures::stream::unfold(State::Active(intervals), move |state| {
             let cancel = cancel_token.clone();
