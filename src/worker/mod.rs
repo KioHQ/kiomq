@@ -117,7 +117,6 @@ pub struct Worker<D, R, P, S> {
     /// Current lifecycle state of the worker.
     pub state: Arc<AtomicCell<WorkerState>>,
     processing: ProcessingQueue,
-    timer_pauser: Arc<AtomicCell<bool>>,
     block_until: Counter,
     active_job_count: Arc<AtomicCell<usize>>,
     continue_notifier: Arc<Notify>,
@@ -260,7 +259,6 @@ impl<
         let cancellation_token: Arc<CancellationToken> = Arc::default();
         let continue_notifier = queue.worker_notifier.clone();
         let state: Arc<AtomicCell<WorkerState>> = Arc::default();
-        let timer_pauser: Arc<AtomicCell<bool>> = Arc::default();
         let processing = TaskTracker::new();
         #[cfg(feature = "tracing")]
         let resource_span = {
@@ -282,7 +280,6 @@ impl<
         let main_task = Arc::default();
         let worker = Self {
             state,
-            timer_pauser,
             main_task,
             #[cfg(feature = "tracing")]
             resource_span,
@@ -374,7 +371,6 @@ impl<
             self.queue.clone(),
             self.state.clone(),
             self.continue_notifier.clone(),
-            self.timer_pauser.clone(),
         );
         #[cfg(feature = "tracing")]
         let params = (
@@ -390,7 +386,6 @@ impl<
             self.queue.clone(),
             self.state.clone(),
             self.continue_notifier.clone(),
-            self.timer_pauser.clone(),
         );
         #[cfg(feature = "tracing")]
         let main = main_loop(params).instrument(self.resource_span.clone());

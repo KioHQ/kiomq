@@ -89,7 +89,7 @@ pub static P_METRICS_COLLECTOR: LazyLock<ProcessMetricsCollector> = LazyLock::ne
     let global_timers = SkipMap::default();
     let cancel_token = CancellationToken::new();
     let process_monitor = RwLock::new(sys);
-    let (tx, _rx) = flume::bounded(100000);
+    let (tx, rx) = flume::bounded(100000);
     let inner = Arc::new(CollectorInner {
         rt_monitor,
         process_monitor,
@@ -104,7 +104,7 @@ pub static P_METRICS_COLLECTOR: LazyLock<ProcessMetricsCollector> = LazyLock::ne
         cancel_token,
         tx,
     };
-    collector.create_global_timer_task(_rx);
+    collector.create_global_timer_task(rx);
     collector
 });
 

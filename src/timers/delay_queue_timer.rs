@@ -153,13 +153,13 @@ impl<
         self.sender.send(timer).await;
     }
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
-    pub(crate) async fn clear(&self) {
+    pub(crate) fn clear(&self) {
         self.sender.inner.workers.clear();
     }
 
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
-    pub(crate) async fn close(&self) {
-        self.clear().await;
+    pub(crate) fn close(&self) {
+        self.clear();
         let task_handle = self.task_handle.swap(None);
         if let Some(task_handle) = task_handle {
             task_handle.abort();
@@ -187,41 +187,24 @@ impl<
             tokio::pin!(incoming_timer_stream);
             while !token.is_cancelled() {
                 tokio::select! {
-                    biased;
-                    () = token.cancelled() => {
-                         break;
-                    },
-                   Some(timer_cmd) = incoming_timer_stream.next() => {
-                    match timer_cmd {
-                        TimerCommand::PostMetrics(metrics) => {
-                            queue
-                                .store
-                                .store_process_metrics(*metrics, interval as u64)
-                                .await?;
-                        }
-                        TimerCommand::RespondToTimer(timer) => {
-                            process_timer(timer, &queue, &jobs, &workers, &sender).await?;
-                        }
-                    }
+                     biased;
+                     () = token.cancelled() => {
+                          break;
+                     },
+                    Some(timer_cmd) = incoming_timer_stream.next() => {
+                     match timer_cmd {
+                         TimerCommand::PostMetrics(metrics) => {
+                             queue
+                                 .store
+                                 .store_process_metrics(*metrics, interval as u64)
+                                 .await?;
+                         }
+                         TimerCommand::RespondToTimer(timer) => {
+                             process_timer(timer, &queue, &jobs, &workers, &sender).await?;
+                         }
+                     }
+                 }
                 }
-                }
-                // if pause_schedular.load() && processing.is_empty() {
-                //     #[cfg(feature = "tracing")]
-                //     debug!("pausing ... ");
-                //     worker_state.store(WorkerState::Idle);
-                //     // wait for all running jobs to completed
-                //     if token
-                //         .run_until_cancelled(notifier.notified())
-                //         .await
-                //         .is_none()
-                //     {
-                //         // handle cancellation here too
-                //         break;
-                //     }
-                //     #[cfg(feature = "tracing")]
-                //     debug!("resumed");
-                //     worker_state.store(WorkerState::Active);
-                // }
             }
             #[cfg(feature = "tracing")]
             info!("cancelled");
@@ -383,7 +366,7 @@ where
             let date_time = Utc::now();
             if queue.current_metrics.has_delayed() {
                 queue
-                    .promote_delayed_jobs(date_time, EVICTION_INTERVAL_MS.cast_signed(), &sender)
+                    .promote_delayed_jobs(date_time, EVICTION_INTERVAL_MS.cast_signed(), sender)
                     .await?;
             }
             queue.store.purge_expired().await;
