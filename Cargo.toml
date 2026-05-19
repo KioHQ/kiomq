@@ -43,6 +43,7 @@ hdrhistogram = "7.5.4"
 futures-intrusive = "0.5.0"
 sysinfo = { version = "0.39.1", features = ["debug", "serde"] }
 heapster = { version = "0.5.0", features = ["serde", "fmt"] }
+flume = "0.12.0"
 
 [dependencies.dotenv]
 version = "0.15.0"
