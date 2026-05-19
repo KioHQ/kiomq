@@ -1,7 +1,7 @@
 use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo, JobError, QueueError};
 use crate::events::QueueStreamEvent;
 use crate::stores::Store;
-use crate::timers::TimerSender;
+use crate::timers::{TimerSender, TimerType};
 use crate::worker::{
     JobMap, ProcessingQueue, TaskHandle, WorkerCallback, WorkerState, MIN_DELAY_MS_LIMIT,
 };
@@ -559,7 +559,9 @@ where
         queue.store.get_delayed_at(start, stop).await?;
     if !jobs.is_empty() {
         for job_id in jobs {
-            timer_sender.send(crate::timers::TimerType::PromotedDelayed(job_id));
+            timer_sender
+                .send(TimerType::PromotedDelayed(job_id, queue.id))
+                .await;
         }
     }
     if !missed_deadline.is_empty() {

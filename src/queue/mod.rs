@@ -2,8 +2,8 @@
 use crate::error::{JobError, KioError};
 use crate::events::QueueStreamEvent;
 use crate::job::{Job, JobState};
-use crate::metrics::{WorkerMetrics, P_METRICS_COLLECTOR};
-use crate::timers::{DelayQueueTimer, TimerSender, TimerType};
+use crate::metrics::{TimerCommand, WorkerMetrics, P_METRICS_COLLECTOR};
+use crate::timers::{DelayQueueTimer, TimerSender};
 use crate::utils::{promote_jobs, resume_helper};
 use crate::worker::{JobMap, ProcessingQueue, WorkerOpts, WorkerState};
 use crate::{
@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::marker::PhantomData;
 use std::sync::Arc;
 use tokio::sync::{
-    broadcast::{self, Sender},
+    mpsc::{self, Sender},
     Notify,
 };
 use tokio::task::JoinHandle;
@@ -35,25 +35,11 @@ use crate::stores::Store;
 use crate::{EventEmitter, EventParameters};
 use arc_swap::ArcSwapOption;
 use derive_more::Debug;
-use futures_delay_queue::DelayHandle;
 pub use options::{CollectionSuffix, QueueEventMode, QueueMetrics, QueueOpts, RetryOptions};
 pub use options::{Counter, JobField, ProcessedResult};
 
-pub(crate) type WorkerMetaData = Arc<
-    SkipMap<
-        Uuid,
-        (
-            WorkerOpts,
-            ProcessingQueue,
-            Arc<AtomicCell<WorkerState>>,
-            (
-                ArcSwapOption<DelayHandle>,
-                ArcSwapOption<DelayHandle>,
-                ArcSwapOption<DelayHandle>,
-            ),
-        ),
-    >,
->;
+pub type WorkerMetaData =
+    Arc<SkipMap<Uuid, (WorkerOpts, ProcessingQueue, Arc<AtomicCell<WorkerState>>)>>;
 
 /// A task queue that holds and manages jobs.
 ///
@@ -100,7 +86,7 @@ pub struct Queue<D, R, P, S> {
     pub(crate) workers: WorkerMetaData,
     pub(crate) jobs_in_progress: JobMap<D, R, P>,
     pub(crate) cancel_token: CancellationToken,
-    pub(crate) timer_sender: Sender<TimerType>,
+    pub(crate) timer_sender: Sender<TimerCommand>,
     timers: Arc<ArcSwapOption<DelayQueueTimer<D, R, P, S>>>,
     #[debug(skip)]
     /// Handle to the background task that listens for store events and forwards
@@ -129,34 +115,12 @@ impl<
         state: Arc<AtomicCell<WorkerState>>,
         opts: WorkerOpts,
     ) {
-        self.workers.insert(
-            id,
-            (
-                opts,
-                processing_queue,
-                state.clone(),
-                (
-                    ArcSwapOption::default(),
-                    ArcSwapOption::default(),
-                    ArcSwapOption::default(),
-                ),
-            ),
-        );
-        let timers = match self.timers.load_full() {
-            Some(existing) => existing,
-            None => {
-                let timer = Arc::new(DelayQueueTimer::new(
-                    self.jobs_in_progress.clone(),
-                    self.clone(),
-                    self.workers.clone(),
-                    self.cancel_token.clone(),
-                ));
-                self.timers.swap(Some(timer.clone()));
-                timer
-            }
-        };
-        timers.start_timers(id);
-        P_METRICS_COLLECTOR.register_worker(id, state).await;
+        self.workers
+            .insert(id, (opts, processing_queue, state.clone()));
+        if let Some(timers) = self.timers.load_full() {
+            P_METRICS_COLLECTOR.register_worker(id, state).await;
+            timers.start_timers(opts).await;
+        }
     }
     /// remove a worker and its usual metadata from the queue
     pub(crate) fn remove_worker(&self, id: Uuid) {
@@ -240,12 +204,11 @@ impl<
         let stream_listener = Arc::new(task);
         let timers = Arc::default();
         let id = Uuid::new_v4();
-        let (timer_sender, _rx) = broadcast::channel(100000);
+        let (timer_sender, _rx) = mpsc::channel(100000000);
         P_METRICS_COLLECTOR
             .register_queue(id, timer_sender.clone())
             .await;
-
-        Ok(Self {
+        let queue = Self {
             timer_sender,
             id,
             cancel_token,
@@ -265,7 +228,17 @@ impl<
             emitter,
             paused: Arc::new(AtomicCell::new(is_paused)),
             _data: PhantomData,
-        })
+        };
+        let timers = DelayQueueTimer::new(
+            queue.jobs_in_progress.clone(),
+            queue.clone(),
+            queue.workers.clone(),
+            P_METRICS_COLLECTOR.tx.clone(),
+            _rx,
+            queue.cancel_token.clone(),
+        );
+        queue.timers.store(Some(timers.into()));
+        Ok(queue)
     }
 
     /// Enqueues multiple jobs in a single batch and returns them.

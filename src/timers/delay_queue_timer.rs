@@ -1,5 +1,5 @@
 use crate::metrics::{
-    TaskInfo, WorkerMetrics, HISTOGRAM_MAX_NS, P_METRICS_COLLECTOR, WORKER_STATE_TTL,
+    TaskInfo, TimerCommand, WorkerMetrics, HISTOGRAM_MAX_NS, P_METRICS_COLLECTOR, WORKER_STATE_TTL,
 };
 use crate::worker::{ProcessingQueue, WorkerState, MIN_DELAY_MS_LIMIT as EVICTION_INTERVAL_MS};
 
@@ -10,38 +10,49 @@ use crossbeam::atomic::AtomicCell;
 use crossbeam_skiplist::SkipMap;
 use derive_more::{Debug, Display};
 use futures::{FutureExt, StreamExt};
-use futures_delay_queue::{delay_queue, DelayHandle, DelayQueue, Receiver};
-use futures_intrusive::buffer::GrowingHeapBuf;
 use serde::{de::DeserializeOwned, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc::Receiver;
+use tokio::sync::{mpsc::Sender, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
-use tracing::{debug, info, info_span, instrument, Span};
+use tracing::{info, info_span, instrument, Span};
 use uuid::Uuid;
 // model the timers (stall_check_lock,  extend_lock and job_promotion)
 #[derive(Debug, Clone, Copy, Display)]
 pub enum TimerType {
-    #[display("StalledCheck after {:#?} Worker ({_1})", _0.elapsed())]
+    #[display("StalledCheck after {_0:?}")]
     #[debug("StalledCheck")]
-    StalledCheck(Instant, Uuid),
-    #[display("ExtendLock after {:#?} for Worker({_1})", _0.elapsed())]
+    StalledCheck(Duration),
+    #[display("ExtendLock after {_0:?}")]
     #[debug("ExtendLock")]
-    ExtendLock(Instant, Uuid),
+    ExtendLock(Duration),
     #[debug("PromoteJob")]
     #[display(
-        "Promoted job {} after {:#?}",
+        "Promoted job {} after {:?} for queueId({_1})",
         _0,
         Duration::from_millis(EVICTION_INTERVAL_MS)
     )]
-    PromotedDelayed(u64),
-    #[display("Collecting metrics for Worker ({_0})")]
-    CollectMetrics(Uuid),
+    PromotedDelayed(u64, Uuid),
+    #[display("Collecting metrics for Worker ({_0:?})")]
+    CollectMetrics(Duration),
     ReregisterWorker,
 }
-use tokio::time::Instant;
+impl TimerType {
+    #[must_use]
+    pub const fn next_duration(&self) -> Duration {
+        match self {
+            Self::StalledCheck(duration)
+            | Self::ExtendLock(duration)
+            | Self::CollectMetrics(duration) => *duration,
+            Self::PromotedDelayed(_, _) => Duration::from_millis(EVICTION_INTERVAL_MS),
+            Self::ReregisterWorker => Duration::from_millis(WORKER_STATE_TTL as u64),
+        }
+    }
+}
 
 use crate::{
     worker::{JobMap, Task},
@@ -49,72 +60,33 @@ use crate::{
 };
 #[derive(Debug)]
 struct SenderInner {
-    tx: DelayQueue<TimerType, GrowingHeapBuf<TimerType>>,
+    tx: Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
     workers: WorkerMetaData,
 }
 impl SenderInner {
-    fn new(tx: DelayQueue<TimerType, GrowingHeapBuf<TimerType>>, workers: WorkerMetaData) -> Self {
+    const fn new(tx: Sender<(Uuid, TimerType, oneshot::Sender<()>)>, workers: WorkerMetaData) -> Self {
         Self { tx, workers }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct TimerSender {
+    queue_id: Uuid,
     inner: Arc<SenderInner>,
 }
 impl TimerSender {
     pub fn new(
-        tx: DelayQueue<TimerType, GrowingHeapBuf<TimerType>>,
+        tx: Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
         workers: WorkerMetaData,
+        queue_id: Uuid,
     ) -> Self {
         let inner = Arc::new(SenderInner::new(tx, workers));
-        Self { inner }
+        Self { queue_id, inner }
     }
-    pub fn send(&self, timer: TimerType) {
-        if let Some(duration) = self.next_duration(timer) {
-            let handle = self.inner.tx.insert(timer, duration);
-            self.set_key(timer, handle);
-        }
-    }
-    pub fn next_duration(&self, timer: TimerType) -> Option<Duration> {
-        match timer {
-            TimerType::StalledCheck(_, worker_id) | TimerType::ExtendLock(_, worker_id) => self
-                .inner
-                .workers
-                .get(&worker_id)
-                .map(|entry| Duration::from_millis(entry.value().0.stalled_interval)),
-            TimerType::CollectMetrics(worker_id) => self
-                .inner
-                .workers
-                .get(&worker_id)
-                .map(|entry| Duration::from_millis(entry.value().0.metrics_update_interval)),
-            TimerType::PromotedDelayed(_) => Some(Duration::from_millis(EVICTION_INTERVAL_MS)),
-            TimerType::ReregisterWorker => Some(Duration::from_millis(WORKER_STATE_TTL as u64)),
-        }
-    }
-    pub fn set_key(&self, timer: TimerType, key: DelayHandle) {
-        match timer {
-            TimerType::ExtendLock(_, worker_id) => {
-                self.inner
-                    .workers
-                    .get(&worker_id)
-                    .map(|entry| entry.value().3 .0.swap(Some(key.into())));
-            }
-
-            TimerType::StalledCheck(_, worker_id) => {
-                self.inner
-                    .workers
-                    .get(&worker_id)
-                    .map(|entry| entry.value().3 .1.swap(Some(key.into())));
-            }
-            TimerType::CollectMetrics(worker_id) => {
-                self.inner
-                    .workers
-                    .get(&worker_id)
-                    .map(|entry| entry.value().3 .2.swap(Some(key.into())));
-            }
-            TimerType::PromotedDelayed(_) | TimerType::ReregisterWorker => {} // do nothing here, these are temporary one-shot timers
-        }
+    pub async fn send(&self, timer: TimerType) {
+        let (sender, ack) = oneshot::channel();
+        let _ = self.inner.tx.send((self.queue_id, timer, sender));
+        ack.await.ok();
     }
 }
 
@@ -122,7 +94,6 @@ impl TimerSender {
 #[derive(Clone, Debug)]
 pub struct DelayQueueTimer<D, R, P, S> {
     pub(crate) sender: TimerSender,
-    reciever: Receiver<TimerType>,
     #[debug(skip)]
     task_handle: Arc<ArcSwapOption<Task>>,
     #[cfg(feature = "tracing")]
@@ -142,20 +113,19 @@ impl<
         S: Clone + Store<D, R, P> + Send + 'static + Sync,
     > DelayQueueTimer<D, R, P, S>
 {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         jobs: JobMap<D, R, P>,
         queue: Queue<D, R, P, S>,
         workers: WorkerMetaData,
+        tx: Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
+        rx: Receiver<TimerCommand>,
         cancellation_token: CancellationToken,
     ) -> Self {
         #[cfg(feature = "tracing")]
         let resource_span = info_span!("Timers");
-        let (tx, reciever) = delay_queue();
-        let sender = TimerSender::new(tx, workers.clone());
+        let sender = TimerSender::new(tx, workers.clone(), queue.id);
         let timer = Self {
             workers,
-            reciever,
             task_handle: Arc::default(),
             sender,
             #[cfg(feature = "tracing")]
@@ -164,29 +134,22 @@ impl<
             jobs,
             token: cancellation_token,
         };
-        let task_handle = timer.create_timer_task();
+        let task_handle = timer.create_timer_task(rx);
         timer.task_handle.store(Some(Arc::new(task_handle)));
         timer
     }
     #[cfg_attr(feature = "tracing", instrument(parent = &self.resource_span, skip(self)))]
-    pub(crate) fn insert(&self, timer: TimerType) {
+    pub(crate) async fn insert(&self, timer: TimerType) {
         #[cfg(feature = "tracing")]
         {
-            let duration = self.sender.next_duration(timer);
+            let duration = timer.next_duration();
             info!("Started {timer:?} timer running every {duration:?}");
         }
-        self.sender.send(timer);
+        self.sender.send(timer).await;
     }
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
     pub(crate) async fn clear(&self) {
-        for entry in self.sender.inner.workers.iter() {
-            let (key1, key2, key3) = &entry.value().3;
-            for stored_key in [key1, key2, key3] {
-                if let Some(handle) = stored_key.swap(None).and_then(Arc::into_inner) {
-                    let _ = handle.cancel().await;
-                }
-            }
-        }
+        self.sender.inner.workers.clear();
     }
 
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
@@ -196,19 +159,21 @@ impl<
         if let Some(task_handle) = task_handle {
             task_handle.abort();
         }
-        self.reciever.close();
         self.token.cancel();
     }
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
-    fn timer_task(&self) -> impl std::future::Future<Output = KioResult<()>> {
+    fn timer_task(
+        &self,
+        mut rx: Receiver<TimerCommand>,
+    ) -> impl std::future::Future<Output = KioResult<()>> {
         use tokio_util::time::FutureExt as OtherExt;
         let queue = self.queue.clone();
-        let (workers, jobs, token, sender, rx) = (
+        let (workers, jobs, token, sender, _) = (
             self.workers.clone(),
             self.jobs.clone(),
             self.token.clone(),
             self.sender.clone(),
-            self.reciever.clone(),
+            queue.timer_sender.clone(),
         );
         async move {
             let interval_ms = EVICTION_INTERVAL_MS.cast_signed();
@@ -222,20 +187,24 @@ impl<
             tokio::pin!(metrics_stream);
             while !token.is_cancelled() {
                 let date_time = Utc::now();
-                let (promotion_error, timer_error, stream_error, ()) = tokio::join![
+                let (promotion_error, timer_error, ()) = tokio::join![
                     queue.promote_delayed_jobs(date_time, interval_ms, &sender),
                     async {
-                        while let Ok(Some(expired)) = rx.receive().timeout(timeout).await {
-                            process_timer(expired, &queue, &jobs, &workers, &sender).await?;
-                        }
-                        Ok::<(), KioError>(())
-                    },
-                    async {
-                        while let Ok(Some(metrics)) = metrics_stream.next().timeout(timeout).await {
-                            queue
-                                .store
-                                .store_process_metrics(metrics, interval.as_millis() as u64)
-                                .await?;
+                        while let Ok(Some(timer_cmd)) = rx.recv().timeout(timeout).await {
+                            match timer_cmd {
+                                TimerCommand::PostMetrics(metrics) => {
+                                    queue
+                                        .store
+                                        .store_process_metrics(
+                                            *metrics,
+                                            interval.as_millis() as u64,
+                                        )
+                                        .await?;
+                                }
+                                TimerCommand::RespondToTimer(timer) => {
+                                    process_timer(timer, &queue, &jobs, &workers, &sender).await?;
+                                }
+                            }
                         }
                         Ok::<(), KioError>(())
                     },
@@ -243,7 +212,6 @@ impl<
                 ];
                 promotion_error?;
                 timer_error?;
-                stream_error?;
                 // if pause_schedular.load() && processing.is_empty() {
                 //     #[cfg(feature = "tracing")]
                 //     debug!("pausing ... ");
@@ -271,16 +239,19 @@ impl<
     }
 
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
-    pub(crate) fn start_timers(&self, worker_id: Uuid) {
-        let instant = Instant::now();
-        self.insert(TimerType::ExtendLock(instant, worker_id));
-        self.insert(TimerType::StalledCheck(instant, worker_id));
-        self.insert(TimerType::CollectMetrics(worker_id));
-        self.insert(TimerType::ReregisterWorker);
+    pub(crate) async fn start_timers(&self, opts: WorkerOpts) {
+        let stalled_interval = Duration::from_millis(opts.stalled_interval);
+        let extend_lock = Duration::from_millis(opts.lock_duration);
+        let worker_metrics_interval = Duration::from_millis(opts.metrics_update_interval);
+        self.insert(TimerType::ExtendLock(extend_lock)).await;
+        self.insert(TimerType::StalledCheck(stalled_interval)).await;
+        self.insert(TimerType::CollectMetrics(worker_metrics_interval))
+            .await;
+        self.insert(TimerType::ReregisterWorker).await;
     }
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(rx, self)))]
-    fn create_timer_task(&self) -> JoinHandle<KioResult<()>> {
-        let t_task = self.timer_task();
+    fn create_timer_task(&self, rx: Receiver<TimerCommand>) -> JoinHandle<KioResult<()>> {
+        let t_task = self.timer_task(rx);
         #[cfg(feature = "tracing")]
         let sub_span = info_span!(parent: &self.resource_span, "runner_task");
         #[cfg(feature = "tracing")]
@@ -298,19 +269,7 @@ async fn process_timer<D, R, P, S>(
     key: TimerType,
     queue: &Queue<D, R, P, S>,
     jobs: &JobMap<D, R, P>,
-    workers: &SkipMap<
-        Uuid,
-        (
-            WorkerOpts,
-            ProcessingQueue,
-            Arc<AtomicCell<WorkerState>>,
-            (
-                ArcSwapOption<DelayHandle>,
-                ArcSwapOption<DelayHandle>,
-                ArcSwapOption<DelayHandle>,
-            ),
-        ),
-    >,
+    workers: &SkipMap<Uuid, (WorkerOpts, ProcessingQueue, Arc<AtomicCell<WorkerState>>)>,
     sender: &TimerSender,
 ) -> KioResult<()>
 where
@@ -320,18 +279,32 @@ where
     S: Clone + Store<D, R, P> + Send + 'static + Sync,
 {
     let mut next_timer = None;
-    #[cfg(feature = "tracing")]
-    info!("Running {key} ");
     match key {
-        TimerType::StalledCheck(_, worker_id) => {
-            if let Some(entry) = workers.get(&worker_id) {
-                let (opts, _, _, _) = entry.value();
+        TimerType::StalledCheck(duration) => {
+            // run_once for all workers
+            if let Some(entry) = workers
+                .iter()
+                .find(|entry| Duration::from_millis(entry.value().0.stalled_interval) == duration)
+            {
+                let (opts, _, _) = entry.value();
                 let (_failed, _stalled) = queue.make_stalled_jobs_wait(opts).await?;
-            };
+            }
             next_timer.replace(key);
         }
-        TimerType::ExtendLock(_, worker_id) => {
-            for pair in jobs.iter().filter(|entry| entry.value().1 .0 == worker_id) {
+        TimerType::ExtendLock(duration) => {
+            let workers: HashSet<Uuid> = workers
+                .iter()
+                .filter_map(|entry| {
+                    if Duration::from_millis(entry.value().0.lock_duration) == duration {
+                        return Some(*entry.key());
+                    }
+                    None
+                })
+                .collect();
+            for pair in jobs
+                .iter()
+                .filter(|entry| workers.contains(&entry.value().1 .0))
+            {
                 let (job, token, _handle, _, _, opts) = pair.value();
 
                 if let Some(id) = job.id {
@@ -340,12 +313,15 @@ where
             }
             next_timer.replace(key);
         }
-        TimerType::CollectMetrics(_) => {
+        TimerType::CollectMetrics(duration) => {
             let mut tasks_per_worker: HashMap<Uuid, (Vec<TaskInfo>, WorkerOpts)> =
                 HashMap::with_capacity(workers.len());
-            for mut entry in jobs.iter_mut() {
+            for mut entry in jobs.iter_mut().filter(|entry| {
+                Duration::from_millis(entry.value().5.metrics_update_interval) == duration
+            }) {
                 let (id, (_, job_token, task_handle, monitor, histogram, opts)) =
                     &mut entry.pair_mut();
+
                 let task_id: u64 = task_handle
                     .load()
                     .as_ref()
@@ -388,25 +364,28 @@ where
             }
             next_timer.replace(key);
         }
-        TimerType::PromotedDelayed(job_id) => {
+        TimerType::PromotedDelayed(job_id, _) => {
             queue
                 .store
                 .add_item(crate::CollectionSuffix::Wait, job_id, None, true)
                 .await?;
         }
         TimerType::ReregisterWorker => {
-            for entry in workers.iter() {
+            for entry in workers {
                 let worker_id = *entry.key();
-                let (_, _, state, _) = entry.value();
+                let (_, _, state) = entry.value();
                 P_METRICS_COLLECTOR
                     .register_worker(worker_id, state.clone())
                     .await;
             }
+            P_METRICS_COLLECTOR
+                .register_queue(queue.id, queue.timer_sender.clone())
+                .await;
             next_timer.replace(key);
         }
     }
     if let Some(timer) = next_timer {
-        sender.send(timer);
+        sender.send(timer).await;
     }
     Ok(())
 }
