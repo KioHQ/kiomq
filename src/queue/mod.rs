@@ -105,7 +105,7 @@ impl<
         P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
     > Queue<D, R, P, S>
 {
-    /// add a worker and its usual metadata to the queue
+    /// add a worker or refreshes its usual metadata in the queue
     pub(crate) async fn add_worker(
         &self,
         id: Uuid,
@@ -113,11 +113,13 @@ impl<
         state: Arc<AtomicCell<WorkerState>>,
         opts: WorkerOpts,
     ) {
-        self.workers
-            .insert(id, (opts, processing_queue, state.clone()));
+        if !self.workers.contains_key(&id) {
+            self.workers
+                .insert(id, (opts, processing_queue.clone(), state.clone()));
+        }
         if let Some(timers) = self.timers.load_full() {
             P_METRICS_COLLECTOR.register_worker(id, state).await;
-            timers.start_timers(opts).await;
+            timers.register_worker_timers(opts).await;
         }
     }
     /// remove a worker and its usual metadata from the queue
