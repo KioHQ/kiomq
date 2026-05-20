@@ -25,6 +25,9 @@ use uuid::Uuid;
 /// The TTL for the Worker State stored in [`ProcessMoniterCollector`].
 pub const WORKER_STATE_TTL: u128 =
     sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.as_millis() + Duration::from_secs(100).as_millis();
+/// How often process metrics are updated by [`ProcessMoniterCollector`] in milliseconds.
+pub const PROCESS_METRIC_UPDATE_INTERVAL: u128 =
+    sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.as_millis() + Duration::from_millis(200).as_millis();
 /// Global allocator instrumented by [`Heapster`].
 ///
 /// `Heapster` wraps the system allocator and exposes allocation statistics via
@@ -61,7 +64,7 @@ pub struct CollectorInner {
     /// Registry of active worker IDs mapped to their state [`WorkerState`].
     pub workers: TimedMap<Uuid, Arc<AtomicCell<WorkerState>>>,
     /// Registry of queues and their `TimerSender`.
-    pub queues: TimedMap<Uuid, Sender<TimerCommand>>,
+    pub queues: SkipMap<Uuid, Sender<TimerCommand>>,
     /// all timer by Duration
     pub global_timers: SkipMap<Duration, TimerData>,
 }
@@ -85,7 +88,7 @@ pub static P_METRICS_COLLECTOR: LazyLock<ProcessMetricsCollector> = LazyLock::ne
     let pid = get_current_pid().unwrap_or_else(|_| Pid::from_u32(0));
     let last_updated = AtomicCell::new(Utc::now());
     let workers = TimedMap::default();
-    let queues = TimedMap::default();
+    let queues = SkipMap::default();
     let global_timers = SkipMap::default();
     let cancel_token = CancellationToken::new();
     let process_monitor = RwLock::new(sys);
@@ -110,13 +113,12 @@ pub static P_METRICS_COLLECTOR: LazyLock<ProcessMetricsCollector> = LazyLock::ne
 
 impl ProcessMetricsCollector {
     /// adds or refresh
-    pub async fn register_queue(&self, queue_id: Uuid, sender: Sender<TimerCommand>) {
+    pub fn register_queue(&self, queue_id: Uuid, sender: Sender<TimerCommand>) {
         let queues = &self.inner.queues;
-        if queues.inner.contains_key(&queue_id) {
+        if queues.contains_key(&queue_id) {
             return;
         }
-        let timeout = Duration::from_millis(WORKER_STATE_TTL as u64);
-        queues.insert_expirable(queue_id, sender, timeout).await;
+        queues.insert(queue_id, sender);
     }
     /// Insert or refresh an active worker id.
     pub async fn register_worker(&self, worker_id: Uuid, state: Arc<AtomicCell<WorkerState>>) {
@@ -189,8 +191,8 @@ impl ProcessMetricsCollector {
                             }
 
                             for queue_id in targets {
-                                if let Some(entry) = inner.queues.inner.get(queue_id.value()) {
-                                    let _ = entry.value().value.send(cmd.clone());
+                                if let Some(entry) = inner.queues.get(queue_id.value()) {
+                                    let _ = entry.value().send(cmd.clone());
                                 }
                             }
 
@@ -199,8 +201,8 @@ impl ProcessMetricsCollector {
 
                     Some(metrics) = metrics_stream.next() => {
                         let cmd = TimerCommand::PostMetrics(Box::new(metrics));
-                        for entry in &inner.queues.inner {
-                            let _ = entry.value().value.send(cmd.clone());
+                        for entry in inner.queues.iter() {
+                            let _ = entry.value().send(cmd.clone());
                         }
                     }
                 }
@@ -249,7 +251,6 @@ impl ProcessMetricsCollector {
                         let mut intervals = intervals;
                         let rt_metrics = intervals.next()?;
                         inner.workers.purge_expired().await;
-                        inner.queues.purge_expired().await;
                         let workers: Vec<Uuid> = inner.workers
                             .inner
                             .iter()

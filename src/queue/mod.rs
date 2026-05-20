@@ -205,9 +205,7 @@ impl<
         let timers = Arc::default();
         let id = Uuid::new_v4();
         let (timer_sender, _rx) = flume::bounded(1000000);
-        P_METRICS_COLLECTOR
-            .register_queue(id, timer_sender.clone())
-            .await;
+        P_METRICS_COLLECTOR.register_queue(id, timer_sender.clone());
         let queue = Self {
             timer_sender,
             id,

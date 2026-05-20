@@ -182,7 +182,7 @@ impl<
         async move {
             #[cfg(feature = "tracing")]
             info!("starting ...");
-            let interval = WORKER_STATE_TTL;
+            let interval = sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.as_millis();
             let incoming_timer_stream = rx.stream().fuse();
             tokio::pin!(incoming_timer_stream);
             while !token.is_cancelled() {
@@ -192,8 +192,11 @@ impl<
                           break;
                      },
                     Some(timer_cmd) = incoming_timer_stream.next() => {
+
                      match timer_cmd {
                          TimerCommand::PostMetrics(metrics) => {
+                          #[cfg(feature = "tracing")]
+                           info!("storing collected Process Metrics");
                              queue
                                  .store
                                  .store_process_metrics(*metrics, interval as u64)
@@ -213,7 +216,7 @@ impl<
     }
 
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
-    pub(crate) async fn start_timers(&self, opts: WorkerOpts) {
+    pub(crate) async fn register_worker_timers(&self, opts: WorkerOpts) {
         let stalled_interval = Duration::from_millis(opts.stalled_interval);
         let extend_lock = Duration::from_millis(opts.lock_duration);
         let worker_metrics_interval = Duration::from_millis(opts.metrics_update_interval);
@@ -357,9 +360,7 @@ where
                         .await;
                 }
             }
-            P_METRICS_COLLECTOR
-                .register_queue(queue.id, queue.timer_sender.clone())
-                .await;
+            P_METRICS_COLLECTOR.register_queue(queue.id, queue.timer_sender.clone());
             next_timer.replace(key);
         }
         TimerType::TriggerJobPromotion => {
