@@ -354,7 +354,7 @@ where
             for entry in workers {
                 let worker_id = *entry.key();
                 let (_, _, state) = entry.value();
-                if matches!(state.load(), WorkerState::Active) {
+                if matches!(state.load(), WorkerState::Active | WorkerState::Idle) {
                     P_METRICS_COLLECTOR
                         .register_worker(worker_id, state.clone())
                         .await;
