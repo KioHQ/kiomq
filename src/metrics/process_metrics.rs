@@ -45,6 +45,8 @@ pub static GLOBAL: Heapster<SystemAlloc> = Heapster::new(SystemAlloc);
 /// intended to live for the lifetime of the process.
 #[derive(Clone)]
 pub struct ProcessMetricsCollector {
+    /// Number of logical processors from the num_cpus crate.
+    pub cpu_count: usize,
     /// PID of the process being monitored.
     pub pid: Pid,
     /// Shared wrapper for [`System`], workers and `last_updated`
@@ -92,6 +94,7 @@ pub static P_METRICS_COLLECTOR: LazyLock<ProcessMetricsCollector> = LazyLock::ne
     let global_timers = SkipMap::default();
     let cancel_token = CancellationToken::new();
     let process_monitor = RwLock::new(sys);
+    let cpu_count = num_cpus::get();
     let (tx, rx) = flume::bounded(100000);
     let inner = Arc::new(CollectorInner {
         rt_monitor,
@@ -102,6 +105,7 @@ pub static P_METRICS_COLLECTOR: LazyLock<ProcessMetricsCollector> = LazyLock::ne
         global_timers,
     });
     let collector = ProcessMetricsCollector {
+        cpu_count,
         pid,
         inner,
         cancel_token,
@@ -126,7 +130,7 @@ impl ProcessMetricsCollector {
         if workers.inner.contains_key(&worker_id) {
             return;
         }
-        let timeout = Duration::from_millis(WORKER_STATE_TTL as u64);
+        let timeout = Duration::from_secs((WORKER_STATE_TTL) as u64);
         workers.insert_expirable(worker_id, state, timeout).await;
     }
 
@@ -147,10 +151,10 @@ impl ProcessMetricsCollector {
     ) -> tokio::task::JoinHandle<()> {
         let processor = self.clone();
         let token = processor.cancel_token.clone();
-        let interval = sysinfo::MINIMUM_CPU_UPDATE_INTERVAL + Duration::from_millis(100);
+        let interval = Duration::from_millis(PROCESS_METRIC_UPDATE_INTERVAL as u64);
 
         tokio::spawn(async move {
-            let metrics_stream = processor.intervals(interval, token.clone()).fuse();
+            let metrics_stream = processor.create_process_metrics_stream(interval, token.clone()).fuse();
             let  incoming_cmd_stream = rx.stream().fuse();
             tokio::pin!(metrics_stream);
             tokio::pin!(incoming_cmd_stream);
@@ -209,7 +213,7 @@ impl ProcessMetricsCollector {
             }
         }.boxed())
     }
-    pub fn intervals(
+    pub fn create_process_metrics_stream(
         &self,
         duration: Duration,
         cancel_token: CancellationToken,
@@ -226,6 +230,7 @@ impl ProcessMetricsCollector {
             let cancel = cancel_token.clone();
             let pid = self.pid;
             let inner = inner.clone();
+            let cpu_count = self.cpu_count;
             async move {
                 let intervals = match state {
                     State::Done => return None,
@@ -236,30 +241,32 @@ impl ProcessMetricsCollector {
                     biased;
                     () = cancel.cancelled() => None,
                     () = tokio::time::sleep(duration) => {
-                        let refresh_kind = ProcessRefreshKind::nothing()
+                        let process_refresh_kind = ProcessRefreshKind::nothing()
                             .with_cpu()
                             .with_memory();
                         {
-                             inner.process_monitor.write().await.refresh_processes_specifics(
+                            let mut sys = inner.process_monitor.write().await;
+                             sys.refresh_processes_specifics(
                                 sysinfo::ProcessesToUpdate::Some(&[pid]),
                                 true,
-                                refresh_kind,
+                                process_refresh_kind,
                             );
+                              sys.refresh_memory();
                             inner.last_updated.store(Utc::now());
                         }
 
                         let mut intervals = intervals;
                         let rt_metrics = intervals.next()?;
                         inner.workers.purge_expired().await;
-                        let workers: Vec<Uuid> = inner.workers
+                        let workers: Vec<_> = inner.workers
                             .inner
                             .iter()
-                            .map(|e| *e.key())
+                            .map(|e| (*e.key(), e.value().value.load()))
                             .collect();
 
                         let sys = inner.process_monitor.read().await;
                         let process = sys.process(pid)?;
-                        let metrics = ProcessMetrics::new(pid, rt_metrics, process, workers);
+                        let  metrics = ProcessMetrics::new(pid,cpu_count, &sys, rt_metrics, process, workers);
                         drop(sys);
                         Some((metrics, State::Active(intervals)))
                     }
@@ -286,11 +293,15 @@ pub struct ProcessMetrics {
     /// Memory allocator statistics from the global [`Heapster`] allocator.
     pub memory_stats: Stats,
     /// Observed CPU usage for the process (percentage).
+    pub process_cpu_usage: f32,
+    /// Overall CPU usage of the current Machine(percentage)
     pub cpu_usage: f32,
+    ///  Memory Usage  in bytes of the  current Process
+    pub memory_usage: u64,
     /// Tokio runtime metrics captured for the runtime that produced the snapshot.
     pub rt_metrics: RawRuntimeMetrics,
-    /// Known active worker UUIDs at the time the snapshot was taken.
-    pub workers: Vec<Uuid>,
+    /// Known active workers and their state at the time the snapshot was taken.
+    pub workers: Vec<(Uuid, WorkerState)>,
     /// Timestamp of the last successful metric ffs refresh.
     pub last_updated: Dt,
 }
@@ -311,15 +322,22 @@ impl ProcessMetrics {
     #[must_use]
     pub fn new(
         pid: Pid,
+        cpu_thread_count: usize,
+        sys: &System,
         rt_metrics: RuntimeMetrics,
         process: &Process,
-        workers: Vec<Uuid>,
+        workers: Vec<(Uuid, WorkerState)>,
     ) -> Self {
+        let cpu_usage = sys.global_cpu_usage();
+        let memory_usage = process.memory();
         let hostname = System::host_name().unwrap_or_else(|| "<Unknown>".to_string());
         let memory_stats = GLOBAL.stats();
-        let cpu_usage = process.cpu_usage();
+        let mut process_cpu_usage = process.cpu_usage();
+        process_cpu_usage /= (cpu_thread_count as f32);
 
         Self {
+            memory_usage,
+            process_cpu_usage,
             hostname,
             pid,
             memory_stats,
