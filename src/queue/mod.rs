@@ -233,6 +233,7 @@ impl<
             queue.workers.clone(),
             P_METRICS_COLLECTOR.tx.clone(),
             _rx,
+            P_METRICS_COLLECTOR.inner.updating_metrics_receiver.clone(),
             queue.cancel_token.clone(),
         );
         queue.timers.store(Some(timers.into()));

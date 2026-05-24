@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::{alloc::System as SystemAlloc, sync::LazyLock, time::Duration};
 use sysinfo::{get_current_pid, Pid, Process, ProcessRefreshKind, System};
 use tokio::runtime::Handle;
+use tokio::sync::watch;
 use tokio::sync::{oneshot, RwLock};
 use tokio_metrics::{RuntimeMetrics, RuntimeMonitor};
 use tokio_util::sync::CancellationToken;
@@ -57,6 +58,10 @@ pub struct ProcessMetricsCollector {
 }
 
 pub struct CollectorInner {
+    /// a [`tokio::sync::watch::Sender`] Sender  for updating [`ProcessMetrics`]
+    updating_metrics_sender: watch::Sender<Option<ProcessMetrics>>,
+    /// a [`tokio::sync::watch::Receiver`] Receiver  for updating [`ProcessMetrics`]
+    pub updating_metrics_receiver: watch::Receiver<Option<ProcessMetrics>>,
     /// Runtime monitor used to obtain `RuntimeMetrics` for the current runtime.
     pub rt_monitor: RuntimeMonitor,
     /// `sysinfo::System` used to refresh process-specific data.
@@ -77,7 +82,6 @@ pub struct TimerData {
 }
 #[derive(Debug, Clone)]
 pub enum TimerCommand {
-    PostMetrics(Box<ProcessMetrics>),
     RespondToTimer(TimerType),
 }
 /// Lazily-initialised global [`ProcessMetricsCollector`].
@@ -96,7 +100,10 @@ pub static P_METRICS_COLLECTOR: LazyLock<ProcessMetricsCollector> = LazyLock::ne
     let process_monitor = RwLock::new(sys);
     let cpu_count = num_cpus::get();
     let (tx, rx) = flume::bounded(100000);
+    let (updating_metrics_sender, updating_metrics_receiver) = watch::channel(None);
     let inner = Arc::new(CollectorInner {
+        updating_metrics_sender,
+        updating_metrics_receiver,
         rt_monitor,
         process_monitor,
         last_updated,
@@ -161,6 +168,7 @@ impl ProcessMetricsCollector {
 
             let inner = processor.inner.clone();
             let mut delayed_queue: DelayQueue<(Duration, TimerType)> = DelayQueue::new();
+            let updating_metrics_sender = &inner.updating_metrics_sender;
 
             while !token.is_cancelled() {
                 tokio::select! {
@@ -204,10 +212,7 @@ impl ProcessMetricsCollector {
                     }
 
                     Some(metrics) = metrics_stream.next() => {
-                        let cmd = TimerCommand::PostMetrics(Box::new(metrics));
-                        for entry in inner.queues.iter() {
-                            let _ = entry.value().send(cmd.clone());
-                        }
+                        let _= updating_metrics_sender.send(Some(metrics));
                     }
                 }
             }

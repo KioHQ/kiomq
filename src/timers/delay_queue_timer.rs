@@ -3,7 +3,7 @@ use crate::metrics::{
 };
 use crate::worker::{ProcessingQueue, WorkerState, MIN_DELAY_MS_LIMIT as EVICTION_INTERVAL_MS};
 
-use crate::{KioResult, WorkerMetaData};
+use crate::{KioResult, ProcessMetrics, WorkerMetaData};
 use arc_swap::ArcSwapOption;
 use chrono::Utc;
 use crossbeam::atomic::AtomicCell;
@@ -15,8 +15,9 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
+use tokio_stream::wrappers::WatchStream;
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
 use tracing::{info, info_span, instrument, Span};
@@ -124,6 +125,7 @@ impl<
         workers: WorkerMetaData,
         tx: Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
         rx: Receiver<TimerCommand>,
+        process_metrics_rx: watch::Receiver<Option<ProcessMetrics>>,
         cancellation_token: CancellationToken,
     ) -> Self {
         #[cfg(feature = "tracing")]
@@ -139,7 +141,7 @@ impl<
             jobs,
             token: cancellation_token,
         };
-        let task_handle = timer.create_timer_task(rx);
+        let task_handle = timer.create_timer_task(rx, process_metrics_rx);
         timer.task_handle.store(Some(Arc::new(task_handle)));
         timer
     }
@@ -170,6 +172,7 @@ impl<
     fn timer_task(
         &self,
         rx: Receiver<TimerCommand>,
+        process_metrics_rx: watch::Receiver<Option<ProcessMetrics>>,
     ) -> impl std::future::Future<Output = KioResult<()>> {
         let queue = self.queue.clone();
         let (workers, jobs, token, sender, _) = (
@@ -184,6 +187,7 @@ impl<
             info!("starting ...");
             let interval = sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.as_millis();
             let incoming_timer_stream = rx.stream().fuse();
+            let mut process_metrics_stream = WatchStream::from_changes(process_metrics_rx);
             tokio::pin!(incoming_timer_stream);
             while !token.is_cancelled() {
                 tokio::select! {
@@ -192,21 +196,23 @@ impl<
                           break;
                      },
                     Some(timer_cmd) = incoming_timer_stream.next() => {
-
                      match timer_cmd {
-                         TimerCommand::PostMetrics(metrics) => {
-                          #[cfg(feature = "tracing")]
-                           info!("storing collected Process Metrics");
-                             queue
-                                 .store
-                                 .store_process_metrics(*metrics, interval as u64)
-                                 .await?;
-                         }
                          TimerCommand::RespondToTimer(timer) => {
                              process_timer(timer, &queue, &jobs, &workers, &sender).await?;
                          }
                      }
                  }
+                     Some(process_metrics) = process_metrics_stream.next() =>{
+                         if let Some(metrics) = process_metrics {
+                          #[cfg(feature = "tracing")]
+                           info!("Collecting Process Metrics");
+                             queue
+                                 .store
+                                 .store_process_metrics(metrics, interval as u64)
+                                 .await?;
+                         }
+
+                     }
                 }
             }
             #[cfg(feature = "tracing")]
@@ -228,8 +234,12 @@ impl<
         self.insert(TimerType::ReregisterWorker).await;
     }
     //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(rx, self)))]
-    fn create_timer_task(&self, rx: Receiver<TimerCommand>) -> JoinHandle<KioResult<()>> {
-        let t_task = self.timer_task(rx);
+    fn create_timer_task(
+        &self,
+        rx: Receiver<TimerCommand>,
+        process_metrics_rx: watch::Receiver<Option<ProcessMetrics>>,
+    ) -> JoinHandle<KioResult<()>> {
+        let t_task = self.timer_task(rx, process_metrics_rx);
         #[cfg(feature = "tracing")]
         let sub_span = info_span!(parent: &self.resource_span, "runner_task");
         #[cfg(feature = "tracing")]
