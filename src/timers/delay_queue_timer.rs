@@ -9,15 +9,16 @@ use chrono::Utc;
 use crossbeam::atomic::AtomicCell;
 use crossbeam_skiplist::SkipMap;
 use derive_more::{Debug, Display};
-use flume::{Receiver, Sender};
 use futures::{FutureExt, StreamExt};
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::broadcast::Receiver;
+use tokio::sync::mpsc;
 use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
-use tokio_stream::wrappers::WatchStream;
+use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
 use tracing::{info, info_span, instrument, Span};
@@ -63,12 +64,12 @@ use crate::{
 };
 #[derive(Debug)]
 struct SenderInner {
-    tx: Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
+    tx: mpsc::Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
     workers: WorkerMetaData,
 }
 impl SenderInner {
     const fn new(
-        tx: Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
+        tx: mpsc::Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
         workers: WorkerMetaData,
     ) -> Self {
         Self { tx, workers }
@@ -82,7 +83,7 @@ pub struct TimerSender {
 }
 impl TimerSender {
     pub fn new(
-        tx: Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
+        tx: mpsc::Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
         workers: WorkerMetaData,
         queue_id: Uuid,
     ) -> Self {
@@ -91,7 +92,7 @@ impl TimerSender {
     }
     pub async fn send(&self, timer: TimerType) {
         let (sender, ack) = oneshot::channel();
-        let _ = self.inner.tx.send((self.queue_id, timer, sender));
+        let _ = self.inner.tx.send((self.queue_id, timer, sender)).await;
         ack.await.ok();
     }
 }
@@ -123,7 +124,7 @@ impl<
         jobs: JobMap<D, R, P>,
         queue: Queue<D, R, P, S>,
         workers: WorkerMetaData,
-        tx: Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
+        tx: mpsc::Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
         rx: Receiver<TimerCommand>,
         process_metrics_rx: watch::Receiver<Option<ProcessMetrics>>,
         cancellation_token: CancellationToken,
@@ -186,16 +187,16 @@ impl<
             #[cfg(feature = "tracing")]
             info!("starting ...");
             let interval = sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.as_millis();
-            let incoming_timer_stream = rx.stream().fuse();
+            let mut incoming_timer_stream = BroadcastStream::new(rx);
             let mut process_metrics_stream = WatchStream::from_changes(process_metrics_rx);
-            tokio::pin!(incoming_timer_stream);
             while !token.is_cancelled() {
                 tokio::select! {
                      biased;
                      () = token.cancelled() => {
                           break;
                      },
-                    Some(timer_cmd) = incoming_timer_stream.next() => {
+                    Some(Ok(timer_cmd)) = incoming_timer_stream.next() => {
+
                      match timer_cmd {
                          TimerCommand::RespondToTimer(timer) => {
                              process_timer(timer, &queue, &jobs, &workers, &sender).await?;

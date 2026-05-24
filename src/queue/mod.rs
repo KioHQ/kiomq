@@ -13,13 +13,13 @@ use crate::{
 use chrono::{TimeDelta, Utc};
 use crossbeam::atomic::AtomicCell;
 use crossbeam_skiplist::SkipMap;
-use flume::{self, Sender};
 use futures::future::Future;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::{BTreeMap, VecDeque};
 use std::marker::PhantomData;
 use std::sync::Arc;
+use tokio::sync::broadcast::{self, Sender};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
@@ -204,7 +204,7 @@ impl<
         let stream_listener = Arc::new(task);
         let timers = Arc::default();
         let id = Uuid::new_v4();
-        let (timer_sender, _rx) = flume::bounded(1000000);
+        let (timer_sender, _rx) = broadcast::channel(100_000);
         P_METRICS_COLLECTOR.register_queue(id, timer_sender.clone());
         let queue = Self {
             timer_sender,

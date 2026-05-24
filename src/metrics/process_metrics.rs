@@ -7,7 +7,6 @@ use chrono::Utc;
 use crossbeam::atomic::AtomicCell;
 use crossbeam_skiplist::{SkipMap, SkipSet};
 use derive_more::Debug;
-use flume::{self, Sender};
 use futures::{FutureExt, Stream, StreamExt};
 use heapster::{Heapster, Stats};
 #[cfg(feature = "redis-store")]
@@ -17,7 +16,8 @@ use std::sync::Arc;
 use std::{alloc::System as SystemAlloc, sync::LazyLock, time::Duration};
 use sysinfo::{get_current_pid, Pid, Process, ProcessRefreshKind, System};
 use tokio::runtime::Handle;
-use tokio::sync::watch;
+use tokio::sync::broadcast::Sender;
+use tokio::sync::{mpsc, watch};
 use tokio::sync::{oneshot, RwLock};
 use tokio_metrics::{RuntimeMetrics, RuntimeMonitor};
 use tokio_util::sync::CancellationToken;
@@ -54,7 +54,7 @@ pub struct ProcessMetricsCollector {
     pub inner: Arc<CollectorInner>,
     cancel_token: CancellationToken,
     /// Timer Sender
-    pub(crate) tx: Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
+    pub(crate) tx: mpsc::Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
 }
 
 pub struct CollectorInner {
@@ -80,7 +80,7 @@ pub struct TimerData {
     pub queues: SkipSet<Uuid>,
     pub key: AtomicCell<Option<Key>>,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum TimerCommand {
     RespondToTimer(TimerType),
 }
@@ -99,7 +99,7 @@ pub static P_METRICS_COLLECTOR: LazyLock<ProcessMetricsCollector> = LazyLock::ne
     let cancel_token = CancellationToken::new();
     let process_monitor = RwLock::new(sys);
     let cpu_count = num_cpus::get();
-    let (tx, rx) = flume::bounded(100000);
+    let (tx, rx) = mpsc::channel(100_000);
     let (updating_metrics_sender, updating_metrics_receiver) = watch::channel(None);
     let inner = Arc::new(CollectorInner {
         updating_metrics_sender,
@@ -154,7 +154,7 @@ impl ProcessMetricsCollector {
 
     fn create_global_timer_task(
         &self,
-        rx: flume::Receiver<(Uuid, TimerType, oneshot::Sender<()>)>,
+        rx: tokio::sync::mpsc::Receiver<(Uuid, TimerType, oneshot::Sender<()>)>,
     ) -> tokio::task::JoinHandle<()> {
         let processor = self.clone();
         let token = processor.cancel_token.clone();
@@ -162,7 +162,7 @@ impl ProcessMetricsCollector {
 
         tokio::spawn(async move {
             let metrics_stream = processor.create_process_metrics_stream(interval, token.clone()).fuse();
-            let  incoming_cmd_stream = rx.stream().fuse();
+            let  incoming_cmd_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
             tokio::pin!(metrics_stream);
             tokio::pin!(incoming_cmd_stream);
 
@@ -257,6 +257,7 @@ impl ProcessMetricsCollector {
                                 process_refresh_kind,
                             );
                               sys.refresh_memory();
+                              drop(sys);
                             inner.last_updated.store(Utc::now());
                         }
 
@@ -338,7 +339,7 @@ impl ProcessMetrics {
         let hostname = System::host_name().unwrap_or_else(|| "<Unknown>".to_string());
         let memory_stats = GLOBAL.stats();
         let mut process_cpu_usage = process.cpu_usage();
-        process_cpu_usage /= (cpu_thread_count as f32);
+        process_cpu_usage /= cpu_thread_count as f32;
 
         Self {
             memory_usage,
