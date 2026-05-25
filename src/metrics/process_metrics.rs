@@ -99,7 +99,7 @@ pub static P_METRICS_COLLECTOR: LazyLock<ProcessMetricsCollector> = LazyLock::ne
     let cancel_token = CancellationToken::new();
     let process_monitor = RwLock::new(sys);
     let cpu_count = num_cpus::get();
-    let (tx, rx) = mpsc::channel(100_000);
+    let (tx, rx) = mpsc::channel(10_000);
     let (updating_metrics_sender, updating_metrics_receiver) = watch::channel(None);
     let inner = Arc::new(CollectorInner {
         updating_metrics_sender,
@@ -161,11 +161,8 @@ impl ProcessMetricsCollector {
         let interval = Duration::from_millis(PROCESS_METRIC_UPDATE_INTERVAL as u64);
 
         tokio::spawn(async move {
-            let metrics_stream = processor.create_process_metrics_stream(interval, token.clone()).fuse();
-            let  incoming_cmd_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-            tokio::pin!(metrics_stream);
-            tokio::pin!(incoming_cmd_stream);
-
+            let  mut metrics_stream = processor.create_process_metrics_stream(interval, token.clone()).boxed();
+            let  mut incoming_cmd_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
             let inner = processor.inner.clone();
             let mut delayed_queue: DelayQueue<(Duration, TimerType)> = DelayQueue::new();
             let updating_metrics_sender = &inner.updating_metrics_sender;
@@ -177,17 +174,6 @@ impl ProcessMetricsCollector {
                     () = token.cancelled() => {
                         break;
                     }
-
-                   Some((queue_id, timer,  ack)) = incoming_cmd_stream.next() => {
-                                let duration = timer.next_duration();
-                                let entry = inner.global_timers.get_or_insert_with(duration,TimerData::default);
-                                let value = entry.value();
-                                value.queues.insert(queue_id);
-                                let key = delayed_queue.insert((duration, timer), duration);
-                                value.key.swap(Some(key));
-                                ack.send(()).ok();
-
-                        }
                     Some(expired) = delayed_queue.next() => {
                         let (duration, timer) = expired.into_inner();
                         let cmd = TimerCommand::RespondToTimer(timer);
@@ -204,12 +190,22 @@ impl ProcessMetricsCollector {
 
                             for queue_id in targets {
                                 if let Some(entry) = inner.queues.get(queue_id.value()) {
-                                    let _ = entry.value().send(cmd.clone());
+                                    let _ = entry.value().send(cmd);
                                 }
                             }
 
                         }
                     }
+                   Some((queue_id, timer,  ack)) = incoming_cmd_stream.next() => {
+                                let duration = timer.next_duration();
+                                let entry = inner.global_timers.get_or_insert_with(duration,TimerData::default);
+                                let value = entry.value();
+                                value.queues.insert(queue_id);
+                                let key = delayed_queue.insert((duration, timer), duration);
+                                value.key.swap(Some(key));
+                                ack.send(()).ok();
+
+                        }
 
                     Some(metrics) = metrics_stream.next() => {
                         let _= updating_metrics_sender.send(Some(metrics));
