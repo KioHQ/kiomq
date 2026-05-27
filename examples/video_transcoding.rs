@@ -28,7 +28,7 @@ use ffmpeg_sidecar::{
     event::{FfmpegEvent, LogLevel},
     log_parser::parse_time_str,
 };
-use kio_dashboard::{queue::SimpleQueue, serde_json, Dashboard};
+use kiodsh::{serde_json, Dashboard};
 use serde_json::{json, Value};
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -62,7 +62,7 @@ async fn main() -> KioResult<()> {
     #[cfg(not(feature = "tracing"))]
     console_subscriber::init();
     let input_path = "sampleFHD.mp4";
-    let _store: InMemoryStore<_, _, _> = InMemoryStore::new(None, "video-processing");
+    let _store: InMemoryStore<Value, Value, Value> = InMemoryStore::new(None, "video-processing");
     #[cfg(all(feature = "redis-store", not(feature = "default")))]
     let password = fetch_redis_pass();
     #[cfg(all(feature = "redis-store", not(feature = "default")))]
@@ -183,7 +183,7 @@ fn process_callback<S: Store<Value, Value, Value>>(
                         current_progress.current_duration = parsed_duration;
                     }
                 }
-                store.update_job_progress_sync(&mut job, current_progress)?;
+                store.update_job_progress_sync(&mut job, json!(current_progress))?;
             }
 
             FfmpegEvent::Log(log_level, msg) => {
