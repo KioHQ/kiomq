@@ -1,8 +1,9 @@
 use arc_swap::ArcSwapOption;
-use dashmap::DashMap;
+use crossbeam_skiplist::SkipMap;
 use derive_more::Debug;
 use futures_delay_queue::{delay_queue, DelayHandle, DelayQueue, Receiver};
 use futures_intrusive::buffer::GrowingHeapBuf;
+use parking_lot::Mutex;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -12,7 +13,7 @@ use tokio::time::Duration;
 pub struct ValueKeyPair<V> {
     #[debug(skip)]
     /// The stored value, protected by a mutex for interior mutability.
-    pub value: V,
+    pub value: Mutex<V>,
     /// The delay-queue key associated with this entry's expiry, if any.
     pub key: ArcSwapOption<DelayHandle>,
 }
@@ -20,7 +21,7 @@ impl<V> ValueKeyPair<V> {
     /// Wraps `value` with no expiry key assigned yet.
     pub fn new(value: V) -> Self {
         Self {
-            value,
+            value: value.into(),
             key: ArcSwapOption::default(),
         }
     }
@@ -38,14 +39,14 @@ pub struct TimedMap<K: Ord + 'static, V> {
     /// The delay-queue receive channel used to process expired keys.
     reciever: Receiver<K>,
     /// The underlying concurrent skip-list storing all key-value pairs.
-    pub inner: DashMap<K, ValueKeyPair<V>>,
+    pub inner: SkipMap<K, ValueKeyPair<V>>,
     disable_expiration: AtomicBool,
 }
 impl<K: Ord + 'static + Send + Hash, V> Default for TimedMap<K, V> {
     fn default() -> Self {
         let (sender, reciever) = delay_queue();
         Self {
-            inner: DashMap::default(),
+            inner: SkipMap::default(),
             sender,
             reciever,
             disable_expiration: AtomicBool::default(),

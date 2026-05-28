@@ -307,17 +307,17 @@ where
         TimerType::CollectMetrics(duration) => {
             let mut tasks_per_worker: HashMap<Uuid, (Vec<TaskInfo>, WorkerOpts)> =
                 HashMap::with_capacity(workers.len());
-            for mut entry in jobs.iter_mut().filter(|entry| {
+            for entry in jobs.iter().filter(|entry| {
                 Duration::from_millis(entry.value().5.metrics_update_interval) == duration
             }) {
-                let (id, (_, job_token, task_handle, monitor, histogram, opts)) =
-                    &mut entry.pair_mut();
+                let (_, job_token, task_handle, monitor, histogram, opts) = entry.value();
+                let id = *entry.key();
 
                 let task_id: u64 = task_handle
                     .load()
                     .as_ref()
                     .and_then(|t_handle| t_handle.id().to_string().parse().ok())
-                    .unwrap_or(**id);
+                    .unwrap_or(id);
                 let metrics = monitor.cumulative();
                 let mean_poll = if metrics.total_poll_count > 0 {
                     let total_nanos = metrics.total_poll_duration.as_nanos();
@@ -326,14 +326,14 @@ where
                 } else {
                     Duration::ZERO
                 };
-
+                let mut histogram = histogram.lock();
                 // Record the current mean poll time into the HDR histogram.
                 let mean_ns = u64::try_from(mean_poll.as_nanos()).unwrap_or_default();
                 if mean_ns > 0 {
                     let _ = histogram.record(mean_ns.min(HISTOGRAM_MAX_NS));
                 }
-
-                let task_info = TaskInfo::new(task_id, **id, metrics, histogram.clone());
+                let task_info = TaskInfo::new(task_id, id, metrics, histogram.clone());
+                drop(histogram);
                 let worker_id = job_token.0;
                 match tasks_per_worker.entry(worker_id) {
                     std::collections::hash_map::Entry::Occupied(mut occupied) => {

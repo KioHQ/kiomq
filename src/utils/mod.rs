@@ -14,6 +14,7 @@ use chrono::Utc;
 use crossbeam::atomic::AtomicCell;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
+use parking_lot::Mutex;
 #[cfg(feature = "redis-store")]
 use redis::aio::ConnectionLike;
 #[cfg(feature = "redis-store")]
@@ -232,7 +233,7 @@ where
                 )
                 .await?;
             if let Some(entry) = jobs_in_progress.remove(&job_id) {
-                let (_, (job, _, handle, _, _, _)) = entry;
+                let (job, _, handle, _, _, _) = entry.value();
                 if completed.attempts_made < job.opts.attempts {
                     if let Some(repeat_opts) = completed.opts.repeat.as_ref() {
                         //dbg!("job here", job_id, &repeat_opts);
@@ -284,7 +285,7 @@ where
                 )
                 .await?;
             if let Some(entry) = jobs_in_progress.remove(&job_id) {
-                let (_, (job, _, handle, _, _, _)) = entry;
+                let (job, _, handle, _, _, _) = entry.value();
                 // retry failed jobs
                 if failed_job.attempts_made < job.opts.attempts {
                     if let Some(backoff_job_opts) = job.opts.backoff.as_ref() {
@@ -468,8 +469,9 @@ where
                             worker_id,
                             active_job_count.clone(),
                         );
-                        let poll_histogram =
-                            Histogram::new_with_max(HISTOGRAM_MAX_NS, HISTOGRAM_SIGFIG).unwrap();
+                        let poll_histogram = Mutex::new(
+                            Histogram::new_with_max(HISTOGRAM_MAX_NS, HISTOGRAM_SIGFIG).unwrap(),
+                        );
 
                         jobs_in_progress.insert(
                             id,
