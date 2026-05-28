@@ -1,3 +1,4 @@
+use compact_str::CompactString;
 use derive_more::Display;
 use std::io;
 use thiserror::Error;
@@ -38,7 +39,7 @@ pub enum KioError {
     /// Standard I/O error.
     IoError(#[from] io::Error),
     #[error(transparent)]
-    /// String formatting error.
+    /// `CompactString` formatting error.
     FmtError(#[from] std::fmt::Error),
     #[error(transparent)]
     /// Integer parse failure.
@@ -62,7 +63,7 @@ pub enum KioError {
     },
     #[error("Emitter: {0}")]
     /// Event emitter error with a descriptive message.
-    EmitterError(String),
+    EmitterError(CompactString),
     #[error(transparent)]
     /// A Tokio task join failure.
     JoinError(#[from] JoinError),

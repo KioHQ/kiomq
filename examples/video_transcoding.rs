@@ -1,3 +1,4 @@
+use compact_str::format_compact;
 #[cfg(all(feature = "redis-store", not(feature = "default")))]
 use kiomq::{fetch_redis_pass, Config, RedisStore, SharedRedis};
 use kiomq::{
@@ -144,9 +145,10 @@ fn process_callback<S: Store<ProcessData, ReturnData, Progress>>(
 
     let size = data.size;
     let random = Uuid::new_v4();
-    let output_path = format!(
+    let output_path = format_compact!(
         "compressed/{}x{}-{random}-output.mp4",
-        data.size.height, data.size.width
+        data.size.height,
+        data.size.width
     );
     let expected_path = output_path.clone();
     let mut cmd = FfmpegCommand::new()
@@ -184,7 +186,7 @@ fn process_callback<S: Store<ProcessData, ReturnData, Progress>>(
                 }
                 if !msg.is_empty() {
                     //let msg = msg.trim_ascii();
-                    //let log = format!("{log_level:?}: {msg}");
+                    //let log = format_compact!("{log_level:?}: {msg}");
                 }
             }
 

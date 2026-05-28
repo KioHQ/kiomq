@@ -12,6 +12,7 @@ macro_rules! queue_store_suite {
         mod $mod_name {
             use super::*;
             use kiomq::{JobOptions, JobState, KioResult, Queue, QueueOpts, Store};
+
             use uuid::Uuid;
 
             type D = i32;

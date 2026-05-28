@@ -12,6 +12,7 @@ use crate::worker::MIN_DELAY_MS_LIMIT;
 use crate::{Counter, Dt, QueueError};
 use crate::{ProcessMetrics, ProcessedResult};
 use chrono::Utc;
+use compact_str::{format_compact, CompactString, ToCompactString};
 use crossbeam::atomic::AtomicCell;
 use crossbeam_skiplist::{SkipMap, SkipSet};
 use derive_more::Debug;
@@ -39,7 +40,7 @@ type ListQueue = ConcurrentDeque<u64>;
 /// # async fn main() -> kiomq::KioResult<()> {
 /// use kiomq::{InMemoryStore, Queue};
 ///
-/// let store: InMemoryStore<String, String, ()> =
+/// let store: InMemoryStore<CompactString, CompactString, ()> =
 ///     InMemoryStore::new(Some("myapp"), "email-queue");
 /// let queue = Queue::new(store, None).await?;
 /// # Ok(())
@@ -48,9 +49,9 @@ type ListQueue = ConcurrentDeque<u64>;
 #[derive(Clone, Debug)]
 pub struct InMemoryStore<D, R, P> {
     /// The queue name this store was created for.
-    pub name: String,
+    pub name: CompactString,
     /// The key prefix used to namespace all collections.
-    pub prefix: String,
+    pub prefix: CompactString,
     processing: Counter,
     is_paused: Arc<AtomicCell<bool>>,
     jobs: Arc<TimedJobMap<D, R, P>>,
@@ -93,8 +94,8 @@ impl<D: Clone, R: Clone, P: Clone> InMemoryStore<D, R, P> {
     /// ```
     #[must_use]
     pub fn new(prefix: Option<&str>, name: &str) -> Self {
-        let prefix = prefix.unwrap_or("kio").to_lowercase();
-        let name = name.to_lowercase();
+        let prefix = prefix.unwrap_or("kio").to_compact_string();
+        let name = name.to_compact_string();
         let events = Arc::default();
         let stored_metrics = Arc::default();
         let worker_metrics = Arc::default();
@@ -212,7 +213,7 @@ where
         let mut event = QueueStreamEvent::<R, P> {
             job_id: id,
             event,
-            name: Some(name.to_owned()),
+            name: Some(name.to_compact_string()),
             ..Default::default()
         };
         if to_delay {
@@ -399,7 +400,7 @@ where
             } else {
                 0
             };
-            let queue_name = format!("{}:{}", &self.prefix, &self.name);
+            let queue_name = format_compact!("{}:{}", &self.prefix, &self.name);
             let id = self.incr(CollectionSuffix::Id, 1, None).await?;
             let mut job = Job::<D, R, P>::new(name, Some(data), opts.id, Some(&queue_name));
             self.insert(&mut job, opts, pc, id, name, is_paused).await?;
@@ -424,7 +425,7 @@ where
             } else {
                 0
             };
-            let queue_name = format!("{}:{}", &self.prefix, &self.name);
+            let queue_name = format_compact!("{}:{}", &self.prefix, &self.name);
             let id = self.incr(CollectionSuffix::Id, 1, None).await?;
             let mut job = Job::<D, R, P>::new(name, Some(data), opts.id, Some(&queue_name));
             self.insert(&mut job, opts, pc, id, name, is_paused).await?;

@@ -105,7 +105,7 @@ pub trait Store<D, R, P> {
     async fn add_bulk_only(
         &self,
         iter: Box<dyn Iterator<Item = (String, Option<JobOptions>, D)> + Send>,
-        queue_opts: QueueOpts,
+        kueue_opts: QueueOpts,
         event_mode: QueueEventMode,
         is_paused: bool,
     ) -> KioResult<()>;

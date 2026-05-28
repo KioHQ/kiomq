@@ -11,6 +11,9 @@ use crate::{
     QueueEventMode, QueueOpts, Trace, WorkerOpts,
 };
 use chrono::Utc;
+use compact_str::ToCompactString;
+#[cfg(feature = "redis-store")]
+use compact_str::{format_compact, CompactString};
 use crossbeam::atomic::AtomicCell;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
@@ -103,18 +106,18 @@ pub async fn get_queue_metrics<C: redis::aio::ConnectionLike>(
         .map(|key| key.to_collection_name(prefix, name));
     let mut pipeline = redis::pipe();
     pipeline.atomic();
-    pipeline.zcard(completed_key);
-    pipeline.zcard(failed_key);
-    pipeline.zcard(prioritized_key);
-    pipeline.llen(active_key);
-    pipeline.scard(stalled_key);
-    pipeline.zcard(delayed_key);
-    pipeline.llen(waiting_key);
-    pipeline.llen(paused_key);
-    pipeline.get(job_id_key);
-    pipeline.hget(&meta_key, "processing");
-    pipeline.hget(&meta_key, "event_mode");
-    pipeline.hexists(&meta_key, JobState::Paused);
+    pipeline.zcard(completed_key.as_str());
+    pipeline.zcard(failed_key.as_str());
+    pipeline.zcard(prioritized_key.as_str());
+    pipeline.llen(active_key.as_str());
+    pipeline.scard(stalled_key.as_str());
+    pipeline.zcard(delayed_key.as_str());
+    pipeline.llen(waiting_key.as_str());
+    pipeline.llen(paused_key.as_str());
+    pipeline.get(job_id_key.as_str());
+    pipeline.hget(meta_key.as_str(), "processing");
+    pipeline.hget(meta_key.as_str(), "event_mode");
+    pipeline.hexists(meta_key.as_str(), JobState::Paused);
     #[allow(clippy::type_complexity)]
     let (
         completed,
@@ -255,11 +258,15 @@ where
         Err(err) => {
             let (failed_reason, backtrace) = match err {
                 CaughtError::Panic(CaughtPanicInfo { backtrace, payload }) => (payload, backtrace),
-                CaughtError::Error(error, backtrace) => (error.to_string(), backtrace),
-                CaughtError::JoinError(join_error) => (join_error.to_string(), None),
+                CaughtError::Error(error, backtrace) => (error.to_compact_string(), backtrace),
+                CaughtError::JoinError(join_error) => (join_error.to_compact_string(), None),
             };
-            let backtrace: Option<Vec<String>> =
-                backtrace.map(|trace| trace.iter().map(std::string::ToString::to_string).collect());
+            let backtrace: Option<Vec<CompactString>> = backtrace.map(|trace| {
+                trace
+                    .iter()
+                    .map(|trace| trace.to_compact_string())
+                    .collect()
+            });
             let reason = failed_reason.clone();
             let frames = backtrace.map(|frames| Trace {
                 run: attempts_made,
@@ -573,7 +580,7 @@ where
                 async move {
                     let mut reason = FailedDetails {
                         run: 0,
-                        reason: JobError::MissedDelayDeadline.to_string(),
+                        reason: JobError::MissedDelayDeadline.to_compact_string(),
                     };
                     let attempts = queue
                         .store
@@ -638,8 +645,8 @@ pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
         .into());
     }
     //queue.job_count.
-    let job_key = format!("{queue_name}:{id}");
-    let events_keys = format!("{queue_name}:events");
+    let job_key = format_compact!("{queue_name}:{id}");
+    let events_keys = format_compact!("{queue_name}:events");
 
     let waiting_or_paused = if is_paused {
         CollectionSuffix::Paused
@@ -648,28 +655,28 @@ pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
     };
     let to_delay = delay > 0;
     let to_priorize = priority > 0 && !to_delay;
-    let waiting_key = format!("{queue_name}:{waiting_or_paused}").to_lowercase();
+    let waiting_key = format_compact!("{queue_name}:{waiting_or_paused}").to_lowercase();
     pipeline.atomic();
     if to_delay {
-        let delayed_key = format!("{queue_name}:delayed");
+        let delayed_key = format_compact!("{queue_name}:delayed");
         if let Some(expected_active_time) = expected_dt_ts {
-            pipeline.zadd(delayed_key, id, expected_active_time);
+            pipeline.zadd(delayed_key.as_str(), id, expected_active_time);
             job.state = JobState::Delayed;
         }
     }
     // handle prioritized_jobs
     else if to_priorize {
         let prioritized_key =
-            format!("{queue_name}:{}", CollectionSuffix::Prioritized).to_lowercase();
+            format_compact!("{queue_name}:{}", CollectionSuffix::Prioritized).to_lowercase();
         let score = calculate_next_priority_score(priority, prior_counter);
-        pipeline.zadd(&prioritized_key, id, score);
+        pipeline.zadd(prioritized_key.as_str(), id, score);
         job.state = JobState::Prioritized;
     } else {
-        pipeline.lpush(&waiting_key, id.to_string());
+        pipeline.lpush(waiting_key.as_str(), id.to_compact_string().as_str());
     }
     job.id = Some(id);
     let fields = serialize_into_pairs(&job);
-    pipeline.hset_multiple(&job_key, &fields);
+    pipeline.hset_multiple(job_key.as_str(), &fields);
     let event = if to_delay {
         JobState::Delayed
     } else if to_priorize {
@@ -682,7 +689,7 @@ pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
             let mut event = QueueStreamEvent::<R, P> {
                 job_id: id,
                 event,
-                name: Some(name.to_owned()),
+                name: Some(name.to_compact_string()),
                 ..Default::default()
             };
             if to_delay {
@@ -691,7 +698,7 @@ pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
             if to_priorize {
                 event.priority = Some(priority);
             }
-            pipeline.publish(events_keys, event);
+            pipeline.publish(events_keys.as_str(), event);
         }
         QueueEventMode::Stream => {
             let mut items = vec![
@@ -705,7 +712,7 @@ pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
             if to_priorize {
                 items.push(("priority", priority.to_string()));
             }
-            pipeline.xadd(events_keys, "*", &items);
+            pipeline.xadd(events_keys.as_str(), "*", &items);
         }
     }
     Ok(())
@@ -854,7 +861,8 @@ where
                 #[cfg(feature = "tracing")]
                 {
                     use tracing::{info_span, Instrument};
-                    let queue_name = format!("{}:{}", store.queue_prefix(), store.queue_name());
+                    let queue_name =
+                        format_compact!("{}:{}", store.queue_prefix(), store.queue_name());
                     let span = info_span!( parent:None, "", queue_name);
                     process_queue_events(args, &store)
                         .instrument(span.clone())

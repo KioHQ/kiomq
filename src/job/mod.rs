@@ -2,6 +2,7 @@ use crate::stores::Store;
 #[cfg(feature = "redis-store")]
 use crate::utils::to_redis_parsing_error;
 use chrono::{DateTime, Utc};
+use compact_str::{CompactString, ToCompactString};
 use derive_more::{Display, FromStr};
 #[cfg(feature = "redis-store")]
 use redis::ToRedisArgs;
@@ -91,7 +92,7 @@ impl ToRedisArgs for JobState {
     where
         W: ?Sized + redis::RedisWrite,
     {
-        out.write_arg_fmt(self.to_string().to_lowercase());
+        out.write_arg_fmt(self.to_compact_string().to_lowercase());
     }
 }
 #[cfg(feature = "redis-store")]
@@ -170,9 +171,9 @@ pub struct Trace {
     /// The run (attempt) number on which this trace was captured.
     pub run: u64,
     /// Human-readable failure reason.
-    pub reason: String,
+    pub reason: CompactString,
     /// Stack frames collected at the point of failure.
-    pub frames: Vec<String>,
+    pub frames: Vec<CompactString>,
 }
 /// Details recorded when a job permanently fails.
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Hash, PartialEq, Eq)]
@@ -180,7 +181,7 @@ pub struct FailedDetails {
     /// The run (attempt) number on which the job finally failed.
     pub run: u64,
     /// Human-readable failure reason.
-    pub reason: String,
+    pub reason: CompactString,
 }
 use chrono::serde::{ts_microseconds, ts_microseconds_option};
 use derive_more::Debug;
@@ -204,7 +205,7 @@ pub struct Job<D, R, P> {
     #[serde(with = "ts_microseconds")]
     pub ts: Dt,
     /// Human-readable label for the job (does not need to be unique).
-    pub name: String,
+    pub name: CompactString,
     /// Current lifecycle state of the job.
     pub state: JobState,
     /// Most recent progress value reported by the processor.
@@ -233,13 +234,13 @@ pub struct Job<D, R, P> {
     #[serde(with = "ts_microseconds_option")]
     pub finished_on: Option<Dt>,
     /// Name of the queue this job belongs to.
-    pub queue_name: Option<String>,
+    pub queue_name: Option<CompactString>,
     /// Worker lock token; set while a worker holds the lock on this job.
     pub token: Option<JobToken>,
     /// Number of times this job has been moved to the stalled state.
     pub stalled_counter: u64,
     /// Arbitrary log lines appended during processing.
-    pub logs: Vec<String>,
+    pub logs: Vec<CompactString>,
     /// Scheduling priority (lower value = higher priority).
     pub priority: u64,
 }
@@ -247,7 +248,7 @@ pub struct Job<D, R, P> {
 impl FromRedisValue for JobState {
     fn from_redis_value(v: Value) -> Result<Self, ParsingError> {
         let mut bytes: Vec<u8> = Vec::from_redis_value(v)?;
-        let state = Self::from_str(&String::from_utf8(bytes.clone())?)
+        let state = Self::from_str(&CompactString::from_utf8(bytes.clone())?)
             .or_else(|_| simd_json::from_slice(&mut bytes))
             .map_err(to_redis_parsing_error)?;
 
@@ -320,8 +321,8 @@ impl<D, R, P> Job<D, R, P> {
 
         Self {
             opts: JobOptions::default(),
-            queue_name: queue_name.map(std::borrow::ToOwned::to_owned),
-            name: name.to_owned(),
+            queue_name: queue_name.map(|e| e.to_compact_string()),
+            name: name.to_compact_string(),
             id,
             ts,
             data,

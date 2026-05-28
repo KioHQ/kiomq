@@ -25,7 +25,7 @@ mod queue_redis {
 
     queue_store_suite!(redis_store, async {
         use uuid::Uuid;
-        let name = Uuid::new_v4().to_string();
+        let name = Uuid::new_v4().to_compact_string();
         RedisStore::new(None, &name, &SHARED_REDIS).await
     });
 }

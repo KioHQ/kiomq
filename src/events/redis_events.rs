@@ -3,6 +3,9 @@ use crate::utils::to_redis_parsing_error;
 use crate::{Dt, JobMetrics};
 use crate::{FailedDetails, JobState, KioError, KioResult};
 use chrono::Utc;
+use compact_str::CompactString;
+#[cfg(feature = "redis-store")]
+use compact_str::ToCompactString;
 use derive_more::Debug;
 #[cfg(feature = "redis-store")]
 use redis::{ParsingError, ToSingleRedisArg};
@@ -54,7 +57,7 @@ pub struct QueueStreamEvent<R, P> {
     #[debug(skip)]
     #[serde(rename = "data")]
     pub progress_data: Option<P>,
-    pub name: Option<String>,
+    pub name: Option<CompactString>,
     pub worker_id: Option<Uuid>,
     pub metrics: Option<JobMetrics>,
 }
@@ -129,7 +132,10 @@ impl<R: DeserializeOwned, P: DeserializeOwned> TryFrom<&mut StreamId> for QueueS
             if let redis::Value::BulkString(bytes) = val {
                 match key.to_lowercase().as_str() {
                     "job_id" | "jobid" => event.job_id = u64::from_redis_value_ref(val)?,
-                    "name" => event.name = Option::from_redis_value_ref(val)?,
+                    "name" => {
+                        event.name = Option::<String>::from_redis_value_ref(val)?
+                            .map(|v| v.to_compact_string());
+                    }
                     "delay" => event.delay = Option::from_redis_value_ref(val)?,
                     "worker_id" | "workerid" => {
                         event.worker_id = simd_json::from_slice(bytes).map_err(Error::other)?;

@@ -57,10 +57,10 @@ pub struct RocksDbStore<D, R, P> {
     db: Arc<RocksDb>,
     /// A column family for all collections (waiting, active, delayed, failed, Priorized & completed) and
     /// also their counters (id, priority-counter)
-    pub main_tree: String,
+    pub main_tree: CompactString,
     // A separate column family for only jobs
     #[debug(skip)]
-    pub jobs: String,
+    pub jobs: CompactString,
     #[debug(skip)]
     locks: Arc<TimedMap<u64, Lock>>,
     #[debug(skip)]
@@ -73,8 +73,8 @@ pub struct RocksDbStore<D, R, P> {
     job_batch: Arc<Mutex<WriteBatchWithTransaction<true>>>,
     /// A mode for publishing events, this store only supports PubSub using an channel,
     event_mode: QueueEventMode, // Also stream, no pub
-    pub prefix: String,
-    pub name: String,
+    pub prefix: CompactString,
+    pub name: CompactString,
     _data: PhantomData<(D, R, P)>,
 }
 fn setup_type<T: Serialize + Default>(
@@ -100,8 +100,8 @@ fn get_collection<T: DeserializeOwned>(
 impl<D, R, P> RocksDbStore<D, R, P> {
     pub fn new(prefix: Option<&str>, name: &str, db: Arc<RocksDb>) -> KioResult<Self> {
         let prefix = prefix.unwrap_or("kio").to_lowercase();
-        let queue_name = format!("{prefix}:{name}");
-        let jobs_collection = format!("{queue_name}:jobs");
+        let queue_name = format_compact!("{prefix}:{name}");
+        let jobs_collection = format_compact!("{queue_name}:jobs");
         let event_mode = QueueEventMode::PubSub;
         let locks = Arc::default();
         let events = Arc::default();
@@ -425,7 +425,7 @@ where
     }
     async fn add_bulk_only(
         &self,
-        iter: Box<dyn Iterator<Item = (String, Option<JobOptions>, D)> + Send>,
+        iter: Box<dyn Iterator<Item = (CompactString, Option<JobOptions>, D)> + Send>,
         queue_opts: QueueOpts,
         event_mode: QueueEventMode,
         is_paused: bool,
@@ -440,7 +440,7 @@ where
                     .incr(CollectionSuffix::PriorityCounter, 1, None)
                     .await?;
             }
-            let queue_name = format!("{}:{}", &self.prefix, &self.name);
+            let queue_name = format_compact!("{}:{}", &self.prefix, &self.name);
             let id = self.incr(CollectionSuffix::Id, 1, None).await?;
             let mut job = Job::<D, R, P>::new(name, Some(data), opts.id, Some(&queue_name));
             self.prepare_for_insert(
@@ -464,7 +464,7 @@ where
     }
     async fn add_bulk(
         &self,
-        iter: Box<dyn Iterator<Item = (String, Option<JobOptions>, D)> + Send>,
+        iter: Box<dyn Iterator<Item = (CompactString, Option<JobOptions>, D)> + Send>,
         queue_opts: QueueOpts,
         event_mode: QueueEventMode,
         is_paused: bool,
@@ -480,7 +480,7 @@ where
                     .incr(CollectionSuffix::PriorityCounter, 1, None)
                     .await?;
             }
-            let queue_name = format!("{}:{}", &self.prefix, &self.name);
+            let queue_name = format_compact!("{}:{}", &self.prefix, &self.name);
             let id = self.incr(CollectionSuffix::Id, 1, None).await?;
             let mut job = Job::<D, R, P>::new(name, Some(data), opts.id, Some(&queue_name));
             self.prepare_for_insert(

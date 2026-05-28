@@ -1,3 +1,4 @@
+use compact_str::{CompactString, ToCompactString};
 use crossbeam_skiplist::SkipMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -23,7 +24,7 @@ pub type StoredFn = Arc<dyn Fn(i64) -> i64 + Send + Sync>;
 pub struct BackOffOptions {
     /// Name of the backoff strategy.  Built-ins: `"exponential"`, `"fixed"`.
     #[serde(rename = "type")]
-    pub type_: Option<String>,
+    pub type_: Option<CompactString>,
     /// Base delay in milliseconds used by the strategy formula.
     pub delay: Option<i64>,
 }
@@ -68,7 +69,7 @@ pub enum BackOffJobOptions {
 #[derive(Clone, Default)]
 pub struct BackOff {
     /// Map of strategy name → factory function.
-    pub builtin_strategies: Arc<SkipMap<String, Arc<BackoffFn>>>,
+    pub builtin_strategies: Arc<SkipMap<CompactString, Arc<BackoffFn>>>,
 }
 
 impl BackOff {
@@ -98,7 +99,7 @@ impl BackOff {
         strategy: impl Fn(i64) -> Arc<dyn Fn(i64) -> i64 + Send + Sync> + 'static + Send + Sync,
     ) {
         self.builtin_strategies
-            .insert(name.to_owned(), Arc::new(strategy));
+            .insert(name.to_compact_string(), Arc::new(strategy));
     }
     /// Normalises a [`BackOffJobOptions`] into a [`BackOffOptions`], returning
     /// `None` when no backoff is configured or the numeric delay is zero.
@@ -112,7 +113,7 @@ impl BackOff {
                 }
                 let opts = BackOffOptions {
                     delay: Some(*num),
-                    type_: Some("fixed".to_string()),
+                    type_: Some("fixed".to_compact_string()),
                 };
                 Some(opts)
             }
@@ -197,7 +198,7 @@ mod tests {
         let strategy_found = backoff.lookup_strategy(
             BackOffOptions {
                 delay: Some(100),
-                type_: Some("exponential".to_string()),
+                type_: Some("exponential".to_compact_string()),
             },
             None,
         );
@@ -215,7 +216,7 @@ mod tests {
         let strategy_found = backoff.lookup_strategy(
             BackOffOptions {
                 delay: Some(100),
-                type_: Some("fixed".to_string()),
+                type_: Some("fixed".to_compact_string()),
             },
             None,
         );

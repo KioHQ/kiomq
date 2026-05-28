@@ -267,9 +267,9 @@ impl<
                 Callback::Sync(_) => "Sync",
             };
             {
-                let location = std::panic::Location::caller().to_string();
+                let location = std::panic::Location::caller().to_compact_string();
                 let queue_name = queue.name();
-                let worker_type = format!(
+                let worker_type = format_compact!(
                     "{}-Worker({},{queue_name})",
                     callback_type,
                     id.as_u64_pair().0,

@@ -92,7 +92,7 @@ async fn main() -> kiomq::KioResult<()> {
     let worker = Worker::new_async(&queue, processor, Some(WorkerOpts::default()))?;
     worker.run()?;
 
-    queue.bulk_add_only((0..10u64).map(|i| (format!("job-{i}"), None, i))).await?;
+    queue.bulk_add_only((0..10u64).map(|i| (format_compact!("job-{i}"), None, i))).await?;
 
     let updating_metrics = queue.current_metrics.clone();
     // wait for all jobs to complete

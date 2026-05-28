@@ -11,6 +11,7 @@ use crate::{
     ProcessMetrics, RemoveOnCompletionOrFailure, Trace,
 };
 use chrono::{TimeDelta, Utc};
+use compact_str::ToCompactString;
 use crossbeam::atomic::AtomicCell;
 use crossbeam_skiplist::SkipMap;
 use futures::future::Future;
@@ -36,7 +37,7 @@ use derive_more::Debug;
 pub use options::{CollectionSuffix, QueueEventMode, QueueMetrics, QueueOpts, RetryOptions};
 pub use options::{Counter, JobField, ProcessedResult};
 
-pub(crate) type WorkerMetaData =
+pub type WorkerMetaData =
     Arc<SkipMap<Uuid, (WorkerOpts, ProcessingQueue, Arc<AtomicCell<WorkerState>>)>>;
 
 /// A task queue that holds and manages jobs.
@@ -61,7 +62,7 @@ pub(crate) type WorkerMetaData =
 /// # async fn main() -> kiomq::KioResult<()> {
 /// use kiomq::{InMemoryStore, Queue};
 ///
-/// let store: InMemoryStore<String, String, ()> = InMemoryStore::new(None, "my-queue");
+/// let store: InMemoryStore<CompactString, CompactString, ()> = InMemoryStore::new(None, "my-queue");
 /// let queue = Queue::new(store, None).await?;
 /// # Ok(())
 /// # }
@@ -283,7 +284,7 @@ impl<
     /// let store: InMemoryStore<u64, u64, ()> = InMemoryStore::new(None, "bulk-demo");
     /// let queue = Queue::new(store, None).await?;
     ///
-    /// queue.bulk_add_only((0..5u64).map(|i| (format!("job-{i}"), None, i))).await?;
+    /// queue.bulk_add_only((0..5u64).map(|i| (format_compact!("job-{i}"), None, i))).await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -586,7 +587,7 @@ impl<
 
                     if stalled_count > opts.max_stalled_count {
                         // Add job removal option logic here
-                        let reason = "job stalled more than allowable limit".to_lowercase();
+                        let reason = "job stalled more than allowable limit".to_compact_string();
                         let to = JobState::Failed;
                         let failed_reason = FailedDetails {
                             run: attempts_made + 1,
