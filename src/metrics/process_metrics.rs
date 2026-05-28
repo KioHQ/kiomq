@@ -4,6 +4,7 @@ use crate::utils::to_redis_parsing_error;
 use crate::worker::WorkerState;
 use crate::{Dt, TimedMap};
 use chrono::Utc;
+use compact_str::{CompactString, ToCompactString};
 use crossbeam::atomic::AtomicCell;
 use crossbeam_skiplist::{SkipMap, SkipSet};
 use derive_more::Debug;
@@ -46,7 +47,7 @@ pub static GLOBAL: Heapster<SystemAlloc> = Heapster::new(SystemAlloc);
 /// intended to live for the lifetime of the process.
 #[derive(Clone)]
 pub struct ProcessMetricsCollector {
-    /// Number of logical processors from the num_cpus crate.
+    /// Number of logical processors from the `num_cpus` crate.
     pub cpu_count: usize,
     /// PID of the process being monitored.
     pub pid: Pid,
@@ -288,7 +289,7 @@ impl ProcessMetricsCollector {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProcessMetrics {
     /// Hostname of the machine running the process.
-    pub hostname: String,
+    pub hostname: CompactString,
     #[serde(serialize_with = "serialize_pid", deserialize_with = "deserialize_pid")]
     /// PID for the process that produced this snapshot.
     pub pid: Pid,
@@ -332,7 +333,9 @@ impl ProcessMetrics {
     ) -> Self {
         let cpu_usage = sys.global_cpu_usage();
         let memory_usage = process.memory();
-        let hostname = System::host_name().unwrap_or_else(|| "<Unknown>".to_string());
+        let hostname = System::host_name()
+            .unwrap_or_else(|| "<Unknown>".to_owned())
+            .to_compact_string();
         let memory_stats = GLOBAL.stats();
         let mut process_cpu_usage = process.cpu_usage();
         process_cpu_usage /= cpu_thread_count as f32;

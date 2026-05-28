@@ -4,6 +4,7 @@ use crate::{
     error::QueueError, BackOffJobOptions, FailedDetails, JobMetrics, JobState, JobToken,
     RemoveOnCompletionOrFailure, Repeat, Trace,
 };
+use compact_str::{format_compact, CompactString};
 #[cfg(feature = "redis-store")]
 use redis::{FromRedisValue, ParsingError, ToRedisArgs, ToSingleRedisArg, Value};
 use serde::{Deserialize, Serialize};
@@ -112,8 +113,8 @@ pub enum CollectionSuffix {
 impl CollectionSuffix {
     /// Builds the full collection key as `{prefix}:{name}:{self}` (lowercased).
     #[must_use]
-    pub fn to_collection_name(&self, prefix: &str, name: &str) -> String {
-        format!("{}:{}:{}", prefix, name, &self).to_lowercase()
+    pub fn to_collection_name(&self, prefix: &str, name: &str) -> CompactString {
+        format_compact!("{}:{}:{}", prefix, name, &self).to_lowercase()
     }
     /// create an identifier for this enum
     const fn discriminant(&self) -> u8 {

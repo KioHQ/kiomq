@@ -9,6 +9,7 @@ use crate::utils::{
 };
 use crate::ProcessMetrics;
 use chrono::Utc;
+use compact_str::{format_compact, CompactString, ToCompactString};
 use crossbeam::atomic::AtomicCell;
 use deadpool_redis::{Config, Pool, Runtime};
 use derive_more::Debug;
@@ -43,7 +44,7 @@ use uuid::Uuid;
 ///     let mut cfg = Config::from_url("redis://127.0.0.1/");
 ///     let  mut redis_conn  =  SharedRedis::create(&cfg)?;
 ///     let store = RedisStore::new(None, "my-queue", &redis_conn).await?;
-///     let queue: Queue<String, String, (), _> =
+///     let queue: Queue<CompactString, CompactString, (), _> =
 ///         Queue::new(store, Some(QueueOpts::default())).await?;
 ///     Ok(())
 /// }
@@ -51,12 +52,12 @@ use uuid::Uuid;
 #[derive(Clone, Debug)]
 pub struct RedisStore {
     /// The key prefix used to namespace all Redis collections for this queue.
-    pub prefix: String,
+    pub prefix: CompactString,
     /// The name of the queue this store was created for.
-    pub name: String,
-    consumer_group: String,
-    consumer_name: String,
-    stream_key: String,
+    pub name: CompactString,
+    consumer_group: CompactString,
+    consumer_name: CompactString,
+    stream_key: CompactString,
     #[debug(skip)]
     pubsub_source: Arc<Mutex<PubSubStream>>,
     #[debug(skip)]
@@ -91,19 +92,23 @@ impl RedisStore {
         name: &str,
         shared_conn: &SharedRedis,
     ) -> KioResult<Self> {
-        let name = name.to_lowercase();
-        let prefix = prefix.unwrap_or("{kio}").to_lowercase();
+        let name = name.to_compact_string();
+        let prefix = prefix.unwrap_or("{kio}").to_compact_string();
         let conn_pool = shared_conn.conn_pool.clone();
         let id = Uuid::new_v4();
-        let consumer_group = format!("{prefix}-{prefix}-group-{id}");
-        let consumer_name = format!("consumer-{id}");
+        let consumer_group = format_compact!("{prefix}-{prefix}-group-{id}");
+        let consumer_name = format_compact!("consumer-{id}");
         let mut connection = conn_pool.get().await?;
         let stream_key = CollectionSuffix::Events.to_collection_name(&prefix, &name);
         let (sink, source) = shared_conn.redis_client.get_async_pubsub().await?.split();
         let pubsub_sink = Arc::new(Mutex::new(sink));
         let pubsub_source = Arc::new(Mutex::new(source));
         connection
-            .xgroup_create_mkstream::<_, _, _, ()>(&stream_key, &consumer_group, "$")
+            .xgroup_create_mkstream::<_, _, _, ()>(
+                stream_key.as_str(),
+                consumer_group.as_str(),
+                "$",
+            )
             .await?;
         let subscribed = Arc::default();
         let raw: String = redis::cmd("INFO")
@@ -152,8 +157,12 @@ impl RedisStore {
     ) -> KioResult<Vec<Job<D, R, P>>> {
         let deadpool_conn = self.get_connection().await?;
         let conn = deadpool_redis::Connection::take(deadpool_conn);
-        let id_key = CollectionSuffix::Id.to_collection_name(&self.prefix, &self.name);
-        let pc_key = CollectionSuffix::PriorityCounter.to_collection_name(&self.prefix, &self.name);
+        let id_key = CollectionSuffix::Id
+            .to_collection_name(&self.prefix, &self.name)
+            .to_string();
+        let pc_key = CollectionSuffix::PriorityCounter
+            .to_collection_name(&self.prefix, &self.name)
+            .to_string();
         let items = iter.collect::<Vec<_>>();
         let jobs = transaction_async(
             conn,
@@ -167,12 +176,12 @@ impl RedisStore {
                 async move {
                     let mut jobs = Vec::with_capacity(items.len());
                     let id: u64 = conn
-                        .get::<_, Option<u64>>(&id_key)
+                        .get::<_, Option<u64>>(&id_key.as_str())
                         .await?
                         .unwrap_or_default();
                     let id_counter: AtomicCell<u64> = AtomicCell::new(id + 1);
                     let prior_counter: u64 = conn
-                        .get::<_, Option<u64>>(&priority_counter_key)
+                        .get::<_, Option<u64>>(priority_counter_key.as_str())
                         .await?
                         .unwrap_or_default();
                     let pc_counter: AtomicCell<u64> = AtomicCell::new(prior_counter + 1);
@@ -180,7 +189,7 @@ impl RedisStore {
                     for (ref name, opts, data) in items {
                         let mut opts = opts.unwrap_or_default();
                         update_job_opts(&queue_opts, &mut opts);
-                        let queue_name = format!("{}:{}", self.prefix, self.name);
+                        let queue_name = format_compact!("{}:{}", self.prefix, self.name);
                         let id = id_counter.fetch_add(1);
                         let prior_counter = if opts.priority > 0 {
                             to_priorize = true;
@@ -192,10 +201,10 @@ impl RedisStore {
                             name,
                             Some(data.clone()),
                             opts.id,
-                            Some(&queue_name),
+                            Some(queue_name.as_str()),
                         );
                         let _ = prepare_for_insert(
-                            &queue_name,
+                            queue_name.as_str(),
                             event_mode,
                             is_paused,
                             id,
@@ -211,9 +220,12 @@ impl RedisStore {
                             jobs.push(job);
                         }
                     }
-                    pipeline.incr(&id_key, id_counter.load().saturating_sub(1));
+                    pipeline.incr(id_key.as_str(), id_counter.load().saturating_sub(1));
                     if to_priorize {
-                        pipeline.incr(&priority_counter_key, pc_counter.load().saturating_sub(1));
+                        pipeline.incr(
+                            priority_counter_key.as_str(),
+                            pc_counter.load().saturating_sub(1),
+                        );
                     }
                     let _: () = query_all_batched(&conn, pipeline).await?;
 
@@ -233,11 +245,11 @@ impl RedisStore {
         let mut conn = self.get_connection().await?;
         let (field_key, metrics_string) = match metrics {
             MetricsType::Process(process_metrics) => (
-                format!("{}-Pid({})", process_metrics.hostname, process_metrics.pid),
+                format_compact!("{}-Pid({})", process_metrics.hostname, process_metrics.pid),
                 simd_json::to_string(&process_metrics)?,
             ),
             MetricsType::Worker(worker_metrics) => (
-                worker_metrics.worker_id.to_string(),
+                worker_metrics.worker_id.to_compact_string(),
                 simd_json::to_string(&worker_metrics)?,
             ),
         };
@@ -246,14 +258,18 @@ impl RedisStore {
             .set_expiration(SetExpiry::PX(ttl_ms));
         if self.redis_version.is_at_least("7.4.0").unwrap_or(false) {
             let _: () = conn
-                .hset_ex(key, &expiry_opts, &[(field_key, metrics_string)])
+                .hset_ex(
+                    key.as_str(),
+                    &expiry_opts,
+                    &[(field_key.as_str(), metrics_string.as_str())],
+                )
                 .await?;
             return Ok(());
         }
         let mut pipeline = redis::pipe();
         pipeline.atomic();
-        pipeline.hset(&key, field_key, metrics_string);
-        pipeline.pexpire(key, ttl_ms.saturating_mul(100).cast_signed());
+        pipeline.hset(key.as_str(), field_key.as_str(), metrics_string);
+        pipeline.pexpire(key.as_str(), ttl_ms.saturating_mul(100).cast_signed());
         let _: () = pipeline.query_async(&mut conn).await?;
         Ok(())
     }
@@ -270,7 +286,7 @@ where
     async fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
         let mut conn = self.get_connection().await?;
         let key = CollectionSuffix::WorkerMetrics.to_collection_name(&self.prefix, &self.name);
-        let results: Vec<WorkerMetrics> = conn.hvals(key).await?;
+        let results: Vec<WorkerMetrics> = conn.hvals(key.as_str()).await?;
         Ok(results
             .into_iter()
             .filter_map(|metrics| {
@@ -298,7 +314,7 @@ where
     async fn fetch_process_metrics(&self) -> KioResult<BTreeMap<sysinfo::Pid, ProcessMetrics>> {
         let mut conn = self.get_connection().await?;
         let key = CollectionSuffix::ProcessMetrics.to_collection_name(&self.prefix, &self.name);
-        let results: Vec<ProcessMetrics> = conn.hvals(key).await?;
+        let results: Vec<ProcessMetrics> = conn.hvals(key.as_str()).await?;
         Ok(results
             .into_iter()
             .map(|metrics| (metrics.pid, metrics))
@@ -307,7 +323,7 @@ where
     async fn metadata_field_exists(&self, field: &str) -> KioResult<bool> {
         let mut conn = self.get_connection().await?;
         let meta_key = CollectionSuffix::Meta.to_collection_name(&self.prefix, &self.name);
-        let result = conn.hexists(meta_key, field).await?;
+        let result = conn.hexists(meta_key.as_str(), field).await?;
         Ok(result)
     }
     async fn exists_in(&self, col: CollectionSuffix, item: u64) -> KioResult<bool> {
@@ -318,25 +334,27 @@ where
             | CollectionSuffix::Delayed
             | CollectionSuffix::Failed
             | CollectionSuffix::Prioritized => {
-                let score: Option<u64> = conn.zscore(key, item).await?;
+                let score: Option<u64> = conn.zscore(key.as_str(), item).await?;
                 score.is_some()
             }
-            CollectionSuffix::Stalled => conn.sismember(key, item).await?,
+            CollectionSuffix::Stalled => conn.sismember(key.as_str(), item).await?,
 
             CollectionSuffix::Active | CollectionSuffix::Wait => {
                 let opts = LposOptions::default();
-                let pos: Option<redis::Value> = conn.lpos(key, item, opts).await?;
+                let pos: Option<redis::Value> = conn.lpos(key.as_str(), item, opts).await?;
                 pos.is_some()
             }
 
-            _ => conn.exists(key).await?,
+            _ => conn.exists(key.as_str()).await?,
         };
         Ok(value)
     }
     async fn set_event_mode(&self, event_mode: QueueEventMode) -> KioResult<()> {
         let mut conn = self.get_connection().await?;
         let meta_key = CollectionSuffix::Meta.to_collection_name(&self.prefix, &self.name);
-        let result = conn.hset(&meta_key, "event_mode", event_mode).await?;
+        let result = conn
+            .hset(meta_key.as_str(), "event_mode", event_mode)
+            .await?;
         Ok(result)
     }
     fn queue_name(&self) -> &str {
@@ -351,12 +369,13 @@ where
             let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
             let mut pipeline = redis::pipe();
             pipeline.atomic();
-            let progress_str = simd_json::to_string_pretty(&value)?;
+            let progress_str = simd_json::to_string_pretty(&value)?.to_compact_string();
             let events_stream_key =
                 CollectionSuffix::Events.to_collection_name(&self.prefix, &self.name);
-            pipeline.hset(job_key, "progress", &progress_str);
+            pipeline.hset(job_key.as_str(), "progress", progress_str.as_str());
             let meta_key = CollectionSuffix::Meta.to_collection_name(&self.prefix, &self.name);
-            let event_mode: Option<QueueEventMode> = conn.hget(&meta_key, "event_mode").await?;
+            let event_mode: Option<QueueEventMode> =
+                conn.hget(meta_key.as_str(), "event_mode").await?;
             // check for the queue_event_mode
             let event_mode = event_mode.unwrap_or_default();
 
@@ -369,16 +388,16 @@ where
                         progress_data: Some(value.clone()),
                         ..Default::default()
                     };
-                    pipeline.publish(&events_stream_key, event);
+                    pipeline.publish(events_stream_key.as_str(), event);
                 }
                 QueueEventMode::Stream => {
                     let items = [
                         ("event", JobState::Progress.to_string().to_lowercase()),
                         ("job_id", id.to_string()),
-                        ("data", progress_str),
-                        ("name", self.name.clone()),
+                        ("data", progress_str.to_string()),
+                        ("name", self.name.to_string()),
                     ];
-                    pipeline.xadd(&events_stream_key, "*", &items);
+                    pipeline.xadd(events_stream_key.as_str(), "*", &items);
                 }
             }
             let _: () = pipeline.query_async(&mut conn).await?;
@@ -394,12 +413,12 @@ where
             let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
             let mut pipeline = redis::pipe();
             pipeline.atomic();
-            let progress_str = simd_json::to_string_pretty(&value)?;
+            let progress_str = simd_json::to_string_pretty(&value)?.to_compact_string();
             let events_stream_key =
                 CollectionSuffix::Events.to_collection_name(&self.prefix, &self.name);
-            pipeline.hset(job_key, "progress", &progress_str);
+            pipeline.hset(job_key.as_str(), "progress", progress_str.as_str());
             let meta_key = CollectionSuffix::Meta.to_collection_name(&self.prefix, &self.name);
-            let event_mode: Option<QueueEventMode> = conn.hget(&meta_key, "event_mode")?;
+            let event_mode: Option<QueueEventMode> = conn.hget(meta_key.as_str(), "event_mode")?;
             let event_mode = event_mode.unwrap_or_default();
             match event_mode {
                 QueueEventMode::PubSub => {
@@ -410,16 +429,16 @@ where
                         progress_data: Some(value.clone()),
                         ..Default::default()
                     };
-                    pipeline.publish(&events_stream_key, event);
+                    pipeline.publish(events_stream_key.as_str(), event);
                 }
                 QueueEventMode::Stream => {
                     let items = [
                         ("event", JobState::Progress.to_string().to_lowercase()),
                         ("job_id", id.to_string()),
-                        ("data", progress_str),
-                        ("name", self.name.clone()),
+                        ("data", progress_str.to_string()),
+                        ("name", self.name.to_string()),
                     ];
-                    pipeline.xadd(&events_stream_key, "*", &items);
+                    pipeline.xadd(events_stream_key.as_str(), "*", &items);
                 }
             }
             let _: () = pipeline.query(&mut conn)?;
@@ -433,10 +452,14 @@ where
         let mut pipeline = redis::pipe();
         let mut conn = self.get_connection().await?;
         pipeline.atomic();
-        pipeline.zrangebyscore(&delayed_key, start, stop);
-        pipeline.zrangebyscore(&delayed_key, "-inf", format!("({start}"));
-        pipeline.zrembyscore(&delayed_key, start, stop);
-        pipeline.zrembyscore(&delayed_key, "-inf", start);
+        pipeline.zrangebyscore(delayed_key.as_str(), start, stop);
+        pipeline.zrangebyscore(
+            delayed_key.as_str(),
+            "-inf",
+            format_compact!("({start}").as_str(),
+        );
+        pipeline.zrembyscore(delayed_key.as_str(), start, stop);
+        pipeline.zrembyscore(delayed_key.as_str(), "-inf", start);
         let (jobs, missed_deadline, _done, _): (Vec<u64>, Vec<u64>, i64, i64) =
             pipeline.query_async(&mut conn).await?;
         Ok((jobs, missed_deadline))
@@ -449,7 +472,9 @@ where
         let [src_key, dst_key] =
             [src, dst].map(|col| col.to_collection_name(&self.prefix, &self.name));
         let mut conn = self.get_connection().await.ok()?;
-        conn.rpoplpush(src_key, dst_key).await.ok()
+        conn.rpoplpush(src_key.as_str(), dst_key.as_str())
+            .await
+            .ok()
     }
     async fn listen_to_events(
         &self,
@@ -462,7 +487,7 @@ where
             self.pubsub_sink
                 .lock()
                 .await
-                .subscribe(&self.stream_key)
+                .subscribe(self.stream_key.as_str())
                 .await?;
             self.subscribed.store(true, Ordering::Release);
         }
@@ -476,13 +501,13 @@ where
             QueueEventMode::Stream => {
                 let mut connection = self.get_connection().await?;
                 let mut options = StreamReadOptions::default()
-                    .group(&self.consumer_group, &self.consumer_name)
+                    .group(self.consumer_group.as_str(), self.consumer_name.as_str())
                     .noack();
                 if let Some(b_internal) = block_interval {
                     options = options.block(usize::try_from(b_internal).unwrap_or(usize::MAX));
                 }
                 let reply: StreamReadReply = connection
-                    .xread_options(&[&self.stream_key], &[">"], &options)
+                    .xread_options(&[self.stream_key.as_str()], &[">"], &options)
                     .await?;
 
                 let events =
@@ -545,28 +570,28 @@ where
     async fn get_job(&self, id: u64) -> Option<Job<D, R, P>> {
         let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
         let mut conn = self.connection.conn_pool.get().await.ok()?;
-        let value: Option<Job<_, _, _>> = conn.hgetall(job_key).await.ok()?;
+        let value: Option<Job<_, _, _>> = conn.hgetall(job_key.as_str()).await.ok()?;
         value
     }
     async fn get_token(&self, id: u64) -> Option<JobToken> {
         let mut conn = self.get_connection().await.ok()?;
         let job_lock_key = CollectionSuffix::Lock(id).to_collection_name(&self.prefix, &self.name);
 
-        if let Ok(result) = conn.get(job_lock_key).await {
+        if let Ok(result) = conn.get(job_lock_key.as_str()).await {
             return Some(result);
         }
         let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
-        conn.hget(job_key, "token").await.ok()
+        conn.hget(job_key.as_str(), "token").await.ok()
     }
     async fn get_state(&self, id: u64) -> Option<JobState> {
         let mut conn = self.get_connection().await.ok()?;
         let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
-        conn.hget(&job_key, "state").await.ok()
+        conn.hget(job_key.as_str(), "state").await.ok()
     }
     async fn remove(&self, key: CollectionSuffix) -> KioResult<()> {
         let key = key.to_collection_name(&self.prefix, &self.name);
         let mut conn = self.get_connection().await?;
-        let _: () = conn.del(key).await?;
+        let _: () = conn.del(key.as_str()).await?;
         Ok(())
     }
     async fn set_lock(
@@ -580,12 +605,12 @@ where
         match col {
             CollectionSuffix::Lock(_) => {
                 if let Some(token) = token {
-                    let _: () = conn.pset_ex(key, token, lock_duration).await?;
+                    let _: () = conn.pset_ex(key.as_str(), token, lock_duration).await?;
                 }
             }
             CollectionSuffix::StalledCheck => {
                 let ts = Utc::now().timestamp_micros();
-                let _: () = conn.pset_ex(key, ts, lock_duration).await?;
+                let _: () = conn.pset_ex(key.as_str(), ts, lock_duration).await?;
             }
             _ => {}
         }
@@ -603,7 +628,7 @@ where
                 }
                 JobField::BackTrace(trace) => {
                     let mut raw_bytes = conn
-                        .hget::<_, _, Vec<u8>>(&job_key, "stackTrace")
+                        .hget::<_, _, Vec<u8>>(&job_key.as_str(), "stackTrace")
                         .await
                         .unwrap_or_default();
 
@@ -622,7 +647,7 @@ where
 
             next_fields.push(pair);
         }
-        let _: () = conn.hset_multiple(&job_key, &next_fields).await?;
+        let _: () = conn.hset_multiple(job_key.as_str(), &next_fields).await?;
         Ok(())
     }
     async fn incr(
@@ -635,11 +660,11 @@ where
         let key_string = key.to_collection_name(&self.prefix, &self.name);
 
         if let Some(field_key) = hash_key {
-            let val = conn.hincr(key_string, field_key, delta).await?;
+            let val = conn.hincr(key_string.as_str(), field_key, delta).await?;
             return Ok(val);
         }
 
-        let value: u64 = conn.incr(key_string, delta).await?;
+        let value: u64 = conn.incr(key_string.as_str(), delta).await?;
         Ok(value)
     }
     async fn get_counter(&self, key: CollectionSuffix, hash_key: Option<&str>) -> Option<u64> {
@@ -647,10 +672,10 @@ where
         let key = key.to_collection_name(&self.prefix, &self.name);
         if let Some(field) = hash_key {
             // we getting the processing counter;
-            return conn.hget(key, field).await.ok();
+            return conn.hget(key.as_str(), field).await.ok();
         }
 
-        conn.get(key).await.ok()
+        conn.get(key.as_str()).await.ok()
     }
 
     async fn publish_event(
@@ -663,13 +688,13 @@ where
         let events_stream_key =
             CollectionSuffix::Events.to_collection_name(&self.prefix, &self.name);
         match event_mode {
-            QueueEventMode::PubSub => pipeline.publish(events_stream_key, event),
+            QueueEventMode::PubSub => pipeline.publish(events_stream_key.as_str(), event),
             QueueEventMode::Stream => {
                 let mut items = crate::utils::serialize_into_pairs(&event);
                 // remove the id field
                 items.retain(|(key, _)| key != "id");
                 items.retain(|(_, val)| !val.contains("null"));
-                pipeline.xadd(events_stream_key, "*", &items)
+                pipeline.xadd(events_stream_key.as_str(), "*", &items)
             }
         };
         let _: () = pipeline.query_async(&mut conn).await?;
@@ -687,18 +712,18 @@ where
         let key = col.to_collection_name(&self.prefix, &self.name);
         match state {
             JobState::Prioritized | JobState::Completed | JobState::Failed | JobState::Delayed => {
-                let list_len: usize = conn.zcard(&key).await?;
+                let list_len: usize = conn.zcard(key.as_str()).await?;
                 if list_len > 0 {
                     let end = end.map_or(list_len, |value| value + 1);
 
                     let items: Vec<u64> = conn
-                        .zrange(key, start.cast_signed(), end.cast_signed())
+                        .zrange(key.as_str(), start.cast_signed(), end.cast_signed())
                         .await?;
                     return Ok(VecDeque::from_iter(items));
                 }
             }
             JobState::Stalled => {
-                let set: Vec<u64> = conn.smembers(key).await?;
+                let set: Vec<u64> = conn.smembers(key.as_str()).await?;
                 if !set.is_empty() {
                     let set = VecDeque::from(set);
                     let end = end.unwrap_or(set.len());
@@ -708,11 +733,11 @@ where
             }
 
             JobState::Active | JobState::Wait | JobState::Paused => {
-                let list_len: usize = conn.llen(&key).await?;
+                let list_len: usize = conn.llen(key.as_str()).await?;
                 if list_len > 0 {
                     let end = end.map_or(list_len, |value| value + 1);
                     let items: Vec<u64> = conn
-                        .lrange(key, start.cast_signed(), end.cast_signed())
+                        .lrange(key.as_str(), start.cast_signed(), end.cast_signed())
                         .await?;
                     return Ok(VecDeque::from_iter(items));
                 }
@@ -725,9 +750,9 @@ where
         let key = col.to_collection_name(&self.prefix, &self.name);
         let mut conn = self.get_connection().await?;
         let result = if min {
-            conn.zpopmin(key, 1)
+            conn.zpopmin(key.as_str(), 1)
         } else {
-            conn.zpopmax(key, 1)
+            conn.zpopmax(key.as_str(), 1)
         }
         .await?;
 
@@ -739,7 +764,7 @@ where
             .await
             .expect("failed to get connection");
         let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
-        let result = conn.exists(job_key).await.unwrap_or_default();
+        let result = conn.exists(job_key.as_str()).await.unwrap_or_default();
         result
     }
 
@@ -763,7 +788,7 @@ where
             CollectionSuffix::Paused,
         ] {
             let key = name.to_collection_name(&self.prefix, &self.name);
-            pipeline.del(key);
+            pipeline.del(key.as_str());
         }
         let _: () = pipeline.query_async(&mut conn).await?;
         Ok(())
@@ -778,13 +803,13 @@ where
             | CollectionSuffix::Delayed
             | CollectionSuffix::Failed
             | CollectionSuffix::Prioritized => {
-                pipeline.zrem(key, item);
+                pipeline.zrem(key.as_str(), item);
             }
             CollectionSuffix::Stalled => {
-                pipeline.srem(key, item);
+                pipeline.srem(key.as_str(), item);
             }
             CollectionSuffix::Active | CollectionSuffix::Wait | CollectionSuffix::Paused => {
-                pipeline.lrem(key, 1, item);
+                pipeline.lrem(key.as_str(), 1, item);
             }
             _ => {}
         }
@@ -807,17 +832,17 @@ where
             | CollectionSuffix::Failed
             | CollectionSuffix::Prioritized => {
                 let score = score.unwrap_or_default();
-                pipeline.zadd(key, item, score);
+                pipeline.zadd(key.as_str(), item, score);
             }
             CollectionSuffix::Stalled => {
-                pipeline.sadd(key, item);
+                pipeline.sadd(key.as_str(), item);
             }
 
             CollectionSuffix::Active | CollectionSuffix::Wait | CollectionSuffix::Paused => {
                 if append {
-                    pipeline.lpush(key, item);
+                    pipeline.lpush(key.as_str(), item);
                 } else {
-                    pipeline.rpush(key, item);
+                    pipeline.rpush(key.as_str(), item);
                 }
             }
 
@@ -829,7 +854,7 @@ where
     async fn expire(&self, col: CollectionSuffix, secs: i64) -> KioResult<()> {
         let mut conn = self.get_connection().await?;
         let key = col.to_collection_name(&self.prefix, &self.name);
-        let _: () = conn.expire(key, secs).await?;
+        let _: () = conn.expire(key.as_str(), secs).await?;
         Ok(())
     }
     async fn clear_jobs(&self, last_id: u64) -> KioResult<()> {
@@ -839,7 +864,7 @@ where
 
         (1..=last_id).for_each(|id| {
             let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
-            pipeline.del(job_key);
+            pipeline.del(job_key.as_str());
         });
 
         let _: () = pipeline.query_async(&mut conn).await?;
@@ -858,13 +883,17 @@ where
         let dst = if pause { &paused_key } else { &wait_key };
         let mut pipeline = redis::pipe();
         pipeline.atomic();
-        if conn.exists::<_, bool>(src).await.unwrap_or_default() {
-            pipeline.rename(src, dst);
+        if conn
+            .exists::<_, bool>(src.as_str())
+            .await
+            .unwrap_or_default()
+        {
+            pipeline.rename(src.as_str(), dst.as_str());
         }
         if pause {
-            pipeline.hset(meta_key, CollectionSuffix::Paused, 1)
+            pipeline.hset(meta_key.as_str(), CollectionSuffix::Paused, 1)
         } else {
-            pipeline.hdel(meta_key, CollectionSuffix::Paused)
+            pipeline.hdel(meta_key.as_str(), CollectionSuffix::Paused)
         };
         let _: redis::Value = pipeline.query_async(&mut conn).await?;
         Ok(())
@@ -879,7 +908,7 @@ where
         pipeline.atomic();
         for id in ids {
             let key = CollectionSuffix::Job(*id).to_collection_name(&self.prefix, &self.name);
-            pipeline.hgetall(key);
+            pipeline.hgetall(key.as_str());
         }
 
         let list: Vec<Job<D, R, P>> = pipeline.query_async(&mut conn).await?;

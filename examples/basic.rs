@@ -1,3 +1,4 @@
+use compact_str::ToCompactString;
 use std::{
     sync::{atomic::AtomicUsize, Arc},
     time::Instant,
@@ -32,7 +33,7 @@ async fn main() -> KioResult<()> {
         count: None,
     });
     let backoff_opts = BackOffJobOptions::Opts(kiomq::BackOffOptions {
-        type_: Some("exponential".to_owned()),
+        type_: Some("exponential".to_compact_string()),
         delay: Some(200),
     });
     let queue_opts = QueueOpts {

@@ -1,4 +1,5 @@
 use crate::{FailedDetails, JobMetrics, JobState};
+use compact_str::CompactString;
 use derive_more::Debug;
 use uuid::Uuid;
 /// The payload delivered to event listeners registered on a [`Queue`](crate::Queue).
@@ -38,7 +39,7 @@ pub enum EventParameters<R, P> {
         /// Numeric job ID.
         job_id: u64,
         /// Job name.
-        name: Option<String>,
+        name: Option<CompactString>,
         /// Assigned priority score.
         priority: u64,
     },
@@ -47,7 +48,7 @@ pub enum EventParameters<R, P> {
         /// Numeric job ID.
         job_id: u64,
         /// Job name.
-        name: Option<String>,
+        name: Option<CompactString>,
     },
     /// A delayed or stalled job is now waiting to be processed.
     WaitingToRun {

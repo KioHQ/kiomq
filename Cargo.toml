@@ -45,6 +45,7 @@ sysinfo = { version = "0.39.1", features = ["debug", "serde"] }
 heapster = { version = "0.5.0", features = ["serde", "fmt"] }
 tokio-stream = { version = "0.1.18", features = ["time", "sync"] }
 parking_lot = { version = "0.12.5", features = ["send_guard"] }
+compact_str = { version = "0.9.1", features = ["serde"] }
 
 [dependencies.dotenv]
 version = "0.15.0"

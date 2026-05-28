@@ -1,4 +1,5 @@
 use async_backtrace::Location as LocationTrace;
+use compact_str::{format_compact, CompactString, ToCompactString};
 use futures::future::{Future, FutureExt};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{LazyLock, Mutex};
@@ -24,7 +25,7 @@ impl From<JoinError> for CaughtError {
 #[derive(Debug)]
 pub struct CaughtPanicInfo {
     /// A human-readable description of the panic, including the source location.
-    pub payload: String,
+    pub payload: CompactString,
     /// Async backtrace at the point the panic was caught, if available.
     pub backtrace: Backtrace,
 }
@@ -32,7 +33,7 @@ pub struct CaughtPanicInfo {
 impl Default for CaughtPanicInfo {
     fn default() -> Self {
         Self {
-            payload: "Panic occurred but failed to capture backtrace".to_string(),
+            payload: "Panic occurred but failed to capture backtrace".to_compact_string(),
             backtrace: Option::default(),
         }
     }
@@ -41,14 +42,14 @@ impl Default for CaughtPanicInfo {
 #[derive(Debug, Default, derive_more::Display)]
 #[display("{} at {}:{}", file, line, col)]
 pub(super) struct PanicLocation {
-    file: String,
+    file: CompactString,
     line: u32,
     col: u32,
 }
 impl From<&std::panic::Location<'_>> for PanicLocation {
     fn from(value: &std::panic::Location<'_>) -> Self {
         Self {
-            file: value.file().to_string(),
+            file: value.file().to_compact_string(),
             line: value.line(),
             col: value.column(),
         }
@@ -65,15 +66,15 @@ impl BacktraceCatcher {
         let backtrace = async_backtrace::backtrace();
         let payload = info
             .payload()
-            .downcast_ref::<String>()
-            .map(std::string::String::as_str)
+            .downcast_ref::<CompactString>()
+            .map(CompactString::as_str)
             .or_else(|| info.payload().downcast_ref::<&'static str>().copied())
             .unwrap_or("Box<Any>");
         let location: PanicLocation = info
             .location()
             .map(std::convert::Into::into)
             .unwrap_or_default();
-        let payload = format!("Panic:{payload} :\n {location}");
+        let payload = format_compact!("Panic:{payload} :\n {location}");
 
         CaughtPanicInfo { payload, backtrace }
     }
@@ -147,8 +148,8 @@ mod tests {
         let result = BacktraceCatcher::catch(erroring_function()).await;
         assert!(matches!(result, Err(CaughtError::Error(_, _))));
         if let Err(CaughtError::Error(err, backtrace)) = result {
-            assert_eq!(err.to_string(), "Test error");
-            assert!(!format!("{backtrace:?}").is_empty());
+            assert_eq!(err.to_compact_string(), "Test error");
+            assert!(!format_compact!("{backtrace:?}").is_empty());
         } else {
             panic!("Expected CaughtError::Error, got something else");
         }
