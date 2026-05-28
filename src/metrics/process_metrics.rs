@@ -263,7 +263,7 @@ impl ProcessMetricsCollector {
                         let workers: Vec<_> = inner.workers
                             .inner
                             .iter()
-                            .map(|e| (*e.key(), e.value().value.load()))
+                            .map(|e| (*e.key(), e.value().value.lock().load()))
                             .collect();
 
                         let sys = inner.process_monitor.read().await;
