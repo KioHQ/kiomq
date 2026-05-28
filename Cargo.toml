@@ -44,6 +44,7 @@ futures-intrusive = "0.5.0"
 sysinfo = { version = "0.39.1", features = ["debug", "serde"] }
 heapster = { version = "0.5.0", features = ["serde", "fmt"] }
 tokio-stream = { version = "0.1.18", features = ["time", "sync"] }
+parking_lot = { version = "0.12.5", features = ["send_guard"] }
 
 [dependencies.dotenv]
 version = "0.15.0"
@@ -54,10 +55,6 @@ optional = true
 version = "0.6.0"
 default-features = false
 features = ["tokio"]
-
-[dependencies.dashmap]
-version = "6.1.0"
-features = ["serde", "rayon", "inline"]
 
 [dependencies.chrono]
 version = "0.4.41"
@@ -78,7 +75,7 @@ version = "2.0.1"
 features = ["display", "from", "debug", "from_str", "is_variant"]
 
 [dependencies.futures]
-version = "0.3.31"
+version = "0.3.32"
 features = ["executor"]
 
 [dependencies.redis]
@@ -110,7 +107,9 @@ version = "0.7.15"
 features = ["time", "rt"]
 
 [dependencies.typed-emitter]
-version = "0.1.3"
+# version = "0.1.3"
+git = "https://github.com/spencerjibz/typed-emitter"
+branch = "main"
 default-features = false
 
 [dependencies.uuid]
