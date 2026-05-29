@@ -1,3 +1,9 @@
+//! Process-level metrics and a global collector
+//!
+//! This module provides a lightweight, process-global metrics collector
+//! (`P_METRICS_COLLECTOR`) which gathers CPU/memory and Tokio runtime
+//! metrics and maintains a registry of active workers and queue timers.
+
 use crate::timers::TimerType;
 #[cfg(feature = "redis-store")]
 use crate::utils::to_redis_parsing_error;
@@ -24,10 +30,16 @@ use tokio_metrics::{RuntimeMetrics, RuntimeMonitor};
 use tokio_util::sync::CancellationToken;
 use tokio_util::time::{delay_queue::Key, DelayQueue};
 use uuid::Uuid;
-/// The TTL for the Worker State stored in [`ProcessMoniterCollector`].
+/// Worker state TTL (milliseconds)
+///
+/// How long a worker's state is retained in the collector's registry
+/// before being considered expired.
 pub const WORKER_STATE_TTL: u128 =
     sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.as_millis() + Duration::from_secs(100).as_millis();
-/// How often process metrics are updated by [`ProcessMoniterCollector`] in milliseconds.
+
+/// Process metrics collection interval (milliseconds)
+///
+/// How often the global collector refreshes system and runtime metrics.
 pub const PROCESS_METRIC_UPDATE_INTERVAL: u128 =
     sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.as_millis() + Duration::from_millis(200).as_millis();
 /// Global allocator instrumented by [`Heapster`].
@@ -38,13 +50,12 @@ pub const PROCESS_METRIC_UPDATE_INTERVAL: u128 =
 #[global_allocator]
 pub static GLOBAL: Heapster<SystemAlloc> = Heapster::new(SystemAlloc);
 
-/// Aggregated process- and runtime-level metrics.
+/// Global process and runtime metrics collector
 ///
-/// Holds the monitored process id, a `tokio_metrics::RuntimeMonitor` for
-/// collecting Tokio runtime statistics, a `sysinfo::System` instance used to
-/// refresh process-specific CPU/memory figures, and a `TimedMap` that tracks
-/// active worker UUIDs. The collector is deliberately lightweight and is
-/// intended to live for the lifetime of the process.
+/// A small, clonable collector that exposes runtime and system-level
+/// snapshots (CPU, memory, and Tokio runtime metrics). Use the
+/// [`P_METRICS_COLLECTOR`] singleton to register queues/workers and to
+/// receive periodic [`ProcessMetrics`] updates.
 #[derive(Clone)]
 pub struct ProcessMetricsCollector {
     /// Number of logical processors from the `num_cpus` crate.
@@ -54,10 +65,11 @@ pub struct ProcessMetricsCollector {
     /// Shared wrapper for [`System`], workers and `last_updated`
     pub inner: Arc<CollectorInner>,
     cancel_token: CancellationToken,
-    /// Timer Sender
+    /// Sender used by timers to register global timer requests
     pub(crate) tx: mpsc::Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
 }
 
+/// Internal shared collector state
 pub struct CollectorInner {
     /// a [`tokio::sync::watch::Sender`] Sender  for updating [`ProcessMetrics`]
     updating_metrics_sender: watch::Sender<Option<ProcessMetrics>>,
@@ -77,12 +89,20 @@ pub struct CollectorInner {
     pub global_timers: SkipMap<Duration, TimerData>,
 }
 #[derive(Debug, Default)]
+/// Metadata for a global timer entry.
+///
+/// Tracks which queues are subscribed to a particular timer duration and
+/// stores the DelayQueue key for the scheduled entry.
 pub struct TimerData {
+    /// Queues subscribed to this timer duration.
     pub queues: SkipSet<Uuid>,
+    /// DelayQueue key for the scheduled timer entry.
     pub key: AtomicCell<Option<Key>>,
 }
 #[derive(Debug, Clone, Copy)]
+/// Commands delivered to per-queue timer tasks when a global timer fires.
 pub enum TimerCommand {
+    /// Ask the timer task to process the supplied `TimerType`.
     RespondToTimer(TimerType),
 }
 /// Lazily-initialised global [`ProcessMetricsCollector`].
@@ -124,7 +144,7 @@ pub static P_METRICS_COLLECTOR: LazyLock<ProcessMetricsCollector> = LazyLock::ne
 });
 
 impl ProcessMetricsCollector {
-    /// adds or refresh
+    /// Register a queue so it can receive global timer events.
     pub fn register_queue(&self, queue_id: Uuid, sender: Sender<TimerCommand>) {
         let queues = &self.inner.queues;
         if queues.contains_key(&queue_id) {
@@ -146,6 +166,7 @@ impl ProcessMetricsCollector {
     pub fn unregister_worker(&self, uuid: Uuid) {
         self.inner.workers.remove(&uuid);
     }
+    /// Remove a previously-registered queue id.
     pub fn unregister_queue(&self, queue_id: Uuid) {
         self.inner.queues.remove(&queue_id);
         self.inner.global_timers.iter().for_each(|entry| {
@@ -215,6 +236,9 @@ impl ProcessMetricsCollector {
             }
         }.boxed())
     }
+    /// Return a stream that yields `ProcessMetrics` snapshots every `duration`.
+    ///
+    /// The stream terminates when `cancel_token` is cancelled.
     pub fn create_process_metrics_stream(
         &self,
         duration: Duration,
@@ -279,13 +303,10 @@ impl ProcessMetricsCollector {
     }
 }
 
-/// Snapshot of node-level metrics.
+/// Process-level metrics snapshot
 ///
-/// [`ProcessMetrics`] is a compact, serialisable snapshot that includes hostname,
-/// PID, allocator statistics from the global `Heapster` allocator, observed
-/// CPU usage for the monitored process, Tokio runtime metrics, and a list of
-/// active worker UUIDs. It is intended for monitoring endpoints and health
-/// checks.
+/// Compact, serialisable snapshot of system and Tokio runtime metrics for the
+/// current process.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProcessMetrics {
     /// Hostname of the machine running the process.
@@ -310,18 +331,7 @@ pub struct ProcessMetrics {
 }
 
 impl ProcessMetrics {
-    /// Create a new [`ProcessMetrics`] snapshot.
-    ///
-    /// Collects the hostname, allocator stats from the global [`Heapster`], the
-    /// CPU usage read from `process`, and the supplied `rt_metrics` and
-    /// `workers` list.
-    ///
-    /// # Arguments
-    ///
-    /// * `pid` - the process id being monitored.
-    /// * `rt_metrics` - Tokio runtime metrics obtained from a [`RuntimeMonitor`].
-    /// * `process` - `sysinfo::Process` corresponding to `pid`; used to read CPU usage.
-    /// * `workers` - list of active worker UUIDs to embed in the snapshot.
+    /// Construct a `ProcessMetrics` snapshot from system and runtime values.
     #[must_use]
     pub fn new(
         pid: Pid,
