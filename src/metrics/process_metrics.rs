@@ -18,10 +18,10 @@ use futures::{FutureExt, Stream, StreamExt};
 use heapster::{Heapster, Stats};
 #[cfg(feature = "redis-store")]
 use redis::{self, FromRedisValue, ParsingError};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::{alloc::System as SystemAlloc, sync::LazyLock, time::Duration};
-use sysinfo::{get_current_pid, Pid, Process, ProcessRefreshKind, System};
+use sysinfo::{Pid, Process, ProcessRefreshKind, System};
 use tokio::runtime::Handle;
 use tokio::sync::broadcast::Sender;
 use tokio::sync::{mpsc, watch};
@@ -61,7 +61,7 @@ pub struct ProcessMetricsCollector {
     /// Number of logical processors from the `num_cpus` crate.
     pub cpu_count: usize,
     /// PID of the process being monitored.
-    pub pid: Pid,
+    pub pid: u32,
     /// Shared wrapper for [`System`], workers and `last_updated`
     pub inner: Arc<CollectorInner>,
     cancel_token: CancellationToken,
@@ -112,7 +112,7 @@ pub enum TimerCommand {
 pub static P_METRICS_COLLECTOR: LazyLock<ProcessMetricsCollector> = LazyLock::new(|| {
     let rt_monitor = RuntimeMonitor::new(&Handle::current());
     let sys = System::new();
-    let pid = get_current_pid().unwrap_or_else(|_| Pid::from_u32(0));
+    let pid = std::process::id();
     let last_updated = AtomicCell::new(Utc::now());
     let workers = TimedMap::default();
     let queues = SkipMap::default();
@@ -271,9 +271,10 @@ impl ProcessMetricsCollector {
                             .with_cpu()
                             .with_memory();
                         {
+                            let parsed_id  = Pid::from_u32(pid);
                             let mut sys = inner.process_monitor.write().await;
                              sys.refresh_processes_specifics(
-                                sysinfo::ProcessesToUpdate::Some(&[pid]),
+                                sysinfo::ProcessesToUpdate::Some(&[parsed_id]),
                                 true,
                                 process_refresh_kind,
                             );
@@ -292,7 +293,7 @@ impl ProcessMetricsCollector {
                             .collect();
 
                         let sys = inner.process_monitor.read().await;
-                        let process = sys.process(pid)?;
+                        let process = sys.process(Pid::from_u32(pid))?;
                         let  metrics = ProcessMetrics::new(pid,cpu_count, &sys, rt_metrics, process, workers);
                         drop(sys);
                         Some((metrics, State::Active(intervals)))
@@ -311,9 +312,8 @@ impl ProcessMetricsCollector {
 pub struct ProcessMetrics {
     /// Hostname of the machine running the process.
     pub hostname: CompactString,
-    #[serde(serialize_with = "serialize_pid", deserialize_with = "deserialize_pid")]
     /// PID for the process that produced this snapshot.
-    pub pid: Pid,
+    pub pid: u32,
     /// Memory allocator statistics from the global [`Heapster`] allocator.
     pub memory_stats: Stats,
     /// Observed CPU usage for the process (percentage).
@@ -334,7 +334,7 @@ impl ProcessMetrics {
     /// Construct a `ProcessMetrics` snapshot from system and runtime values.
     #[must_use]
     pub fn new(
-        pid: Pid,
+        pid: u32,
         cpu_thread_count: usize,
         sys: &System,
         rt_metrics: RuntimeMetrics,
@@ -404,22 +404,6 @@ impl From<RuntimeMetrics> for RawRuntimeMetrics {
             elapsed: value.elapsed,
         }
     }
-}
-
-#[allow(clippy::trivially_copy_pass_by_ref)] // a reference is required for serde(serialize_with)
-fn serialize_pid<S>(pid: &Pid, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    (pid.as_u32()).serialize(serializer)
-}
-
-fn deserialize_pid<'de, D>(deserializer: D) -> Result<Pid, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = u32::deserialize(deserializer)?;
-    Ok(Pid::from_u32(value))
 }
 
 #[cfg(feature = "redis-store")]

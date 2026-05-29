@@ -56,7 +56,7 @@ pub struct InMemoryStore<D, R, P> {
     is_paused: Arc<AtomicCell<bool>>,
     jobs: Arc<TimedJobMap<D, R, P>>,
     worker_metrics: Arc<TimedMap<Uuid, WorkerMetrics>>,
-    process_metrics: Arc<TimedMap<sysinfo::Pid, ProcessMetrics>>,
+    process_metrics: Arc<TimedMap<u32, ProcessMetrics>>,
     #[debug(skip)]
     locks: Arc<TimedMap<u64, Lock>>, // locks that expires
     #[debug(skip)]
@@ -261,7 +261,7 @@ where
             .await;
         Ok(())
     }
-    async fn fetch_process_metrics(&self) -> KioResult<BTreeMap<sysinfo::Pid, ProcessMetrics>> {
+    async fn fetch_process_metrics(&self) -> KioResult<BTreeMap<u32, ProcessMetrics>> {
         let metrics = self
             .process_metrics
             .inner

@@ -60,7 +60,7 @@ pub trait Store<D, R, P> {
     /// # Errors
     ///
     /// Returns [`KioResult`] error if the store lookup fails.
-    async fn fetch_process_metrics(&self) -> KioResult<BTreeMap<sysinfo::Pid, ProcessMetrics>>;
+    async fn fetch_process_metrics(&self) -> KioResult<BTreeMap<u32, ProcessMetrics>>;
     /// Persists a process's metrics with a time-to-live of `ttls` milliseconds.
     async fn store_process_metrics(&self, metrics: ProcessMetrics, ttl_ms: u64) -> KioResult<()>;
     /// Persists a worker's metrics with a time-to-live of `ttl_ms` milliseconds.
