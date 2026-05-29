@@ -311,7 +311,7 @@ where
         self.store_metrics(MetricsType::Process(metrics.into()), ttl_ms)
             .await
     }
-    async fn fetch_process_metrics(&self) -> KioResult<BTreeMap<sysinfo::Pid, ProcessMetrics>> {
+    async fn fetch_process_metrics(&self) -> KioResult<BTreeMap<u32, ProcessMetrics>> {
         let mut conn = self.get_connection().await?;
         let key = CollectionSuffix::ProcessMetrics.to_collection_name(&self.prefix, &self.name);
         let results: Vec<ProcessMetrics> = conn.hvals(key.as_str()).await?;

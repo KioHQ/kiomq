@@ -36,7 +36,8 @@ use arc_swap::ArcSwapOption;
 use derive_more::Debug;
 pub use options::{CollectionSuffix, QueueEventMode, QueueMetrics, QueueOpts, RetryOptions};
 pub use options::{Counter, JobField, ProcessedResult};
-
+/// A type alias representing a map of worker_ids, options and useful metadata like worker_state
+/// and ie.
 pub type WorkerMetaData =
     Arc<SkipMap<Uuid, (WorkerOpts, ProcessingQueue, Arc<AtomicCell<WorkerState>>)>>;
 
@@ -1169,7 +1170,7 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     ///
     /// Returns [`KioError`] if the store lookup fails.
     #[allow(clippy::future_not_send)]
-    pub async fn fetch_proess_metrics(&self) -> KioResult<BTreeMap<sysinfo::Pid, ProcessMetrics>> {
+    pub async fn fetch_proess_metrics(&self) -> KioResult<BTreeMap<u32, ProcessMetrics>> {
         self.store.fetch_process_metrics().await
     }
     /// Persists the given worker metrics to the backing store with a TTL.
