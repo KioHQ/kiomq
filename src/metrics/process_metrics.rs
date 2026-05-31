@@ -19,6 +19,7 @@ use heapster::{Heapster, Stats};
 #[cfg(feature = "redis-store")]
 use redis::{self, FromRedisValue, ParsingError};
 use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
 use std::sync::Arc;
 use std::{alloc::System as SystemAlloc, sync::LazyLock, time::Duration};
 use sysinfo::{Pid, Process, ProcessRefreshKind, System};
@@ -58,6 +59,8 @@ pub static GLOBAL: Heapster<SystemAlloc> = Heapster::new(SystemAlloc);
 /// receive periodic [`ProcessMetrics`] updates.
 #[derive(Clone)]
 pub struct ProcessMetricsCollector {
+    /// Hostname of the machine running the process.
+    pub hostname: String,
     /// Number of logical processors from the `num_cpus` crate.
     pub cpu_count: usize,
     /// PID of the process being monitored.
@@ -120,6 +123,12 @@ pub static P_METRICS_COLLECTOR: LazyLock<ProcessMetricsCollector> = LazyLock::ne
     let cancel_token = CancellationToken::new();
     let process_monitor = RwLock::new(sys);
     let cpu_count = num_cpus::get();
+    let hostname = hostname::get()
+        .and_then(|name| {
+            name.into_string()
+                .map_err(|_| std::io::Error::other("failed to convert from ostring"))
+        })
+        .unwrap_or_else(|| "<Unknown>".to_owned());
     let (tx, rx) = mpsc::channel(10_000);
     let (updating_metrics_sender, updating_metrics_receiver) = watch::channel(None);
     let inner = Arc::new(CollectorInner {
@@ -133,6 +142,7 @@ pub static P_METRICS_COLLECTOR: LazyLock<ProcessMetricsCollector> = LazyLock::ne
         global_timers,
     });
     let collector = ProcessMetricsCollector {
+        hostname,
         cpu_count,
         pid,
         inner,
@@ -255,6 +265,7 @@ impl ProcessMetricsCollector {
         futures::stream::unfold(State::Active(intervals), move |state| {
             let cancel = cancel_token.clone();
             let pid = self.pid;
+            let hostname = &self.hostname;
             let inner = inner.clone();
             let cpu_count = self.cpu_count;
             async move {
@@ -294,7 +305,7 @@ impl ProcessMetricsCollector {
 
                         let sys = inner.process_monitor.read().await;
                         let process = sys.process(Pid::from_u32(pid))?;
-                        let  metrics = ProcessMetrics::new(pid,cpu_count, &sys, rt_metrics, process, workers);
+                        let  metrics = ProcessMetrics::new(hostname.to_compact_string(), pid,cpu_count, &sys, rt_metrics, process, workers);
                         drop(sys);
                         Some((metrics, State::Active(intervals)))
                     }
@@ -334,6 +345,7 @@ impl ProcessMetrics {
     /// Construct a `ProcessMetrics` snapshot from system and runtime values.
     #[must_use]
     pub fn new(
+        hostname: CompactString,
         pid: u32,
         cpu_thread_count: usize,
         sys: &System,
@@ -343,9 +355,6 @@ impl ProcessMetrics {
     ) -> Self {
         let cpu_usage = sys.global_cpu_usage();
         let memory_usage = process.memory();
-        let hostname = System::host_name()
-            .unwrap_or_else(|| "<Unknown>".to_owned())
-            .to_compact_string();
         let memory_stats = GLOBAL.stats();
         let mut process_cpu_usage = process.cpu_usage();
         process_cpu_usage /= cpu_thread_count as f32;
