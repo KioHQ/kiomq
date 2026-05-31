@@ -256,6 +256,10 @@ where
     }
     async fn store_process_metrics(&self, metrics: ProcessMetrics, ttl_ms: u64) -> KioResult<()> {
         let duration = std::time::Duration::from_millis(ttl_ms);
+        if let Some(current) = self.process_metrics.inner.get(&metrics.pid) {
+            *current.value().value.lock() = metrics;
+            return Ok(());
+        }
         self.process_metrics
             .insert_expirable(metrics.pid, metrics, duration)
             .await;
@@ -273,6 +277,10 @@ where
 
     async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()> {
         let duration = std::time::Duration::from_millis(ttl_ms);
+        if let Some(current) = self.worker_metrics.inner.get(&metrics.worker_id) {
+            *current.value().value.lock() = metrics;
+            return Ok(());
+        }
         self.worker_metrics
             .insert_expirable(metrics.worker_id, metrics, duration)
             .await;
