@@ -7,7 +7,7 @@ use std::collections::HashSet;
 #[cfg(target_os = "linux")]
 use std::time::Instant;
 #[cfg(not(target_os = "linux"))]
-use sysinfo::ProcessRefreshKind;
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
 #[derive(Debug, Clone, Copy)]
 pub struct ProcessTreeStats {
     pub cpu_usage: f32,
@@ -87,7 +87,7 @@ impl ProcessTreeTracker {
         )
     }
 
-    pub fn sample(&mut self) -> Option<ProcessTreeStats> {
+    pub fn sample(&mut self) -> ProcessTreeStats {
         let now = Instant::now();
         let elapsed_secs = now.duration_since(self.prev_time).as_secs_f32();
         if elapsed_secs == 0.0 {
@@ -105,18 +105,17 @@ impl ProcessTreeTracker {
         self.prev_total_ticks = current_total_ticks;
         self.prev_time = now;
 
-        Some(ProcessTreeStats {
+        ProcessTreeStats {
             cpu_usage,
             rss_bytes,
             virt_bytes,
-        })
+        }
     }
 }
 
 #[cfg(not(target_os = "linux"))]
 pub struct ProcessTreeTracker {
     system: sysinfo::System,
-    process_refresh_kind: ProcessRefreshKind,
     pid: sysinfo::Pid,
     cpu_count: usize,
     child_processes: HashSet<sysinfo::Pid>,
@@ -127,31 +126,34 @@ impl ProcessTreeTracker {
     pub fn new() -> Self {
         let mut sys = sysinfo::System::new();
         let pid = sysinfo::Pid::from(std::process::id() as usize);
-        let process_refresh_kind = ProcessRefreshKind::nothing().with_cpu().with_memory();
+        let process_refresh_kind = ProcessRefreshKind::nothing().with_memory().with_cpu();
 
         sys.refresh_processes_specifics(
-            sysinfo::ProcessesToUpdate::Some(&[pid]),
+            ProcessesToUpdate::Some(&[pid]),
             true,
             process_refresh_kind,
         );
+        let child_processes = HashSet::new();
 
         Self {
             system: sys,
-            process_refresh_kind,
             pid,
             cpu_count: get(),
-            child_processes: HashSet::new(),
+            child_processes,
         }
     }
-    pub fn sample(&mut self) -> Option<ProcessTreeStats> {
+    pub fn sample(&mut self) -> ProcessTreeStats {
         let mut processes: Vec<_> = self.child_processes.iter().copied().collect();
         processes.push(self.pid);
+        let process_to_update = if processes.len() > 1 {
+            ProcessesToUpdate::All
+        } else {
+            ProcessesToUpdate::Some(&processes)
+        };
 
-        self.system.refresh_processes_specifics(
-            sysinfo::ProcessesToUpdate::Some(&processes),
-            true,
-            self.process_refresh_kind,
-        );
+        let process_refresh_kind = ProcessRefreshKind::nothing().with_memory().with_cpu();
+        self.system
+            .refresh_processes_specifics(process_to_update, true, process_refresh_kind);
 
         let mut cpu_usage = 0.0;
         let mut rss_bytes = 0;
@@ -174,17 +176,17 @@ impl ProcessTreeTracker {
                     cpu_usage += process.cpu_usage();
                     rss_bytes += process.memory();
                     virt_bytes += process.virtual_memory();
+                    if !self.child_processes.contains(&process.pid()) {
+                        self.child_processes.insert(process.pid());
+                    }
                 }
-            }
-            if !self.child_processes.contains(&process.pid()) {
-                self.child_processes.insert(process.pid());
             }
         }
         cpu_usage /= self.cpu_count as f32;
-        Some(ProcessTreeStats {
+        ProcessTreeStats {
             cpu_usage,
             rss_bytes,
             virt_bytes,
-        })
+        }
     }
 }
