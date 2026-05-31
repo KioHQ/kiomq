@@ -52,6 +52,8 @@ pub enum WorkerState {
     Closed,
 }
 #[cfg(feature = "tracing")]
+use compact_str::ToCompactString;
+#[cfg(feature = "tracing")]
 use tracing::{debug, instrument, warn, Instrument, Span};
 
 pub use worker_opts::MIN_DELAY_MS_LIMIT;
@@ -269,7 +271,7 @@ impl<
             {
                 let location = std::panic::Location::caller().to_compact_string();
                 let queue_name = queue.name();
-                let worker_type = format_compact!(
+                let worker_type = format!(
                     "{}-Worker({},{queue_name})",
                     callback_type,
                     id.as_u64_pair().0,
