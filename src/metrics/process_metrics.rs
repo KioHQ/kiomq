@@ -4,6 +4,7 @@
 //! (`P_METRICS_COLLECTOR`) which gathers CPU/memory and Tokio runtime
 //! metrics and maintains a registry of active workers and queue timers.
 
+use super::process_tree_tracker::{ProcessTreeStats, ProcessTreeTracker};
 use crate::timers::TimerType;
 #[cfg(feature = "redis-store")]
 use crate::utils::to_redis_parsing_error;
@@ -19,10 +20,8 @@ use heapster::{Heapster, Stats};
 #[cfg(feature = "redis-store")]
 use redis::{self, FromRedisValue, ParsingError};
 use serde::{Deserialize, Serialize};
-use std::ffi::OsString;
 use std::sync::Arc;
 use std::{alloc::System as SystemAlloc, sync::LazyLock, time::Duration};
-use sysinfo::{Pid, Process, ProcessRefreshKind, System};
 use tokio::runtime::Handle;
 use tokio::sync::broadcast::Sender;
 use tokio::sync::{mpsc, watch};
@@ -35,14 +34,20 @@ use uuid::Uuid;
 ///
 /// How long a worker's state is retained in the collector's registry
 /// before being considered expired.
+#[cfg(not(target_os = "linux"))]
 pub const WORKER_STATE_TTL: u128 =
     sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.as_millis() + Duration::from_secs(100).as_millis();
+#[cfg(target_os = "linux")]
+pub const WORKER_STATE_TTL: u128 = Duration::from_secs(100).as_millis();
 
 /// Process metrics collection interval (milliseconds)
 ///
 /// How often the global collector refreshes system and runtime metrics.
+#[cfg(not(target_os = "linux"))]
 pub const PROCESS_METRIC_UPDATE_INTERVAL: u128 =
     sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.as_millis() + Duration::from_millis(200).as_millis();
+#[cfg(target_os = "linux")]
+pub const PROCESS_METRIC_UPDATE_INTERVAL: u128 = 300;
 /// Global allocator instrumented by [`Heapster`].
 ///
 /// `Heapster` wraps the system allocator and exposes allocation statistics via
@@ -61,8 +66,6 @@ pub static GLOBAL: Heapster<SystemAlloc> = Heapster::new(SystemAlloc);
 pub struct ProcessMetricsCollector {
     /// Hostname of the machine running the process.
     pub hostname: String,
-    /// Number of logical processors from the `num_cpus` crate.
-    pub cpu_count: usize,
     /// PID of the process being monitored.
     pub pid: u32,
     /// Shared wrapper for [`System`], workers and `last_updated`
@@ -80,8 +83,8 @@ pub struct CollectorInner {
     pub updating_metrics_receiver: watch::Receiver<Option<ProcessMetrics>>,
     /// Runtime monitor used to obtain `RuntimeMetrics` for the current runtime.
     pub rt_monitor: RuntimeMonitor,
-    /// `sysinfo::System` used to refresh process-specific data.
-    pub process_monitor: RwLock<System>,
+    /// a structure used to refresh process-specific data.
+    pub process_monitor: RwLock<ProcessTreeTracker>,
     /// Timestamp of the last successful metric ffs refresh.
     pub last_updated: AtomicCell<Dt>,
     /// Registry of active worker IDs mapped to their state [`WorkerState`].
@@ -114,21 +117,20 @@ pub enum TimerCommand {
 /// runtime/process monitoring primitives provided by the collector.
 pub static P_METRICS_COLLECTOR: LazyLock<ProcessMetricsCollector> = LazyLock::new(|| {
     let rt_monitor = RuntimeMonitor::new(&Handle::current());
-    let sys = System::new();
     let pid = std::process::id();
     let last_updated = AtomicCell::new(Utc::now());
     let workers = TimedMap::default();
     let queues = SkipMap::default();
     let global_timers = SkipMap::default();
     let cancel_token = CancellationToken::new();
-    let process_monitor = RwLock::new(sys);
-    let cpu_count = num_cpus::get();
+    let process_tracker = ProcessTreeTracker::new();
+    let process_monitor = RwLock::new(process_tracker);
     let hostname = hostname::get()
         .and_then(|name| {
             name.into_string()
                 .map_err(|_| std::io::Error::other("failed to convert from ostring"))
         })
-        .unwrap_or_else(|| "<Unknown>".to_owned());
+        .unwrap_or_else(|_| "<Unknown>".to_owned());
     let (tx, rx) = mpsc::channel(10_000);
     let (updating_metrics_sender, updating_metrics_receiver) = watch::channel(None);
     let inner = Arc::new(CollectorInner {
@@ -143,7 +145,6 @@ pub static P_METRICS_COLLECTOR: LazyLock<ProcessMetricsCollector> = LazyLock::ne
     });
     let collector = ProcessMetricsCollector {
         hostname,
-        cpu_count,
         pid,
         inner,
         cancel_token,
@@ -239,8 +240,10 @@ impl ProcessMetricsCollector {
 
                         }
 
-                    Some(metrics) = metrics_stream.next() => {
+                    Some(recieved_metrics) = metrics_stream.next() => {
+                        if let Some(metrics) = recieved_metrics {
                         let _= updating_metrics_sender.send(Some(metrics));
+                        }
                     }
                 }
             }
@@ -253,7 +256,7 @@ impl ProcessMetricsCollector {
         &self,
         duration: Duration,
         cancel_token: CancellationToken,
-    ) -> impl Stream<Item = ProcessMetrics> + use<'_> {
+    ) -> impl Stream<Item = Option<ProcessMetrics>> + use<'_> {
         let intervals = self.inner.rt_monitor.intervals();
         let inner = self.inner.clone();
         #[allow(unused)]
@@ -267,7 +270,6 @@ impl ProcessMetricsCollector {
             let pid = self.pid;
             let hostname = &self.hostname;
             let inner = inner.clone();
-            let cpu_count = self.cpu_count;
             async move {
                 let intervals = match state {
                     State::Done => return None,
@@ -278,36 +280,25 @@ impl ProcessMetricsCollector {
                     biased;
                     () = cancel.cancelled() => None,
                     () = tokio::time::sleep(duration) => {
-                        let process_refresh_kind = ProcessRefreshKind::nothing()
-                            .with_cpu()
-                            .with_memory();
-                        {
-                            let parsed_id  = Pid::from_u32(pid);
-                            let mut sys = inner.process_monitor.write().await;
-                             sys.refresh_processes_specifics(
-                                sysinfo::ProcessesToUpdate::Some(&[parsed_id]),
-                                true,
-                                process_refresh_kind,
-                            );
-                              sys.refresh_memory();
-                              drop(sys);
-                            inner.last_updated.store(Utc::now());
-                        }
 
                         let mut intervals = intervals;
                         let rt_metrics = intervals.next()?;
+                        let mut process_monitor = inner.process_monitor.write().await;
+                        if let Some(stats) = process_monitor.sample() {
                         inner.workers.purge_expired().await;
                         let workers: Vec<_> = inner.workers
                             .inner
                             .iter()
                             .map(|e| (*e.key(), e.value().value.lock().load()))
                             .collect();
+                        let  metrics = ProcessMetrics::new(hostname.to_compact_string(), pid, rt_metrics,stats, workers);
+                        drop(process_monitor);
 
-                        let sys = inner.process_monitor.read().await;
-                        let process = sys.process(Pid::from_u32(pid))?;
-                        let  metrics = ProcessMetrics::new(hostname.to_compact_string(), pid,cpu_count, &sys, rt_metrics, process, workers);
-                        drop(sys);
-                        Some((metrics, State::Active(intervals)))
+                       inner.last_updated.store(Utc::now());
+                        return Some((Some(metrics), State::Active(intervals)));
+                        }
+                        return Some((None, State::Active(intervals)));
+
                     }
                 }
             }
@@ -329,8 +320,6 @@ pub struct ProcessMetrics {
     pub memory_stats: Stats,
     /// Observed CPU usage for the process (percentage).
     pub process_cpu_usage: f32,
-    /// Overall CPU usage of the current Machine(percentage)
-    pub cpu_usage: f32,
     ///  Memory Usage  in bytes of the  current Process
     pub memory_usage: u64,
     /// Tokio runtime metrics captured for the runtime that produced the snapshot.
@@ -347,17 +336,13 @@ impl ProcessMetrics {
     pub fn new(
         hostname: CompactString,
         pid: u32,
-        cpu_thread_count: usize,
-        sys: &System,
         rt_metrics: RuntimeMetrics,
-        process: &Process,
+        stats: ProcessTreeStats,
         workers: Vec<(Uuid, WorkerState)>,
     ) -> Self {
-        let cpu_usage = sys.global_cpu_usage();
-        let memory_usage = process.memory();
+        let memory_usage = stats.rss_bytes;
         let memory_stats = GLOBAL.stats();
-        let mut process_cpu_usage = process.cpu_usage();
-        process_cpu_usage /= cpu_thread_count as f32;
+        let process_cpu_usage = stats.cpu_usage;
 
         Self {
             memory_usage,
@@ -365,7 +350,6 @@ impl ProcessMetrics {
             hostname,
             pid,
             memory_stats,
-            cpu_usage,
             rt_metrics: rt_metrics.into(),
             workers,
             last_updated: Utc::now(),

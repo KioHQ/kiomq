@@ -41,12 +41,17 @@ arc-swap = "1.7.1"
 tokio-metrics = "0.4.7"
 hdrhistogram = "7.5.4"
 futures-intrusive = "0.5.0"
-sysinfo = { version = "0.39.1", features = ["debug", "serde"] }
 heapster = { version = "0.5.0", features = ["serde", "fmt"] }
 tokio-stream = { version = "0.1.18", features = ["time", "sync"] }
 parking_lot = { version = "0.12.5", features = ["send_guard"] }
 compact_str = { version = "0.9.1", features = ["serde"] }
 hostname = "0.4.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+procfs = "0.17"
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+sysinfo = { version = "0.39.1", features = ["debug", "serde"] }
 
 [dependencies.dotenv]
 version = "0.15.0"
