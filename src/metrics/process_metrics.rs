@@ -17,6 +17,7 @@ use crossbeam_skiplist::{SkipMap, SkipSet};
 use derive_more::Debug;
 use futures::{FutureExt, Stream, StreamExt};
 use heapster::{Heapster, Stats};
+use parking_lot::RwLock;
 #[cfg(feature = "redis-store")]
 use redis::{self, FromRedisValue, ParsingError};
 use serde::{Deserialize, Serialize};
@@ -24,8 +25,7 @@ use std::sync::Arc;
 use std::{alloc::System as SystemAlloc, sync::LazyLock, time::Duration};
 use tokio::runtime::Handle;
 use tokio::sync::broadcast::Sender;
-use tokio::sync::{mpsc, watch};
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_metrics::{RuntimeMetrics, RuntimeMonitor};
 use tokio_util::sync::CancellationToken;
 use tokio_util::time::{delay_queue::Key, DelayQueue};
@@ -283,8 +283,9 @@ impl ProcessMetricsCollector {
 
                         let mut intervals = intervals;
                         let rt_metrics = intervals.next()?;
-                        let mut process_monitor = inner.process_monitor.write().await;
-                        if let Some(stats) = process_monitor.sample() {
+                        let mut process_monitor = inner.process_monitor.write();
+                         let stats = process_monitor.sample();
+                        drop(process_monitor);
                         inner.workers.purge_expired().await;
                         let workers: Vec<_> = inner.workers
                             .inner
@@ -292,12 +293,9 @@ impl ProcessMetricsCollector {
                             .map(|e| (*e.key(), e.value().value.lock().load()))
                             .collect();
                         let  metrics = ProcessMetrics::new(hostname.to_compact_string(), pid, rt_metrics,stats, workers);
-                        drop(process_monitor);
 
                        inner.last_updated.store(Utc::now());
-                        return Some((Some(metrics), State::Active(intervals)));
-                        }
-                        return Some((None, State::Active(intervals)));
+                         Some((Some(metrics), State::Active(intervals)))
 
                     }
                 }
