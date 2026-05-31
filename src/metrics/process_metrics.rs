@@ -37,6 +37,10 @@ use uuid::Uuid;
 #[cfg(not(target_os = "linux"))]
 pub const WORKER_STATE_TTL: u128 =
     sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.as_millis() + Duration::from_secs(100).as_millis();
+/// Worker state TTL (milliseconds)
+///
+/// How long a worker's state is retained in the collector's registry
+/// before being considered expired.
 #[cfg(target_os = "linux")]
 pub const WORKER_STATE_TTL: u128 = Duration::from_secs(100).as_millis();
 
@@ -46,6 +50,9 @@ pub const WORKER_STATE_TTL: u128 = Duration::from_secs(100).as_millis();
 #[cfg(not(target_os = "linux"))]
 pub const PROCESS_METRIC_UPDATE_INTERVAL: u128 =
     sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.as_millis() + Duration::from_millis(200).as_millis();
+/// Process metrics collection interval (milliseconds)
+///
+/// How often the global collector refreshes system and runtime metrics.
 #[cfg(target_os = "linux")]
 pub const PROCESS_METRIC_UPDATE_INTERVAL: u128 = 300;
 /// Global allocator instrumented by [`Heapster`].

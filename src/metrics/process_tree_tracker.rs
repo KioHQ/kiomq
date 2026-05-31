@@ -90,9 +90,6 @@ impl ProcessTreeTracker {
     pub fn sample(&mut self) -> ProcessTreeStats {
         let now = Instant::now();
         let elapsed_secs = now.duration_since(self.prev_time).as_secs_f32();
-        if elapsed_secs == 0.0 {
-            return None;
-        }
 
         let (current_total_ticks, rss_bytes, virt_bytes) = self.sample_tree_metrics();
         let delta_ticks = current_total_ticks - self.prev_total_ticks;
