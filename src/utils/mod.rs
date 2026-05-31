@@ -861,8 +861,7 @@ where
                 #[cfg(feature = "tracing")]
                 {
                     use tracing::{info_span, Instrument};
-                    let queue_name =
-                        format_compact!("{}:{}", store.queue_prefix(), store.queue_name());
+                    let queue_name = format!("{}:{}", store.queue_prefix(), store.queue_name());
                     let span = info_span!( parent:None, "", queue_name);
                     process_queue_events(args, &store)
                         .instrument(span.clone())
