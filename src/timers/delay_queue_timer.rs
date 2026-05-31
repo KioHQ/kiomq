@@ -186,7 +186,7 @@ impl<
         async move {
             #[cfg(feature = "tracing")]
             info!("starting ...");
-            let interval = sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.as_millis();
+            let interval = crate::PROCESS_METRIC_UPDATE_INTERVAL;
             let mut incoming_timer_stream = BroadcastStream::new(rx);
             let mut process_metrics_stream = WatchStream::from_changes(process_metrics_rx);
             while !token.is_cancelled() {
