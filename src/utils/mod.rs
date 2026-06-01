@@ -15,6 +15,7 @@ use compact_str::ToCompactString;
 #[cfg(feature = "redis-store")]
 use compact_str::{format_compact, CompactString};
 use crossbeam::atomic::AtomicCell;
+use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
 use parking_lot::Mutex;
@@ -25,11 +26,11 @@ use redis::ParsingError;
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio_metrics::TaskMonitor;
+use tokio_stream::wrappers::IntervalStream;
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
 use tracing::{debug, info};
 use uuid::Uuid;
-
 mod concurrent_structures;
 pub use concurrent_structures::ConcurrentDeque;
 pub mod processor_types;
@@ -40,6 +41,7 @@ use crate::{Job, ProcessedResult, Queue};
 use crate::metrics::{HISTOGRAM_MAX_NS, HISTOGRAM_SIGFIG};
 use hdrhistogram::Histogram;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[cfg(feature = "redis-store")]
 /// Reads the Redis password from the `REDIS_PASSWORD` environment variable.
@@ -388,7 +390,6 @@ type MainLoopParams<D, R, P, S> = (
     Arc<AtomicCell<WorkerState>>,
     Arc<Notify>,
 );
-use tokio::task::JoinHandle;
 #[async_backtrace::framed]
 pub async fn main_loop<D, R, P, S>(params: MainLoopParams<D, R, P, S>) -> KioResult<()>
 where
@@ -840,48 +841,78 @@ pub async fn create_listener_handle<D, R, P, S>(
     metrics: Arc<QueueMetrics>,
     pause_workers: Arc<AtomicCell<bool>>,
     event_mode: QueueEventMode,
-) -> KioResult<JoinHandle<KioResult<()>>>
+) -> BoxFuture<'static, KioResult<()>>
 where
     D: Clone + Serialize + DeserializeOwned + Send + 'static,
     R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
     S: Clone + Store<D, R, P> + Send + 'static + Sync,
     P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
 {
+    use tokio_util::time::FutureExt as OtherExt;
     let store = store.clone();
 
-    let task: JoinHandle<KioResult<()>> = tokio::spawn(
-        async move {
-            let block_interval = 5000; // 100 seconds
-            let notifier = notifier.clone();
-            let is_inital: AtomicCell<bool> = AtomicCell::new(true);
+    async move {
+        let block_interval = 5000; // 100 seconds
+        let notifier = notifier.clone();
+        let is_inital: AtomicCell<bool> = AtomicCell::new(true);
+        let update_duration = Duration::from_millis(200);
+        let metrics_update_interval = tokio::time::interval(update_duration);
+        let metrics_update_stream = IntervalStream::new(metrics_update_interval);
 
-            loop {
-                let args: ReadStreamArgs<R, P> =
-                    (event_mode, block_interval, &emitter, metrics.clone());
-                #[cfg(feature = "tracing")]
-                {
-                    use tracing::{info_span, Instrument};
-                    let queue_name = format!("{}:{}", store.queue_prefix(), store.queue_name());
-                    let span = info_span!( parent:None, "", queue_name);
-                    process_queue_events(args, &store)
-                        .instrument(span.clone())
-                        .await?;
-                    let _enter = span.enter();
+        tokio::pin!(metrics_update_stream);
+
+        loop {
+            let args: ReadStreamArgs<R, P> =
+                (event_mode, block_interval, &emitter, metrics.clone());
+            #[cfg(feature = "tracing")]
+            let event_processing_task = {
+                use tracing::{info_span, Instrument};
+                let queue_name = format!("{}:{}", store.queue_prefix(), store.queue_name());
+                let span = info_span!(
+                    parent: None,
+                    "",
+                    queue_name
+                );
+                process_queue_events(args, &store).instrument(span)
+            };
+            #[cfg(not(feature = "tracing"))]
+            let event_processing_task = process_queue_events(args, &store);
+            let (err, _) = tokio::join!(
+                async {
+                    event_processing_task.await?;
                     pause_or_resume_workers(&notifier, &metrics, &pause_workers, &is_inital);
+                    Ok::<(), KioError>(())
+                },
+                async {
+                    if let Ok(Some(_interval)) = metrics_update_stream
+                        .next()
+                        .timeout(Duration::from_millis(5))
+                        .await
+                    {
+                        if let Ok(new_metrics) = store.get_metrics().await {
+                            #[cfg(feature = "tracing")]
+                            {
+                                info!("updated queue_metrics after {:?}", update_duration);
+                            }
+                            metrics.update(&new_metrics);
+                            pause_or_resume_workers(
+                                &notifier,
+                                &metrics,
+                                &pause_workers,
+                                &is_inital,
+                            );
+                        }
+                    }
                 }
-                #[cfg(not(feature = "tracing"))]
-                {
-                    process_queue_events(args, &store).await?;
-                    pause_or_resume_workers(&notifier, &metrics, &pause_workers, &is_inital);
-                }
-                tokio::task::yield_now().await;
-            }
-            #[allow(unreachable_code)]
-            Ok(())
+            );
+            err?;
+            tokio::task::yield_now().await;
         }
-        .boxed(),
-    );
-    Ok(task)
+
+        #[allow(unreachable_code)]
+        Ok(())
+    }
+    .boxed()
 }
 pub fn pause_or_resume_workers(
     notifier: &Notify,

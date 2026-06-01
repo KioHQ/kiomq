@@ -10,6 +10,7 @@ mod inmemory_store;
 #[cfg(feature = "rocksdb-store")]
 mod rocksdb_store;
 use crossbeam::atomic::AtomicCell;
+use futures::future::BoxFuture;
 pub use inmemory_store::InMemoryStore;
 #[cfg(feature = "redis-store")]
 mod redis_store;
@@ -17,7 +18,7 @@ mod redis_store;
 pub use redis_store::{RedisStore, RedisVersion, SharedRedis};
 #[cfg(feature = "rocksdb-store")]
 pub use rocksdb_store::{ivec_to_number, temporary_rocks_db, RocksDbStore};
-use tokio::{sync::Notify, task::JoinHandle};
+use tokio::sync::Notify;
 enum Lock {
     Token(JobToken),
     StallCheck,
@@ -91,7 +92,7 @@ pub trait Store<D, R, P> {
         emitter: &EventEmitter<R, P>,
         metrics: &QueueMetrics,
     ) -> KioResult<()>;
-    /// Spawns a long-running background task that forwards store events to the
+    /// create a long-running task that forwards store events to the
     /// emitter and returns its join handle.
     async fn create_stream_listener(
         &self,
@@ -100,7 +101,7 @@ pub trait Store<D, R, P> {
         metrics: Arc<QueueMetrics>,
         pause_workers: Arc<AtomicCell<bool>>,
         event_mode: QueueEventMode,
-    ) -> KioResult<JoinHandle<KioResult<()>>>;
+    ) -> BoxFuture<'static, KioResult<()>>;
     /// Enqueues multiple jobs without returning the created job records.
     async fn add_bulk_only(
         &self,

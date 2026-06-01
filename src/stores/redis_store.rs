@@ -13,6 +13,7 @@ use compact_str::{format_compact, CompactString, ToCompactString};
 use crossbeam::atomic::AtomicCell;
 use deadpool_redis::{Config, Pool, Runtime};
 use derive_more::Debug;
+use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt};
 use redis::aio::{transaction_async, PubSubSink, PubSubStream};
 use redis::streams::{StreamReadOptions, StreamReadReply};
@@ -24,7 +25,6 @@ use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
-use tokio::task::JoinHandle;
 use uuid::Uuid;
 /// A [`Store`] implementation backed by Redis.
 ///
@@ -527,7 +527,7 @@ where
         metrics: Arc<QueueMetrics>,
         pause_workers: Arc<AtomicCell<bool>>,
         event_mode: QueueEventMode,
-    ) -> KioResult<JoinHandle<KioResult<()>>> {
+    ) -> BoxFuture<'static, KioResult<()>> {
         create_listener_handle::<D, R, P, Self>(
             self,
             emitter,
