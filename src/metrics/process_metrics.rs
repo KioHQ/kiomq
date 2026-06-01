@@ -171,13 +171,13 @@ impl ProcessMetricsCollector {
         queues.insert(queue_id, sender);
     }
     /// Insert or refresh an active worker id.
-    pub async fn register_worker(&self, worker_id: Uuid, state: Arc<AtomicCell<WorkerState>>) {
+    pub fn register_worker(&self, worker_id: Uuid, state: Arc<AtomicCell<WorkerState>>) {
         let workers = &self.inner.workers;
-        if workers.inner.contains_key(&worker_id) {
+        if workers.contains_key(&worker_id) {
             return;
         }
         let timeout = Duration::from_secs((WORKER_STATE_TTL) as u64);
-        workers.insert_expirable(worker_id, state, timeout).await;
+        workers.insert_expirable(worker_id, state, timeout);
     }
 
     /// Remove a previously-registered worker id.
@@ -293,11 +293,10 @@ impl ProcessMetricsCollector {
                         let mut process_monitor = inner.process_monitor.write();
                          let stats = process_monitor.sample();
                         drop(process_monitor);
-                        inner.workers.purge_expired().await;
+                        inner.workers.purge_expired();
                         let workers: Vec<_> = inner.workers
-                            .inner
                             .iter()
-                            .map(|e| (*e.key(), e.value().value.lock().load()))
+                            .map(|e| (*e.key(), e.value().get().lock().load()))
                             .collect();
                         let  metrics = ProcessMetrics::new(hostname.to_compact_string(), pid, rt_metrics,stats, workers);
 
