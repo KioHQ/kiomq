@@ -22,8 +22,6 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use tokio::sync::broadcast::{self, Sender};
 use tokio::sync::Notify;
-use tokio::task::JoinHandle;
-
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
 use tracing::{debug_span, info, instrument, Instrument, Span};
@@ -91,7 +89,6 @@ pub struct Queue<D, R, P, S> {
     #[debug(skip)]
     /// Handle to the background task that listens for store events and forwards
     /// them to registered listeners.
-    pub stream_listener: Arc<JoinHandle<KioResult<()>>>,
     pub(crate) backoff: BackOff,
     pub(crate) worker_notifier: Arc<Notify>,
     /// Atomic flag set to `true` to signal attached workers to pause picking
@@ -192,7 +189,7 @@ impl<
                 event_mode.load(),
             )
             .instrument(resource_span.clone())
-            .await?;
+            .await;
         #[cfg(not(feature = "tracing"))]
         let task = store
             .create_stream_listener(
@@ -202,8 +199,8 @@ impl<
                 pause_workers.clone(),
                 event_mode.load(),
             )
-            .await?;
-        let stream_listener = Arc::new(task);
+            .await;
+        let stream_listener = task;
         let timers = Arc::default();
         let id = Uuid::new_v4();
         let (timer_sender, _rx) = broadcast::channel(10000);
@@ -224,7 +221,6 @@ impl<
             backoff: BackOff::new(),
             opts,
             current_metrics,
-            stream_listener,
             emitter,
             paused: Arc::new(AtomicCell::new(is_paused)),
             _data: PhantomData,
@@ -237,6 +233,7 @@ impl<
             _rx,
             P_METRICS_COLLECTOR.inner.updating_metrics_receiver.clone(),
             queue.cancel_token.clone(),
+            stream_listener,
         );
         queue.timers.store(Some(timers.into()));
         Ok(queue)
@@ -334,7 +331,6 @@ impl<
     /// # Panics
     ///
     /// Panics if the store returns an empty job list (should never happen in practice).
-    #[allow(clippy::future_not_send)]
     #[allow(clippy::future_not_send)]
     pub async fn add_job(
         &self,

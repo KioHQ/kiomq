@@ -9,6 +9,7 @@ use chrono::Utc;
 use crossbeam::atomic::AtomicCell;
 use crossbeam_skiplist::SkipMap;
 use derive_more::{Debug, Display};
+use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt};
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -128,6 +129,7 @@ impl<
         rx: Receiver<TimerCommand>,
         process_metrics_rx: watch::Receiver<Option<ProcessMetrics>>,
         cancellation_token: CancellationToken,
+        stream_listener_task: BoxFuture<'static, KioResult<()>>,
     ) -> Self {
         #[cfg(feature = "tracing")]
         let resource_span = info_span!("Timers");
@@ -142,7 +144,7 @@ impl<
             jobs,
             token: cancellation_token,
         };
-        let task_handle = timer.create_timer_task(rx, process_metrics_rx);
+        let task_handle = timer.create_timer_task(rx, process_metrics_rx, stream_listener_task);
         timer.task_handle.store(Some(Arc::new(task_handle)));
         timer
     }
@@ -239,8 +241,16 @@ impl<
         &self,
         rx: Receiver<TimerCommand>,
         process_metrics_rx: watch::Receiver<Option<ProcessMetrics>>,
+        stream_listener_task: BoxFuture<'static, KioResult<()>>,
     ) -> JoinHandle<KioResult<()>> {
-        let t_task = self.timer_task(rx, process_metrics_rx);
+        let timer_task = self.timer_task(rx, process_metrics_rx);
+        let t_task = async {
+            tokio::select! {
+             result = stream_listener_task => result?,
+             result = timer_task => result?,
+            }
+            Ok(())
+        };
         #[cfg(feature = "tracing")]
         let sub_span = info_span!(parent: &self.resource_span, "runner_task");
         #[cfg(feature = "tracing")]
