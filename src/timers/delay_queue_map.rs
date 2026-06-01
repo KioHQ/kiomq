@@ -1,49 +1,61 @@
 use crossbeam::atomic::AtomicCell;
-use crossbeam_skiplist::SkipMap;
-use derive_more::Debug;
-use futures::StreamExt;
+use crossbeam_skiplist::{map::Entry, SkipMap};
+use derive_more::IsVariant;
 use parking_lot::Mutex;
-use std::hash::Hash;
+use std::sync::Arc;
+use std::time::Instant;
 use tokio::time::Duration;
-use tokio_util::time::{delay_queue::Key, DelayQueue};
-/// A value together with its optional expiry key in the delay queue.
-#[derive(Debug)]
-pub struct ValueKeyPair<V> {
-    #[debug(skip)]
-    /// The stored value, protected by a mutex for interior mutability.
-    pub value: Mutex<V>,
-    /// The delay-queue key associated with this entry's expiry, if any.
-    pub key: AtomicCell<Option<Key>>,
+/// A container for Tracking expiry of entries
+#[derive(Debug, IsVariant, Clone)]
+pub enum ExpiryValue<V> {
+    Constant(Arc<Mutex<V>>),
+    Expirable {
+        value: Arc<Mutex<V>>,
+        expires_at: Arc<AtomicCell<Instant>>,
+    },
 }
-impl<V> ValueKeyPair<V> {
-    /// Wraps `value` with no expiry key assigned yet.
-    pub fn new(value: V) -> Self {
-        Self {
-            value: value.into(),
-            key: AtomicCell::default(),
+impl<V> ExpiryValue<V> {
+    /// checks if the current value is expired and returns a `bool`.
+    ///
+    /// Always returns false if the current variant is [`ExpiryValue::Constant`]
+    pub fn is_expired(&self) -> bool {
+        match self {
+            Self::Constant(_) => false,
+            Self::Expirable {
+                value: _,
+                expires_at,
+            } => Instant::now() >= expires_at.load(),
+        }
+    }
+    ///  Returns a [`MutexGuard`] with the value .
+    pub fn get(&self) -> Arc<Mutex<V>> {
+        match self {
+            Self::Constant(inner) => inner.clone(),
+            Self::Expirable {
+                value,
+                expires_at: _,
+            } => value.clone(),
         }
     }
 }
 #[derive(Debug)]
-/// A concurrent map that can automatically evict entries after a configurable TTL.
+/// A concurrent map that can  
+/// evict entries after a configurable TTL.
 ///
 /// Entries are inserted either with no expiry ([`insert_constant`](TimedMap::insert_constant))
-/// or with a TTL ([`insert_expirable`](TimedMap::insert_expirable)). Eviction is
-/// lazy: expired keys are removed in batch when [`purge_expired`](TimedMap::purge_expired)
-/// is called.
+/// or with a TTL ([`insert_expirable`](TimedMap::insert_expirable)).
+/// Eviction is lazy: expired keys are removed in batch when either [`purge_expired`](TimedMap::purge_expired)
+///  or [`iter`](TimedMap::iter) is called.
+
 pub struct TimedMap<K: Ord + 'static, V> {
-    /// The delay-queue
-    delay_queue: tokio::sync::Mutex<DelayQueue<K>>,
-    /// The underlying concurrent skip-list storing all key-value pairs.
-    pub inner: SkipMap<K, ValueKeyPair<V>>,
+    inner: SkipMap<K, ExpiryValue<V>>,
     disable_expiration: AtomicCell<bool>,
 }
-impl<K: Ord + 'static + Send + Hash, V> Default for TimedMap<K, V> {
+impl<K: Ord + 'static + Send, V> Default for TimedMap<K, V> {
     fn default() -> Self {
         Self {
             inner: SkipMap::default(),
             disable_expiration: AtomicCell::default(),
-            delay_queue: tokio::sync::Mutex::default(),
         }
     }
 }
@@ -59,71 +71,100 @@ impl<K: Ord, V> TimedMap<K, V> {
             .compare_exchange(previous_state, !previous_state);
     }
 }
-impl<K: Ord + Clone + Send + 'static + Sync + Hash, V: Send + 'static + Sync> TimedMap<K, V> {
+impl<K: Ord + Clone + Send + 'static + Sync, V: Send + 'static + Sync> TimedMap<K, V> {
     /// Creates an empty `TimedMap` with expiration enabled.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
     /// Inserts `key → value` with no TTL (the entry never expires).
-    pub fn insert_constant(&self, key: K, value: V) {
-        let pair = ValueKeyPair::new(value);
-        self.inner.insert(key, pair);
+    pub fn insert_constant(&self, key: K, val: V) {
+        let entry = ExpiryValue::Constant(Arc::new(val.into()));
+        self.inner.insert(key, entry);
     }
     /// Inserts `key → value` that expires after `timeout`.
     ///
     /// If expiration is currently disabled (see [`toggle_expiration`](TimedMap::toggle_expiration))
     /// the entry is stored without a TTL.
-    pub async fn insert_expirable(&self, key: K, value: V, timeout: Duration) {
+    pub fn insert_expirable(&self, key: K, val: V, timeout: Duration) {
         if self.disable_expiration.load() {
-            return self.insert_constant(key, value);
+            return self.insert_constant(key, val);
         }
-        let mut delay_queue = self.delay_queue.lock().await;
-        // if a value already exists, resets its ttl to the next new instead;
-        if let Some(entry) = self.inner.get(&key) {
-            if let Some(key) = entry.value().key.load() {
-                delay_queue.reset(&key, timeout);
+        let expires_at = Instant::now() + timeout;
+        let entry = ExpiryValue::Expirable {
+            value: Arc::new(Mutex::new(val)),
+            expires_at: Arc::new(AtomicCell::new(expires_at)),
+        };
+        self.inner.insert(key, entry);
+    }
+    ///  Returns a [`MutexGuard`] with the value if available and not expired.
+    ///
+    ///  Also evicts the entry if it's expired and returns `None`.
+    pub fn get(&self, key: &K) -> Option<Arc<Mutex<V>>> {
+        let found = self.inner.get(key)?;
+        if found.value().is_expired() {
+            self.inner.remove(key);
+            return None;
+        }
+        Some(found.value().get())
+    }
+    /// Returns an [`Iterator`] of non-expired values and also evicts expired ones.
+    pub fn iter(&self) -> impl Iterator<Item = Entry<'_, K, ExpiryValue<V>>> {
+        self.inner.iter().filter_map(|entry| {
+            if entry.value().is_expired() {
+                entry.remove();
+                return None;
             }
-            drop(delay_queue);
-            *entry.value().value.lock() = value;
-            return;
+            Some(entry)
+        })
+    }
+    ///  Return true is the map is empty.
+    ///
+    ///  **Note**: Expired entries present will show up
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+    /// Returns whether a key  exists if not expired.
+    ///
+    /// Also evicts expired values
+    pub fn contains_key(&self, key: &K) -> bool {
+        let exists = self.inner.contains_key(key);
+        if exists {
+            return self.get(key).is_some();
         }
-        let next_key = delay_queue.insert(key.clone(), timeout);
-        drop(delay_queue);
-        let pair = ValueKeyPair::new(value);
-        pair.key.store(Some(next_key));
-        self.inner.insert(key, pair);
+        false
     }
 
     /// Returns the number of entries currently tracked in the expiry queue.
     pub fn len_expired(&self) -> usize {
-        // short  and faster path;
-        if let Ok(queue_lock) = self.delay_queue.try_lock() {
-            return queue_lock.len();
-        }
         self.inner
             .iter()
-            .filter(|entry| entry.value().key.load().is_some())
+            .filter(|entry| entry.value().is_expirable())
             .count()
     }
     /// Removes the entry for `key`, cancelling its expiry if one was set.
     pub fn remove(&self, key: &K) {
-        // no need to cancel the expiry key here; the entry is being removed
         let _ = self.inner.remove(key);
     }
     /// Updates or sets the expiry deadline for the entry at `key`.
     ///
     /// If the entry already has an expiry key it is reset to `duration` from
-    /// now; otherwise a new expiry is registered.  Returns the delay-queue key
+    /// now; otherwise a new expiry is registered.  Returns the next `Instant`
     /// on success or `None` if the entry does not exist.
-    pub async fn update_expiration_status(&self, key: &K, duration: Duration) -> Option<Key> {
+    pub fn update_expiration_status(&self, key: &K, duration: Duration) -> Option<Instant> {
         let found = self.inner.get(key)?;
-        let previous_handle = found.value().key.load()?;
-        self.delay_queue
-            .lock()
-            .await
-            .reset(&previous_handle, duration);
-        Some(previous_handle)
+        let existing = found.value();
+        let next_instant = Instant::now() + duration;
+        match existing {
+            ExpiryValue::Constant(_) => None,
+            ExpiryValue::Expirable {
+                value: _,
+                expires_at,
+            } => {
+                expires_at.swap(next_instant);
+                Some(next_instant)
+            }
+        }
     }
     /// Returns `true` if automatic expiration is currently active.
     pub fn expires_entries(&self) -> bool {
@@ -133,27 +174,20 @@ impl<K: Ord + Clone + Send + 'static + Sync + Hash, V: Send + 'static + Sync> Ti
     /// Removes all entries and clears the expiry queue.
     pub fn clear(&self) {
         self.inner.clear();
-        if let Ok(mut delay_queue) = self.delay_queue.try_lock() {
-            delay_queue.clear();
-        }
     }
     /// Removes all entries whose TTL has elapsed.
     ///
-    /// This is a no-op when expiration is disabled. The method polls the
-    /// delay queue for a short timeout so it doesn't block indefinitely.
-    pub async fn purge_expired(&self) {
-        use tokio_util::time::FutureExt;
+    /// This is a no-op when expiration is disabled. The method removes all expired entries
+    pub fn purge_expired(&self) {
         if !self.expires_entries() {
             return;
         }
-        let timeout = Duration::from_millis(1);
-        // clean any queued for deletion;
-        let mut delay_queue = self.delay_queue.lock().await;
-        while let Ok(Some(expired)) = delay_queue.next().timeout(timeout).await {
-            let key = expired.into_inner();
-            self.inner.remove(&key);
-        }
-        drop(delay_queue);
+        self.inner
+            .iter()
+            .filter(|entry| entry.value().is_expired())
+            .for_each(|entry| {
+                entry.remove();
+            });
     }
 }
 #[cfg(test)]
@@ -163,20 +197,19 @@ mod tests {
     use tokio::time::{sleep, Duration};
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_purge_removes_expired() {
+    async fn test_purge_removes_expired_async() {
         let map: Arc<TimedMap<u64, u64>> = Arc::new(TimedMap::new());
-        map.insert_expirable(1, 100, Duration::from_millis(50))
-            .await;
+        map.insert_expirable(1, 100, Duration::from_millis(50));
 
         sleep(Duration::from_millis(80)).await;
 
-        map.purge_expired().await;
+        map.purge_expired();
 
         assert!(!map.inner.contains_key(&1));
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_concurrent_inserts_and_purge() {
+    async fn test_concurrent_inserts_and_purge_async() {
         let map = Arc::new(TimedMap::new());
         let mut handles = Vec::new();
 
@@ -185,7 +218,7 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 for j in 0..10u64 {
                     let k = i * 100 + j;
-                    m.insert_expirable(k, k, Duration::from_millis(30)).await;
+                    m.insert_expirable(k, k, Duration::from_millis(30));
                 }
             }));
         }
@@ -196,7 +229,7 @@ mod tests {
 
         sleep(Duration::from_millis(60)).await;
 
-        map.purge_expired().await;
+        map.purge_expired();
 
         assert_eq!(map.len_expired(), 0);
     }

@@ -236,11 +236,11 @@ where
     async fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
         let stored_metrics = self
             .worker_metrics
-            .inner
             .iter()
             .map(|entry| {
                 let worker_id = *entry.key();
-                let value = entry.value().value.lock();
+                let value = entry.value().get();
+                let value = value.lock();
                 let ttls = value.ttl_ms;
                 let metrics = WorkerMetrics::new(
                     value.worker_id,
@@ -256,34 +256,32 @@ where
     }
     async fn store_process_metrics(&self, metrics: ProcessMetrics, ttl_ms: u64) -> KioResult<()> {
         let duration = std::time::Duration::from_millis(ttl_ms);
-        if let Some(current) = self.process_metrics.inner.get(&metrics.pid) {
-            *current.value().value.lock() = metrics;
+        if let Some(current) = self.process_metrics.get(&metrics.pid) {
+            *current.lock() = metrics;
             return Ok(());
         }
         self.process_metrics
-            .insert_expirable(metrics.pid, metrics, duration)
-            .await;
+            .insert_expirable(metrics.pid, metrics, duration);
+
         Ok(())
     }
     async fn fetch_process_metrics(&self) -> KioResult<BTreeMap<u32, ProcessMetrics>> {
         let metrics = self
             .process_metrics
-            .inner
             .iter()
-            .map(|entry| (*entry.key(), entry.value().value.lock().clone()))
+            .map(|entry| (*entry.key(), entry.value().get().lock().clone()))
             .collect();
         Ok(metrics)
     }
 
     async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()> {
         let duration = std::time::Duration::from_millis(ttl_ms);
-        if let Some(current) = self.worker_metrics.inner.get(&metrics.worker_id) {
-            *current.value().value.lock() = metrics;
+        if let Some(current) = self.worker_metrics.get(&metrics.worker_id) {
+            *current.lock() = metrics;
             return Ok(());
         }
         self.worker_metrics
-            .insert_expirable(metrics.worker_id, metrics, duration)
-            .await;
+            .insert_expirable(metrics.worker_id, metrics, duration);
         Ok(())
     }
     fn queue_name(&self) -> &str {
@@ -292,21 +290,21 @@ where
     async fn purge_expired(&self) {
         let purge_locks = async {
             if self.locks.len_expired() > 0 {
-                self.locks.purge_expired().await;
+                self.locks.purge_expired();
             }
         };
 
         let purge_metrics = async {
             if self.worker_metrics.len_expired() > 0 {
-                self.worker_metrics.purge_expired().await;
+                self.worker_metrics.purge_expired();
             }
             if self.process_metrics.len_expired() > 0 {
-                self.process_metrics.purge_expired().await;
+                self.process_metrics.purge_expired();
             }
         };
         let purge_jobs = async move {
             if self.jobs.len_expired() > 0 {
-                self.jobs.purge_expired().await;
+                self.jobs.purge_expired();
             }
         };
         tokio::join!(purge_jobs, purge_locks, purge_metrics);
@@ -322,8 +320,8 @@ where
         let mut results = VecDeque::with_capacity(ids.len());
         for id in ids {
             let key = CollectionSuffix::Job(*id).tag();
-            if let Some(found) = self.jobs.inner.get(&key) {
-                results.push_back(found.value().value.lock().clone());
+            if let Some(found) = self.jobs.get(&key) {
+                results.push_back(found.lock().clone());
             }
         }
         Ok(results)
@@ -345,9 +343,9 @@ where
             }
             CollectionSuffix::Delayed => self.delayed.iter().any(|entry| *entry.value() == item),
             CollectionSuffix::Stalled => self.stalled.contains(&item),
-            CollectionSuffix::Job(_id) => self.jobs.inner.contains_key(&col.tag()),
+            CollectionSuffix::Job(_id) => self.jobs.contains_key(&col.tag()),
             CollectionSuffix::Lock(_) | CollectionSuffix::StalledCheck => {
-                self.locks.inner.contains_key(&col.tag())
+                self.locks.contains_key(&col.tag())
             }
 
             _ => false,
@@ -524,10 +522,10 @@ where
         let key = col.tag();
         match col {
             CollectionSuffix::Lock(_) | CollectionSuffix::StalledCheck => {
-                self.locks.update_expiration_status(&key, duration).await;
+                self.locks.update_expiration_status(&key, duration);
             }
             CollectionSuffix::Job(_) => {
-                self.jobs.update_expiration_status(&key, duration).await;
+                self.jobs.update_expiration_status(&key, duration);
             }
             _ => {}
         }
@@ -554,18 +552,14 @@ where
 
     async fn get_job(&self, id: u64) -> Option<Job<D, R, P>> {
         let job_key = CollectionSuffix::Job(id).tag();
-        self.jobs
-            .inner
-            .get(&job_key)
-            .map(|pair| pair.value().value.lock().clone())
+        self.jobs.get(&job_key).map(|pair| pair.lock().clone())
     }
 
     async fn get_token(&self, id: u64) -> Option<JobToken> {
         let lock_key = CollectionSuffix::Lock(id).tag();
         self.locks
-            .inner
             .get(&lock_key)
-            .and_then(|entry| match *entry.value().value.lock() {
+            .and_then(|entry| match *entry.lock() {
                 Lock::Token(token) => Some(token),
                 Lock::StallCheck => None,
             })
@@ -573,10 +567,7 @@ where
 
     async fn get_state(&self, id: u64) -> Option<JobState> {
         let job_key = CollectionSuffix::Job(id).tag();
-        self.jobs
-            .inner
-            .get(&job_key)
-            .map(|entry| entry.value().value.lock().state)
+        self.jobs.get(&job_key).map(|entry| entry.lock().state)
     }
 
     async fn update_job_progress(&self, job: &mut Job<D, R, P>, value: P) -> KioResult<()> {
@@ -584,8 +575,8 @@ where
             let job_key = CollectionSuffix::Job(id).tag();
             let jobs = self.jobs.clone();
             let value_clone = value.clone();
-            if let Some(entry) = jobs.inner.get(&job_key) {
-                entry.value().value.lock().progress = Some(value_clone);
+            if let Some(value) = jobs.get(&job_key) {
+                value.lock().progress = Some(value_clone);
             }
             job.progress = Some(value);
         }
@@ -596,8 +587,8 @@ where
             let job_key = CollectionSuffix::Job(id).tag();
             let jobs = self.jobs.clone();
             let value_clone = value.clone();
-            if let Some(entry) = jobs.inner.get(&job_key) {
-                entry.value().value.lock().progress = Some(value_clone);
+            if let Some(entry) = jobs.get(&job_key) {
+                entry.lock().progress = Some(value_clone);
             }
             job.progress = Some(value);
         }
@@ -685,7 +676,7 @@ where
         let lock_key = col.tag();
         let duration = Duration::from_millis(lock_duration);
         let lock = token.map_or(Lock::StallCheck, Lock::Token);
-        self.locks.insert_expirable(lock_key, lock, duration).await;
+        self.locks.insert_expirable(lock_key, lock, duration);
 
         Ok(())
     }
@@ -825,8 +816,8 @@ where
     }
     async fn set_fields(&self, job_id: u64, fields: Vec<JobField<R>>) -> KioResult<()> {
         let key = CollectionSuffix::Job(job_id);
-        if let Some(pair) = self.jobs.inner.get(&key.tag()) {
-            let job = &mut pair.value().value.lock();
+        if let Some(value) = self.jobs.get(&key.tag()) {
+            let job = &mut value.lock();
             for field in fields {
                 match field {
                     JobField::BackTrace(trace) => job.stack_trace.push(trace),
@@ -889,8 +880,8 @@ where
                             _ => 0,
                         }
                     };
-                    let next = self.jobs.inner.get(&key.tag()).map_or(0, |pair| {
-                        let job = &mut pair.value().value.lock();
+                    let next = self.jobs.get(&key.tag()).map_or(0, |value| {
+                        let job = &mut value.lock();
                         update_job(job)
                     });
                     return Ok(next);
@@ -911,8 +902,8 @@ where
             CollectionSuffix::Job(_) => {
                 if let Some(field) = hash_key {
                     let job_key = key.tag();
-                    return self.jobs.inner.get(&job_key).and_then(|pair| {
-                        let job = &pair.value().value.lock();
+                    return self.jobs.get(&job_key).and_then(|value| {
+                        let job = &value.lock();
                         match field.to_lowercase().as_str() {
                             "stalled_counter" | "stalledcounter" => Some(job.stalled_counter),
                             "attempts_made" | "attemptsmade" => Some(job.attempts_made),

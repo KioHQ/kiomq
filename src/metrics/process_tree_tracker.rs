@@ -173,9 +173,7 @@ impl ProcessTreeTracker {
                     cpu_usage += process.cpu_usage();
                     rss_bytes += process.memory();
                     virt_bytes += process.virtual_memory();
-                    if !self.child_processes.contains(&process.pid()) {
-                        self.child_processes.insert(process.pid());
-                    }
+                    self.child_processes.insert(process.pid());
                 }
             }
         }

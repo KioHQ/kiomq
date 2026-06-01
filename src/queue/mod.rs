@@ -120,7 +120,7 @@ impl<
                 .insert(id, (opts, processing_queue.clone(), state.clone()));
         }
         if let Some(timers) = self.timers.load_full() {
-            P_METRICS_COLLECTOR.register_worker(id, state).await;
+            P_METRICS_COLLECTOR.register_worker(id, state);
             timers.register_worker_timers(opts).await;
         }
     }
