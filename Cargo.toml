@@ -40,7 +40,6 @@ thiserror = "2.0.12"
 arc-swap = "1.7.1"
 tokio-metrics = "0.4.7"
 hdrhistogram = "7.5.4"
-futures-intrusive = "0.5.0"
 heapster = { version = "0.5.0", features = ["serde", "fmt"] }
 tokio-stream = { version = "0.1.18", features = ["time", "sync"] }
 parking_lot = { version = "0.12.5", features = ["send_guard"] }
@@ -58,10 +57,6 @@ version = "0.15.0"
 default-features = false
 optional = true
 
-[dependencies.futures-delay-queue]
-version = "0.6.0"
-default-features = false
-features = ["tokio"]
 
 [dependencies.chrono]
 version = "0.4.41"
