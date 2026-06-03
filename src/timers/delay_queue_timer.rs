@@ -93,8 +93,14 @@ impl TimerSender {
     }
     pub async fn send(&self, timer: TimerType) {
         let (sender, ack) = oneshot::channel();
+        if self.timer_exists(&timer) {
+            return;
+        }
         let _ = self.inner.tx.send((self.queue_id, timer, sender)).await;
         ack.await.ok();
+    }
+    pub fn timer_exists(&self, timer: &TimerType) -> bool {
+        P_METRICS_COLLECTOR.timer_exists(timer, &self.queue_id)
     }
 }
 
@@ -157,12 +163,12 @@ impl<
         }
         self.sender.send(timer).await;
     }
-    //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
     pub(crate) fn clear(&self) {
         self.sender.inner.workers.clear();
     }
 
-    //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
     pub(crate) fn close(&self) {
         self.clear();
         let task_handle = self.task_handle.swap(None);
@@ -171,7 +177,6 @@ impl<
         }
         self.token.cancel();
     }
-    //#[cfg_attr(feature="tracing", instrument(parent = &self.resource_span))]
     fn timer_task(
         &self,
         rx: Receiver<TimerCommand>,
@@ -388,9 +393,9 @@ where
                 queue
                     .promote_delayed_jobs(date_time, EVICTION_INTERVAL_MS.cast_signed(), sender)
                     .await?;
+                next_timer.replace(key);
             }
             queue.store.purge_expired().await;
-            next_timer.replace(key);
         }
     }
     if let Some(timer) = next_timer {

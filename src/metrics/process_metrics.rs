@@ -79,7 +79,7 @@ pub struct ProcessMetricsCollector {
     pub inner: Arc<CollectorInner>,
     cancel_token: CancellationToken,
     /// Sender used by timers to register global timer requests
-    pub(crate) tx: mpsc::Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
+    pub tx: mpsc::Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
 }
 
 /// Internal shared collector state
@@ -180,6 +180,15 @@ impl ProcessMetricsCollector {
         workers.insert_expirable(worker_id, state, timeout);
     }
 
+    /// Returns if a timer exists for a specific queue
+    pub fn timer_exists(&self, timer: &TimerType, queue_id: &Uuid) -> bool {
+        let duration = timer.next_duration();
+        if let Some(existing_timer) = self.inner.global_timers.get(&duration) {
+            return existing_timer.value().queues.contains(&queue_id);
+        }
+
+        false
+    }
     /// Remove a previously-registered worker id.
     pub fn unregister_worker(&self, uuid: Uuid) {
         self.inner.workers.remove(&uuid);
@@ -191,7 +200,6 @@ impl ProcessMetricsCollector {
             entry.value().queues.remove(&queue_id);
         });
     }
-
     fn create_global_timer_task(
         &self,
         rx: tokio::sync::mpsc::Receiver<(Uuid, TimerType, oneshot::Sender<()>)>,
@@ -214,6 +222,17 @@ impl ProcessMetricsCollector {
                     () = token.cancelled() => {
                         break;
                     }
+                   Some((queue_id, timer,  ack)) = incoming_cmd_stream.next() => {
+                                let duration = timer.next_duration();
+                                let entry = inner.global_timers.get_or_insert_with(duration,TimerData::default);
+                                let value = entry.value();
+                                value.queues.insert(queue_id);
+                                let key = delayed_queue.insert((duration, timer), duration);
+                                value.key.swap(Some(key));
+                                ack.send(()).ok();
+
+                        }
+
                     Some(expired) = delayed_queue.next() => {
                         let (duration, timer) = expired.into_inner();
                         let cmd = TimerCommand::RespondToTimer(timer);
@@ -236,17 +255,6 @@ impl ProcessMetricsCollector {
 
                         }
                     }
-                   Some((queue_id, timer,  ack)) = incoming_cmd_stream.next() => {
-                                let duration = timer.next_duration();
-                                let entry = inner.global_timers.get_or_insert_with(duration,TimerData::default);
-                                let value = entry.value();
-                                value.queues.insert(queue_id);
-                                let key = delayed_queue.insert((duration, timer), duration);
-                                value.key.swap(Some(key));
-                                ack.send(()).ok();
-
-                        }
-
                     Some(recieved_metrics) = metrics_stream.next() => {
                         if let Some(metrics) = recieved_metrics {
                         let _= updating_metrics_sender.send(Some(metrics));
