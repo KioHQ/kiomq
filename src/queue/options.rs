@@ -493,10 +493,7 @@ impl QueueMetrics {
     /// Also requires that `last_id > 0` (i.e. at least one job was ever enqueued).
     #[must_use]
     pub fn is_idle(&self) -> bool {
-        !self.queue_has_work()
-            && !self.has_active_jobs()
-            && self.workers_idle()
-            && self.last_id.load() > 0
+        !self.queue_has_work() && !self.has_active_jobs() && self.workers_idle()
     }
     /// Resets all counters to zero (equivalent to a freshly created queue).
     pub fn clear(&self) {
