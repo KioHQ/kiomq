@@ -9,7 +9,7 @@ use crate::timers::TimerType;
 #[cfg(feature = "redis-store")]
 use crate::utils::to_redis_parsing_error;
 use crate::worker::WorkerState;
-use crate::{Dt, TimedMap};
+use crate::{Dt, QueueMetrics, TimedMap};
 use chrono::Utc;
 use compact_str::{CompactString, ToCompactString};
 use crossbeam::atomic::AtomicCell;
@@ -97,7 +97,7 @@ pub struct CollectorInner {
     /// Registry of active worker IDs mapped to their state [`WorkerState`].
     pub workers: TimedMap<Uuid, Arc<AtomicCell<WorkerState>>>,
     /// Registry of queues and their `TimerSender`.
-    pub queues: SkipMap<Uuid, Sender<TimerCommand>>,
+    pub queues: SkipMap<Uuid, (Sender<TimerCommand>, Arc<QueueMetrics>)>,
     /// all timer by Duration
     pub global_timers: SkipMap<Duration, TimerData>,
 }
@@ -163,12 +163,17 @@ pub static P_METRICS_COLLECTOR: LazyLock<ProcessMetricsCollector> = LazyLock::ne
 
 impl ProcessMetricsCollector {
     /// Register a queue so it can receive global timer events.
-    pub fn register_queue(&self, queue_id: Uuid, sender: Sender<TimerCommand>) {
+    pub fn register_queue(
+        &self,
+        queue_id: Uuid,
+        sender: Sender<TimerCommand>,
+        metrics: Arc<QueueMetrics>,
+    ) {
         let queues = &self.inner.queues;
         if queues.contains_key(&queue_id) {
             return;
         }
-        queues.insert(queue_id, sender);
+        queues.insert(queue_id, (sender, metrics));
     }
     /// Insert or refresh an active worker id.
     pub fn register_worker(&self, worker_id: Uuid, state: Arc<AtomicCell<WorkerState>>) {
@@ -214,11 +219,8 @@ impl ProcessMetricsCollector {
             let inner = processor.inner.clone();
             let mut delayed_queue: DelayQueue<(Duration, TimerType)> = DelayQueue::new();
             let updating_metrics_sender = &inner.updating_metrics_sender;
-
-            while !token.is_cancelled() {
+            loop{
                 tokio::select! {
-                    biased;
-
                     () = token.cancelled() => {
                         break;
                     }
@@ -249,7 +251,7 @@ impl ProcessMetricsCollector {
 
                             for queue_id in targets {
                                 if let Some(entry) = inner.queues.get(queue_id.value()) {
-                                    let _ = entry.value().send(cmd);
+                                    let _ = entry.value().0.send(cmd);
                                 }
                             }
 
@@ -261,6 +263,7 @@ impl ProcessMetricsCollector {
                         }
                     }
                 }
+                tokio::task::yield_now().await
             }
         }.boxed())
     }
