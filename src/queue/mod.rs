@@ -204,7 +204,7 @@ impl<
         let timers = Arc::default();
         let id = Uuid::new_v4();
         let (timer_sender, _rx) = broadcast::channel(10000);
-        P_METRICS_COLLECTOR.register_queue(id, timer_sender.clone());
+        P_METRICS_COLLECTOR.register_queue(id, timer_sender.clone(), current_metrics.clone());
         let queue = Self {
             timer_sender,
             id,

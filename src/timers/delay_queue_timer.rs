@@ -196,14 +196,13 @@ impl<
             let interval = crate::PROCESS_METRIC_UPDATE_INTERVAL;
             let mut incoming_timer_stream = BroadcastStream::new(rx);
             let mut process_metrics_stream = WatchStream::from_changes(process_metrics_rx);
-            while !token.is_cancelled() {
+            let throttle_duration = Duration::from_millis(500);
+            loop {
                 tokio::select! {
-                     biased;
-                     () = token.cancelled() => {
+                    () = token.cancelled() => {
                           break;
                      },
                     Some(Ok(timer_cmd)) = incoming_timer_stream.next() => {
-
                      match timer_cmd {
                          TimerCommand::RespondToTimer(timer) => {
                              process_timer(timer, &queue, &jobs, &workers, &sender).await?;
@@ -221,6 +220,9 @@ impl<
                          }
 
                      }
+                };
+                if queue.current_metrics.is_idle() {
+                    tokio::time::sleep(throttle_duration).await
                 }
             }
             #[cfg(feature = "tracing")]
@@ -384,7 +386,11 @@ where
                     P_METRICS_COLLECTOR.register_worker(worker_id, state.clone());
                 }
             }
-            P_METRICS_COLLECTOR.register_queue(queue.id, queue.timer_sender.clone());
+            P_METRICS_COLLECTOR.register_queue(
+                queue.id,
+                queue.timer_sender.clone(),
+                queue.current_metrics.clone(),
+            );
             next_timer.replace(key);
         }
         TimerType::TriggerJobPromotion => {
