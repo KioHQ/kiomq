@@ -918,16 +918,21 @@ pub fn pause_or_resume_workers(
     notifier: &Notify,
     metrics: &QueueMetrics,
     pause_workers: &AtomicCell<bool>,
-    is_inital: &AtomicCell<bool>,
+    is_initial: &AtomicCell<bool>,
 ) {
-    if metrics.is_idle() && !is_inital.load() && pause_workers.compare_exchange(false, true).is_ok()
-    {
-        #[cfg(feature = "tracing")]
-        info!("sent pause signal to workers ");
+    if is_initial.load() {
+        let _ = is_initial.compare_exchange(true, false);
+        return;
+    }
+
+    if metrics.is_idle() {
+        if pause_workers.compare_exchange(false, true).is_ok() {
+            #[cfg(feature = "tracing")]
+            info!("sent pause signal to workers");
+        }
     } else {
         resume_helper(metrics, pause_workers, notifier);
     }
-    let _ = is_inital.compare_exchange(true, false);
 }
 
 #[cfg(feature = "redis-store")]
