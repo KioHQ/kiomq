@@ -18,11 +18,10 @@ use crossbeam::atomic::AtomicCell;
 use crossbeam_skiplist::{SkipMap, SkipSet};
 use derive_more::Debug;
 use futures::future::BoxFuture;
-use futures::{FutureExt, StreamExt};
+use futures::FutureExt;
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::VecDeque;
 use std::time::Duration;
-use tokio_stream::wrappers::IntervalStream;
 use uuid::Uuid;
 type StoredMap = SkipMap<u64, u64>;
 type TimedJobMap<D, R, P> = TimedMap<u64, Job<D, R, P>>;
@@ -390,39 +389,9 @@ where
         self.pause_workers.store(Some(pause_workers));
         // set our stored_metrics to the queue's metrics;
         self.stored_metrics.store(Some(metrics.clone()));
-        let store = self.clone();
-        // refresh the queue metrics every n miliseconds
-        async move {
-            let metrics_update_interval = Duration::from_millis(150);
-            let mut interval_stream =
-                IntervalStream::new(tokio::time::interval(metrics_update_interval));
-            while let Some(_interval) = interval_stream.next().await {
-                let next_metrics = store.get_metrics().await?;
-                metrics.update(&next_metrics);
-                #[cfg(feature = "tracing")]
-                {
-                    use tracing::info;
-                    info!("updated queue_metrics after {:?}", metrics_update_interval)
-                }
-                if let (Some(stored), Some(notifier), Some(pause_workers)) = (
-                    store.stored_metrics.load().as_ref(),
-                    store.notifier.load().as_ref(),
-                    store.pause_workers.load().as_ref(),
-                ) {
-                    stored.update(&next_metrics);
-                    pause_or_resume_workers(
-                        notifier,
-                        &next_metrics,
-                        pause_workers,
-                        &store.is_inital,
-                    );
-                }
-
-                tokio::task::yield_now().await;
-            }
-            Ok::<(), KioError>(())
-        }
-        .boxed()
+        // For this store, this would have been to task to period metrics and do some clean but
+        // itsn't need, as metrics update on each publish_event call.
+        async move { Ok::<(), KioError>(()) }.boxed()
     }
 
     async fn add_bulk_only(
