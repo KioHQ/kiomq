@@ -252,9 +252,16 @@ impl<
     ) -> JoinHandle<KioResult<()>> {
         let timer_task = self.timer_task(rx, process_metrics_rx);
         let t_task = async {
-            tokio::select! {
-             result = stream_listener_task => result?,
-             result = timer_task => result?,
+            let (_listener_err, _timer_task_error) = tokio::join!(stream_listener_task, timer_task);
+            #[cfg(feature = "tracing")]
+            {
+                use tracing::error;
+                if let Err(err) = _listener_err {
+                    error!("listener_stream_err:{err:?}")
+                }
+                if let Err(err) = _timer_task_error {
+                    error!("timer_task_error:{err:?}")
+                }
             }
             Ok(())
         };
