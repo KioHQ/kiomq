@@ -1,6 +1,7 @@
 use crate::metrics::{
     TaskInfo, TimerCommand, WorkerMetrics, HISTOGRAM_MAX_NS, P_METRICS_COLLECTOR, WORKER_STATE_TTL,
 };
+use crate::utils::pause_or_resume_workers;
 use crate::worker::{ProcessingQueue, WorkerState, MIN_DELAY_MS_LIMIT as EVICTION_INTERVAL_MS};
 
 use crate::{KioResult, ProcessMetrics, WorkerMetaData};
@@ -43,7 +44,6 @@ pub enum TimerType {
     #[display("Collecting metrics in  ({_0:?})")]
     CollectMetrics(Duration),
     ReregisterWorker,
-    TriggerJobPromotion,
 }
 impl TimerType {
     #[must_use]
@@ -54,7 +54,6 @@ impl TimerType {
             | Self::CollectMetrics(duration) => *duration,
             Self::PromotedDelayed(_, _) => Duration::from_millis(EVICTION_INTERVAL_MS),
             Self::ReregisterWorker => Duration::from_millis(WORKER_STATE_TTL as u64),
-            Self::TriggerJobPromotion => Duration::from_millis(EVICTION_INTERVAL_MS / 3),
         }
     }
 }
@@ -198,6 +197,17 @@ impl<
             let mut process_metrics_stream = WatchStream::from_changes(process_metrics_rx);
             let throttle_duration = Duration::from_millis(500);
             loop {
+                let date_time = Utc::now();
+                if queue.current_metrics.has_delayed() && !queue.current_metrics.is_idle() {
+                    queue
+                        .promote_delayed_jobs(
+                            date_time,
+                            EVICTION_INTERVAL_MS.cast_signed(),
+                            &sender,
+                        )
+                        .await?;
+                }
+
                 tokio::select! {
                     () = token.cancelled() => {
                           break;
@@ -236,7 +246,6 @@ impl<
         let stalled_interval = Duration::from_millis(opts.stalled_interval);
         let extend_lock = Duration::from_millis(opts.lock_duration);
         let worker_metrics_interval = Duration::from_millis(opts.metrics_update_interval);
-        self.insert(TimerType::TriggerJobPromotion).await;
         self.insert(TimerType::ExtendLock(extend_lock)).await;
         self.insert(TimerType::StalledCheck(stalled_interval)).await;
         self.insert(TimerType::CollectMetrics(worker_metrics_interval))
@@ -329,6 +338,15 @@ where
             next_timer.replace(key);
         }
         TimerType::CollectMetrics(duration) => {
+            queue.store.purge_expired().await;
+            let is_initial = AtomicCell::new(false);
+            pause_or_resume_workers(
+                &queue.worker_notifier,
+                &queue.current_metrics,
+                &queue.pause_workers,
+                &is_initial,
+            );
+
             let mut tasks_per_worker: HashMap<Uuid, (Vec<TaskInfo>, WorkerOpts)> =
                 HashMap::with_capacity(workers.len());
             for entry in jobs.iter().filter(|entry| {
@@ -399,16 +417,6 @@ where
                 queue.current_metrics.clone(),
             );
             next_timer.replace(key);
-        }
-        TimerType::TriggerJobPromotion => {
-            let date_time = Utc::now();
-            if queue.current_metrics.has_delayed() {
-                queue
-                    .promote_delayed_jobs(date_time, EVICTION_INTERVAL_MS.cast_signed(), sender)
-                    .await?;
-                next_timer.replace(key);
-            }
-            queue.store.purge_expired().await;
         }
     }
     if let Some(timer) = next_timer {
