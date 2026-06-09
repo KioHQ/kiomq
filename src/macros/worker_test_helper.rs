@@ -140,13 +140,17 @@ macro_rules! worker_store_suite {
                 let completed: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(count as usize));
                 let jobs = completed.clone();
 
-                queue.on(
-                    kiomq::JobState::Active,
+                queue.on_all_events(
                     move |state: kiomq::EventParameters<D, R>| {
                         let completed = jobs.clone();
                         async move {
-                            if let EventParameters::Active { job_id, .. } = state {
+                            match state {
+                            EventParameters::Active { job_id, .. } | EventParameters::Failed { job_id, .. } => {
                                 let _ = completed.push(job_id);
+
+                            },
+                            _=> {}
+
                             }
                         }
                     },
@@ -163,7 +167,7 @@ macro_rules! worker_store_suite {
                 assert!(worker.is_running());
 
                 while completed.len() != count as usize {
-                    tokio::task::yield_now().await;
+                    tokio::time::sleep(Duration::from_millis(1)).await;
                 }
                 worker.close();
                 assert!(!worker.is_running());
