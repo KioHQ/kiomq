@@ -279,6 +279,8 @@ impl<
                 tracing::info_span!(parent:None, "",worker_type, ?location)
             }
         };
+
+        queue.add_worker(id, processing.clone(), state.clone(), opts);
         let main_task = Arc::default();
         let worker = Self {
             state,

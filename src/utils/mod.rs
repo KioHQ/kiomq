@@ -433,9 +433,7 @@ where
         opts.concurrency
     );
     let semaphore = Arc::new(Semaphore::new(opts.concurrency));
-    queue
-        .add_worker(id, processing.clone(), worker_state.clone(), opts)
-        .await;
+    queue.register_worker_timers(opts).await;
     while !cancellation_token.is_cancelled() {
         while !cancellation_token.is_cancelled()
             && semaphore.available_permits() > 0
