@@ -434,104 +434,111 @@ where
     );
     let semaphore = Arc::new(Semaphore::new(opts.concurrency));
     queue.register_worker_timers(opts).await;
+
     while !cancellation_token.is_cancelled() {
-        while !cancellation_token.is_cancelled()
-            && semaphore.available_permits() > 0
-            && processing.len() < opts.concurrency
-        {
-            if let Ok(permit) = semaphore.clone().acquire_owned().await {
-                let token_prefix = active_job_count.load();
-                let next_id = Uuid::new_v4();
-                let token = JobToken(id, next_id, token_prefix as u64);
-                let worker_id = id;
-                let block_delay = block_until.load();
-                let next_job_result = get_next_job(
-                    queue.as_ref(),
-                    token,
-                    block_delay,
-                    cancellation_token.is_cancelled(),
-                    &opts,
-                    None,
-                );
+        if queue.pause_workers.load() {
+            #[cfg(feature = "tracing")]
+            info!(
+                "pausing Worker ({id}) with  {delayed} delayed_jobs and {processing} running_jobs",
+                delayed = queue.current_metrics.delayed.load(),
+                processing = processing.len(),
+            );
+            worker_state.store(WorkerState::Idle);
+            if cancellation_token
+                .run_until_cancelled(paused_here.notified())
+                .await
+                .is_none()
+            {
+                #[cfg(feature = "tracing")]
+                info!("... breaking loop to close paused worker");
+                break;
+            }
+            worker_state.store(WorkerState::Active);
+            #[cfg(feature = "tracing")]
+            {
+                info!("resumed worker");
+            }
+        }
+        if semaphore.available_permits() == 0 || processing.len() >= opts.concurrency {
+            tokio::task::yield_now().await;
+            continue;
+        }
 
-                if let Ok(Some(job)) = next_job_result.await {
-                    if let Some(id) = job.id {
-                        let monitor = TaskMonitor::new();
+        let permit = match semaphore.clone().acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => break, // break here if  the semaphore is closed or dropped
+        };
 
-                        let state = job.state;
-                        let callback = processor.clone();
-                        queue
-                            .update_processing_count(true, worker_id, id, state)
-                            .await?;
-                        let process_fn = process_job(
-                            job.clone(),
+        let token_prefix = active_job_count.load();
+        let next_id = Uuid::new_v4();
+        let token = JobToken(id, next_id, token_prefix as u64);
+        let worker_id = id;
+        let block_delay = block_until.load();
+
+        let next_job_result = get_next_job(
+            queue.as_ref(),
+            token,
+            block_delay,
+            cancellation_token.is_cancelled(),
+            &opts,
+            None,
+        )
+        .await;
+
+        match next_job_result {
+            Ok(Some(job)) => {
+                if let Some(id) = job.id {
+                    let monitor = TaskMonitor::new();
+                    let state = job.state;
+                    let callback = processor.clone();
+
+                    queue
+                        .update_processing_count(true, worker_id, id, state)
+                        .await?;
+
+                    let process_fn = process_job(
+                        job.clone(),
+                        token,
+                        jobs_in_progress.clone(),
+                        queue.clone(),
+                        callback,
+                        permit,
+                        worker_id,
+                        active_job_count.clone(),
+                    );
+                    let poll_histogram = Mutex::new(
+                        Histogram::new_with_max(HISTOGRAM_MAX_NS, HISTOGRAM_SIGFIG).unwrap(),
+                    );
+
+                    jobs_in_progress.insert(
+                        id,
+                        (
+                            job,
                             token,
-                            jobs_in_progress.clone(),
-                            queue.clone(),
-                            callback,
-                            permit,
-                            worker_id,
-                            active_job_count.clone(),
-                        );
-                        let poll_histogram = Mutex::new(
-                            Histogram::new_with_max(HISTOGRAM_MAX_NS, HISTOGRAM_SIGFIG).unwrap(),
-                        );
+                            TaskHandle::default(),
+                            monitor.clone(),
+                            poll_histogram,
+                            opts,
+                        ),
+                    );
+                    let task = processing
+                        .spawn(monitor.instrument(async_backtrace::frame!(process_fn.boxed())));
 
-                        jobs_in_progress.insert(
-                            id,
-                            (
-                                job,
-                                token,
-                                TaskHandle::default(),
-                                monitor.clone(),
-                                poll_histogram,
-                                opts,
-                            ),
-                        );
-                        let task = processing
-                            .spawn(monitor.instrument(async_backtrace::frame!(process_fn.boxed())));
-                        if let Some(re) = jobs_in_progress.get(&id) {
-                            let (_, _, stored_handle, _, _, _) = re.value();
-
-                            stored_handle.swap(Some(task.into()));
-                        }
+                    if let Some(re) = jobs_in_progress.get(&id) {
+                        let (_, _, stored_handle, _, _, _) = re.value();
+                        stored_handle.swap(Some(task.into()));
                     }
                 }
                 tokio::task::yield_now().await;
             }
-
-            if queue.pause_workers.load() && processing.is_empty() {
-                #[cfg(feature = "tracing")]
-                info!(
-                    "pausing Worker ({id}) with  {delayed} delayed_jobs and {processing} running_jobs",
-                    delayed = queue.current_metrics.delayed.load(),
-                    processing = processing.len(),
-                );
-                worker_state.store(WorkerState::Idle);
-                if cancellation_token
-                    .run_until_cancelled(paused_here.notified())
-                    .await
-                    .is_none()
-                {
-                    #[cfg(feature = "tracing")]
-                    info!("... breaking loop to close paused worker");
-                    break;
-                }
-                worker_state.store(WorkerState::Active);
-                #[cfg(feature = "tracing")]
-                {
-                    info!("resumed worker");
-                }
+            Ok(None) | Err(_) => {
+                drop(permit);
+                // BACKOFF: Prevents the loop from immediately spinning at 100% CPU when the queue is empty.
+                tokio::time::sleep(tokio::time::Duration::from_millis(MIN_DELAY_MS_LIMIT)).await;
             }
-            // yield, so other tasks run
-            tokio::task::yield_now().await;
         }
-
-        tokio::task::yield_now().await;
     }
-
     if cancellation_token.is_cancelled() {
-        // wait for all running jobs to finish
         processing.wait().await;
         worker_state.store(WorkerState::Closed);
     }
