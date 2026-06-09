@@ -340,9 +340,11 @@ where
         TimerType::CollectMetrics(duration) => {
             queue.store.purge_expired().await;
             let is_initial = AtomicCell::new(false);
+            let updated_metrics = queue.get_metrics().await?;
+            queue.current_metrics.update(&updated_metrics);
             pause_or_resume_workers(
                 &queue.worker_notifier,
-                &queue.current_metrics,
+                &updated_metrics,
                 &queue.pause_workers,
                 &is_initial,
             );
