@@ -105,7 +105,7 @@ impl<
     > Queue<D, R, P, S>
 {
     /// add a worker or refreshes its usual metadata in the queue
-    pub(crate) async fn add_worker(
+    pub(crate) fn add_worker(
         &self,
         id: Uuid,
         processing_queue: ProcessingQueue,
@@ -116,8 +116,12 @@ impl<
             self.workers
                 .insert(id, (opts, processing_queue.clone(), state.clone()));
         }
+        P_METRICS_COLLECTOR.register_worker(id, state);
+    }
+
+    /// register a worker's timers to the global timer coordinator.
+    pub(crate) async fn register_worker_timers(&self, opts: WorkerOpts) {
         if let Some(timers) = self.timers.load_full() {
-            P_METRICS_COLLECTOR.register_worker(id, state);
             timers.register_worker_timers(opts).await;
         }
     }
