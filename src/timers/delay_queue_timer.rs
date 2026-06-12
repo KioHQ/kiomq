@@ -4,6 +4,7 @@ use crate::metrics::{
 use crate::utils::pause_or_resume_workers;
 use crate::worker::{ProcessingQueue, WorkerState, MIN_DELAY_MS_LIMIT as EVICTION_INTERVAL_MS};
 
+use crate::Dt;
 use crate::{KioResult, ProcessMetrics, WorkerMetaData};
 use arc_swap::ArcSwapOption;
 use chrono::Utc;
@@ -291,7 +292,15 @@ async fn process_timer<D, R, P, S>(
     key: TimerType,
     queue: &Queue<D, R, P, S>,
     jobs: &JobMap<D, R, P>,
-    workers: &SkipMap<Uuid, (WorkerOpts, ProcessingQueue, Arc<AtomicCell<WorkerState>>)>,
+    workers: &SkipMap<
+        Uuid,
+        (
+            Arc<AtomicCell<WorkerState>>,
+            ProcessingQueue,
+            WorkerOpts,
+            Dt,
+        ),
+    >,
     sender: &TimerSender,
 ) -> KioResult<()>
 where
@@ -308,9 +317,9 @@ where
             // run_once for all workers
             if let Some(entry) = workers
                 .iter()
-                .find(|entry| Duration::from_millis(entry.value().0.stalled_interval) == duration)
+                .find(|entry| Duration::from_millis(entry.value().2.stalled_interval) == duration)
             {
-                let (opts, _, _) = entry.value();
+                let (_, _, opts, _) = entry.value();
                 let (_failed, _stalled) = queue.make_stalled_jobs_wait(opts).await?;
             }
             next_timer.replace(key);
@@ -319,7 +328,7 @@ where
             let workers: HashSet<Uuid> = workers
                 .iter()
                 .filter_map(|entry| {
-                    if Duration::from_millis(entry.value().0.lock_duration) == duration {
+                    if Duration::from_millis(entry.value().2.lock_duration) == duration {
                         return Some(*entry.key());
                     }
                     None
@@ -408,9 +417,9 @@ where
         TimerType::ReregisterWorker => {
             for entry in workers {
                 let worker_id = *entry.key();
-                let (_, _, state) = entry.value();
+                let (state, _, _, _) = entry.value();
                 if matches!(state.load(), WorkerState::Active | WorkerState::Idle) {
-                    P_METRICS_COLLECTOR.register_worker(worker_id, state.clone());
+                    queue.add_worker_heartbeat(&worker_id);
                 }
             }
             P_METRICS_COLLECTOR.register_queue(

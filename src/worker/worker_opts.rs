@@ -1,4 +1,5 @@
 use derive_more::Debug;
+use serde::{Deserialize, Serialize};
 /// Minimum acceptable delay in milliseconds
 pub const MIN_DELAY_MS_LIMIT: u64 = 50;
 /// Configuration options for a [`Worker`](crate::Worker).
@@ -17,7 +18,7 @@ pub const MIN_DELAY_MS_LIMIT: u64 = 50;
 ///     ..Default::default()
 /// };
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct WorkerOpts {
     /// Interval between stalled-job checks in milliseconds. Default is `30000`.
     pub stalled_interval: u64,
