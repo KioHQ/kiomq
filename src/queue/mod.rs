@@ -36,8 +36,17 @@ pub use options::{CollectionSuffix, QueueEventMode, QueueMetrics, QueueOpts, Ret
 pub use options::{Counter, JobField, ProcessedResult};
 /// A type alias representing a map of worker_ids, options and useful metadata like worker_state
 /// and ie.
-pub type WorkerMetaData =
-    Arc<SkipMap<Uuid, (WorkerOpts, ProcessingQueue, Arc<AtomicCell<WorkerState>>)>>;
+pub type WorkerMetaData = Arc<
+    SkipMap<
+        Uuid,
+        (
+            Arc<AtomicCell<WorkerState>>,
+            ProcessingQueue,
+            WorkerOpts,
+            Dt,
+        ),
+    >,
+>;
 
 /// A task queue that holds and manages jobs.
 ///
@@ -104,19 +113,34 @@ impl<
         P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
     > Queue<D, R, P, S>
 {
-    /// add a worker or refreshes its usual metadata in the queue
+    /// add a worker and  its usual metadata in the queue
     pub(crate) fn add_worker(
         &self,
         id: Uuid,
         processing_queue: ProcessingQueue,
         state: Arc<AtomicCell<WorkerState>>,
         opts: WorkerOpts,
+        created_at: Dt,
     ) {
         if !self.workers.contains_key(&id) {
-            self.workers
-                .insert(id, (opts, processing_queue.clone(), state.clone()));
+            self.workers.insert(
+                id,
+                (state.clone(), processing_queue.clone(), opts, created_at),
+            );
         }
-        P_METRICS_COLLECTOR.register_worker(id, state);
+        P_METRICS_COLLECTOR.register_worker(id, (state, processing_queue, opts, created_at));
+    }
+
+    /// re-registers the worker to global worker Registry.
+    pub(crate) fn add_worker_heartbeat(&self, worker_id: &Uuid) {
+        if let Some(entry) = self.workers.get(worker_id) {
+            let (state, processing_queue, opts, created_at) = entry.value();
+
+            P_METRICS_COLLECTOR.register_worker(
+                *worker_id,
+                (state.clone(), processing_queue.clone(), *opts, *created_at),
+            );
+        }
     }
 
     /// register a worker's timers to the global timer coordinator.

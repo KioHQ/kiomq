@@ -4,12 +4,14 @@ use crate::{
 };
 
 use crate::utils::main_loop;
+use chrono::Utc;
 use derive_more::Debug;
 use futures::future::{Future, FutureExt};
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 mod worker_opts;
+use crate::Dt;
 
 use crate::error::WorkerError;
 use crate::events::EventParameters;
@@ -105,6 +107,8 @@ pub use worker_opts::MIN_DELAY_MS_LIMIT;
 /// ```
 #[derive(Clone, Debug)]
 pub struct Worker<D, R, P, S> {
+    /// The creation datetime of this worker
+    pub created_at: Dt,
     /// Unique identifier for this worker instance.
     pub id: Uuid,
     #[cfg(feature = "tracing")]
@@ -280,9 +284,11 @@ impl<
             }
         };
 
-        queue.add_worker(id, processing.clone(), state.clone(), opts);
+        let created_at = Utc::now();
+        queue.add_worker(id, processing.clone(), state.clone(), opts, created_at);
         let main_task = Arc::default();
         let worker = Self {
+            created_at,
             state,
             main_task,
             #[cfg(feature = "tracing")]

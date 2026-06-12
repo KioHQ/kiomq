@@ -8,8 +8,8 @@ use super::process_tree_tracker::{ProcessTreeStats, ProcessTreeTracker};
 use crate::timers::TimerType;
 #[cfg(feature = "redis-store")]
 use crate::utils::to_redis_parsing_error;
-use crate::worker::WorkerState;
-use crate::{Dt, QueueMetrics, TimedMap};
+use crate::worker::{ProcessingQueue, WorkerState};
+use crate::{Dt, QueueMetrics, TimedMap, WorkerOpts};
 use chrono::Utc;
 use compact_str::{CompactString, ToCompactString};
 use crossbeam::atomic::AtomicCell;
@@ -95,7 +95,15 @@ pub struct CollectorInner {
     /// Timestamp of the last successful metric ffs refresh.
     pub last_updated: AtomicCell<Dt>,
     /// Registry of active worker IDs mapped to their state [`WorkerState`].
-    pub workers: TimedMap<Uuid, Arc<AtomicCell<WorkerState>>>,
+    pub workers: TimedMap<
+        Uuid,
+        (
+            Arc<AtomicCell<WorkerState>>,
+            ProcessingQueue,
+            WorkerOpts,
+            Dt,
+        ),
+    >,
     /// Registry of queues and their `TimerSender`.
     pub queues: SkipMap<Uuid, (Sender<TimerCommand>, Arc<QueueMetrics>)>,
     /// all timer by Duration
@@ -176,7 +184,16 @@ impl ProcessMetricsCollector {
         queues.insert(queue_id, (sender, metrics));
     }
     /// Insert or refresh an active worker id.
-    pub fn register_worker(&self, worker_id: Uuid, state: Arc<AtomicCell<WorkerState>>) {
+    pub fn register_worker(
+        &self,
+        worker_id: Uuid,
+        state: (
+            Arc<AtomicCell<WorkerState>>,
+            ProcessingQueue,
+            WorkerOpts,
+            Dt,
+        ),
+    ) {
         let workers = &self.inner.workers;
         if workers.contains_key(&worker_id) {
             return;
@@ -305,9 +322,16 @@ impl ProcessMetricsCollector {
                          let stats = process_monitor.sample();
                         drop(process_monitor);
                         inner.workers.purge_expired();
-                        let workers: Vec<_> = inner.workers
+                        let workers: Vec<WorkerMeta> = inner.workers
                             .iter()
-                            .map(|e| (*e.key(), e.value().get().lock().load()))
+                            .map(|entry| {
+                                let worker_id =  *entry.key();
+                                let data = entry.value().get();
+                                let data = data.lock();
+                                WorkerMeta::new(worker_id, data.3, data.0.load(), data.2, data.1.len())
+
+                            }  )
+
                             .collect();
                         let  metrics = ProcessMetrics::new(hostname.to_compact_string(), pid, rt_metrics,stats, workers);
 
@@ -340,9 +364,44 @@ pub struct ProcessMetrics {
     /// Tokio runtime metrics captured for the runtime that produced the snapshot.
     pub rt_metrics: RawRuntimeMetrics,
     /// Known active workers and their state at the time the snapshot was taken.
-    pub workers: Vec<(Uuid, WorkerState)>,
+    pub workers: Vec<WorkerMeta>,
     /// Timestamp of the last successful metric ffs refresh.
     pub last_updated: Dt,
+}
+/// Sample metadata from  a worker
+#[derive(Clone, Debug, Serialize, Deserialize, Copy)]
+pub struct WorkerMeta {
+    /// The id of the worker
+    pub worker_id: Uuid,
+    /// The date and time this worker was created and registered.
+    pub started_at: Dt,
+    /// The current state of the worker. check [`WorkerState`]
+    pub state: WorkerState,
+    /// (worker options)[`crate::worker::WorkerOpts`].
+    pub worker_opts: WorkerOpts,
+    /// The creation datetime of [`WorkerMeta`].
+    pub last_updated: Dt,
+    /// The current number of jobs the worker is processing.
+    pub processing: usize,
+}
+impl WorkerMeta {
+    /// Construct a [`WorkerMeta`] snapshot.
+    pub fn new(
+        worker_id: Uuid,
+        started_at: Dt,
+        state: WorkerState,
+        worker_opts: WorkerOpts,
+        processing: usize,
+    ) -> Self {
+        Self {
+            worker_id,
+            started_at,
+            state,
+            worker_opts,
+            processing,
+            last_updated: Utc::now(),
+        }
+    }
 }
 
 impl ProcessMetrics {
@@ -353,7 +412,7 @@ impl ProcessMetrics {
         pid: u32,
         rt_metrics: RuntimeMetrics,
         stats: ProcessTreeStats,
-        workers: Vec<(Uuid, WorkerState)>,
+        workers: Vec<WorkerMeta>,
     ) -> Self {
         let memory_usage = stats.rss_bytes;
         let memory_stats = GLOBAL.stats();
