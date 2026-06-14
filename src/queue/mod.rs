@@ -763,27 +763,11 @@ impl<
         &self,
         job_id: u64,
         ts: i64,
-        token: JobToken,
+        _token: JobToken,
         move_to_state: JobState,
         processed: ProcessedResult<R>,
         backtrace: Option<Trace>,
     ) -> KioResult<Job<D, R, P>> {
-        let job_exists: bool = self.store.job_exists(job_id).await;
-        if !job_exists {
-            return Err(JobError::JobNotFound.into());
-        }
-        let lock_token: Option<JobToken> = self.store.get_token(job_id).await;
-        if let Some(local) = lock_token {
-            if local != token {
-                return Err(JobError::JobLockMismatch.into());
-            }
-            self.store.remove(CollectionSuffix::Lock(job_id)).await?;
-            self.store
-                .remove_item(CollectionSuffix::Stalled, job_id)
-                .await?;
-        } else if backtrace.is_some() {
-            return Err(JobError::JobLockNotExist.into());
-        }
         let prev_state = self.store.get_state(job_id).await.unwrap_or_default();
         // Todo: remove any dependencies too here ;
         self.move_job_to_state(
