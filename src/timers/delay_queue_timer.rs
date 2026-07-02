@@ -13,6 +13,7 @@ use crossbeam_skiplist::SkipMap;
 use derive_more::{Debug, Display};
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt};
+use num_traits::AsPrimitive;
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -48,6 +49,7 @@ pub enum TimerType {
 }
 impl TimerType {
     #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub const fn next_duration(&self) -> Duration {
         match self {
             Self::StalledCheck(duration)
@@ -127,6 +129,7 @@ impl<
         S: Clone + Store<D, R, P> + Send + 'static + Sync,
     > DelayQueueTimer<D, R, P, S>
 {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         jobs: JobMap<D, R, P>,
         queue: Queue<D, R, P, S>,
@@ -226,14 +229,14 @@ impl<
                            info!("Collecting Process Metrics");
                              queue
                                  .store
-                                 .store_process_metrics(metrics, interval as u64)
+                                 .store_process_metrics(metrics, interval.as_())
                                  .await?;
                          }
 
                      }
                 };
                 if queue.current_metrics.is_idle() {
-                    tokio::time::sleep(throttle_duration).await
+                    tokio::time::sleep(throttle_duration).await;
                 }
             }
             #[cfg(feature = "tracing")]
@@ -262,15 +265,16 @@ impl<
     ) -> JoinHandle<KioResult<()>> {
         let timer_task = self.timer_task(rx, process_metrics_rx);
         let t_task = async {
-            let (_listener_err, _timer_task_error) = tokio::join!(stream_listener_task, timer_task);
+            #[allow(unused_variables)]
+            let (listener_err, timer_task_error) = tokio::join!(stream_listener_task, timer_task);
             #[cfg(feature = "tracing")]
             {
                 use tracing::error;
-                if let Err(err) = _listener_err {
-                    error!("listener_stream_err:{err:?}")
+                if let Err(err) = listener_err {
+                    error!("listener_stream_err:{err:?}");
                 }
-                if let Err(err) = _timer_task_error {
-                    error!("timer_task_error:{err:?}")
+                if let Err(err) = timer_task_error {
+                    error!("timer_task_error:{err:?}");
                 }
             }
             Ok(())
@@ -287,20 +291,23 @@ impl<
         timers_and_clean_up_task
     }
 }
+type WorkerMap = SkipMap<
+    Uuid,
+    (
+        Arc<AtomicCell<WorkerState>>,
+        ProcessingQueue,
+        WorkerOpts,
+        Dt,
+    ),
+>;
+
 //#[cfg_attr(feature="tracing", instrument(skip(queue, jobs,sender)))]
+#[allow(clippy::too_many_lines)]
 async fn process_timer<D, R, P, S>(
     key: TimerType,
     queue: &Queue<D, R, P, S>,
     jobs: &JobMap<D, R, P>,
-    workers: &SkipMap<
-        Uuid,
-        (
-            Arc<AtomicCell<WorkerState>>,
-            ProcessingQueue,
-            WorkerOpts,
-            Dt,
-        ),
-    >,
+    #[allow(clippy::type_complexity)] workers: &WorkerMap,
     sender: &TimerSender,
 ) -> KioResult<()>
 where

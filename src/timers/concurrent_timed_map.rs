@@ -39,14 +39,13 @@ impl<V> ExpiryValue<V> {
     }
 }
 #[derive(Debug)]
-/// A concurrent map that can  
+/// A concurrent map that can
 /// evict entries after a configurable TTL.
 ///
 /// Entries are inserted either with no expiry ([`insert_constant`](TimedMap::insert_constant))
 /// or with a TTL ([`insert_expirable`](TimedMap::insert_expirable)).
 /// Eviction is lazy: expired keys are removed in batch when either [`purge_expired`](TimedMap::purge_expired)
 ///  or [`iter`](TimedMap::iter) is called.
-
 pub struct TimedMap<K: Ord + 'static, V> {
     inner: SkipMap<K, ExpiryValue<V>>,
     disable_expiration: AtomicCell<bool>,

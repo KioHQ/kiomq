@@ -1527,6 +1527,7 @@ dependencies = [
  "hdrhistogram",
  "heapster",
  "hostname",
+ "num-traits",
  "num_cpus",
  "parking_lot",
  "procfs",

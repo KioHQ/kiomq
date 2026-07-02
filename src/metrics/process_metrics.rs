@@ -17,6 +17,7 @@ use crossbeam_skiplist::{SkipMap, SkipSet};
 use derive_more::Debug;
 use futures::{FutureExt, Stream, StreamExt};
 use heapster::{Heapster, Stats};
+use num_traits::AsPrimitive;
 use parking_lot::RwLock;
 #[cfg(feature = "redis-store")]
 use redis::{self, FromRedisValue, ParsingError};
@@ -82,6 +83,16 @@ pub struct ProcessMetricsCollector {
     pub tx: mpsc::Sender<(Uuid, TimerType, oneshot::Sender<()>)>,
 }
 
+type WorkerRegistry = TimedMap<
+    Uuid,
+    (
+        Arc<AtomicCell<WorkerState>>,
+        ProcessingQueue,
+        WorkerOpts,
+        Dt,
+    ),
+>;
+
 /// Internal shared collector state
 pub struct CollectorInner {
     /// a [`tokio::sync::watch::Sender`] Sender  for updating [`ProcessMetrics`]
@@ -95,15 +106,7 @@ pub struct CollectorInner {
     /// Timestamp of the last successful metric ffs refresh.
     pub last_updated: AtomicCell<Dt>,
     /// Registry of active worker IDs mapped to their state [`WorkerState`].
-    pub workers: TimedMap<
-        Uuid,
-        (
-            Arc<AtomicCell<WorkerState>>,
-            ProcessingQueue,
-            WorkerOpts,
-            Dt,
-        ),
-    >,
+    pub workers: WorkerRegistry,
     /// Registry of queues and their `TimerSender`.
     pub queues: SkipMap<Uuid, (Sender<TimerCommand>, Arc<QueueMetrics>)>,
     /// all timer by Duration
@@ -113,11 +116,11 @@ pub struct CollectorInner {
 /// Metadata for a global timer entry.
 ///
 /// Tracks which queues are subscribed to a particular timer duration and
-/// stores the DelayQueue key for the scheduled entry.
+/// stores the `DelayQueue` key for the scheduled entry.
 pub struct TimerData {
     /// Queues subscribed to this timer duration.
     pub queues: SkipSet<Uuid>,
-    /// DelayQueue key for the scheduled timer entry.
+    /// `DelayQueue` key for the scheduled timer entry.
     pub key: AtomicCell<Option<Key>>,
 }
 #[derive(Debug, Clone, Copy)]
@@ -198,7 +201,7 @@ impl ProcessMetricsCollector {
         if workers.contains_key(&worker_id) {
             return;
         }
-        let timeout = Duration::from_secs((WORKER_STATE_TTL) as u64);
+        let timeout = Duration::from_secs(WORKER_STATE_TTL.as_());
         workers.insert_expirable(worker_id, state, timeout);
     }
 
@@ -206,7 +209,7 @@ impl ProcessMetricsCollector {
     pub fn timer_exists(&self, timer: &TimerType, queue_id: &Uuid) -> bool {
         let duration = timer.next_duration();
         if let Some(existing_timer) = self.inner.global_timers.get(&duration) {
-            return existing_timer.value().queues.contains(&queue_id);
+            return existing_timer.value().queues.contains(queue_id);
         }
 
         false
@@ -228,7 +231,7 @@ impl ProcessMetricsCollector {
     ) -> tokio::task::JoinHandle<()> {
         let processor = self.clone();
         let token = processor.cancel_token.clone();
-        let interval = Duration::from_millis(PROCESS_METRIC_UPDATE_INTERVAL as u64);
+        let interval = Duration::from_millis(PROCESS_METRIC_UPDATE_INTERVAL.as_());
 
         tokio::spawn(async move {
             let  mut metrics_stream = processor.create_process_metrics_stream(interval, token.clone()).boxed();
@@ -280,7 +283,7 @@ impl ProcessMetricsCollector {
                         }
                     }
                 }
-                tokio::task::yield_now().await
+                tokio::task::yield_now().await;
             }
         }.boxed())
     }
@@ -292,13 +295,13 @@ impl ProcessMetricsCollector {
         duration: Duration,
         cancel_token: CancellationToken,
     ) -> impl Stream<Item = Option<ProcessMetrics>> + use<'_> {
-        let intervals = self.inner.rt_monitor.intervals();
-        let inner = self.inner.clone();
         #[allow(unused)]
         enum State<S> {
             Active(S),
             Done,
         }
+        let intervals = self.inner.rt_monitor.intervals();
+        let inner = self.inner.clone();
 
         futures::stream::unfold(State::Active(intervals), move |state| {
             let cancel = cancel_token.clone();
@@ -386,6 +389,7 @@ pub struct WorkerMeta {
 }
 impl WorkerMeta {
     /// Construct a [`WorkerMeta`] snapshot.
+    #[must_use]
     pub fn new(
         worker_id: Uuid,
         started_at: Dt,

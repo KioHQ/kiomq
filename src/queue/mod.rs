@@ -34,7 +34,7 @@ use arc_swap::ArcSwapOption;
 use derive_more::Debug;
 pub use options::{CollectionSuffix, QueueEventMode, QueueMetrics, QueueOpts, RetryOptions};
 pub use options::{Counter, JobField, ProcessedResult};
-/// A type alias representing a map of worker_ids, options and useful metadata like worker_state
+/// A type alias representing a map of `worker_ids`, options and useful metadata like `worker_state`
 /// and ie.
 pub type WorkerMetaData = Arc<
     SkipMap<
@@ -231,7 +231,7 @@ impl<
         let stream_listener = task;
         let timers = Arc::default();
         let id = Uuid::new_v4();
-        let (timer_sender, _rx) = broadcast::channel(10000);
+        let (timer_sender, rx) = broadcast::channel(10000);
         P_METRICS_COLLECTOR.register_queue(id, timer_sender.clone(), current_metrics.clone());
         let queue = Self {
             timer_sender,
@@ -258,7 +258,7 @@ impl<
             queue.clone(),
             queue.workers.clone(),
             P_METRICS_COLLECTOR.tx.clone(),
-            _rx,
+            rx,
             P_METRICS_COLLECTOR.inner.updating_metrics_receiver.clone(),
             queue.cancel_token.clone(),
             stream_listener,
@@ -757,7 +757,7 @@ impl<
         Ok(job)
     }
 
-    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
+    #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self, _token)))]
     #[allow(clippy::future_not_send)]
     pub(crate) async fn move_job_to_finished_or_failed(
         &self,
