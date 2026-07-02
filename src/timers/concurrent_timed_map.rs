@@ -96,9 +96,8 @@ impl<K: Ord + Clone + Send + 'static + Sync, V: Send + 'static + Sync> TimedMap<
         };
         self.inner.insert(key, entry);
     }
-    ///  Returns a [`MutexGuard`] with the value if available and not expired.
-    ///
-    ///  Also evicts the entry if it's expired and returns `None`.
+    /// Returns `Some(Arc<Mutex<V>>)` if the key exists and has not expired,
+    /// or `None` if it is absent or expired (in which case the entry is evicted).
     pub fn get(&self, key: &K) -> Option<Arc<Mutex<V>>> {
         let found = self.inner.get(key)?;
         if found.value().is_expired() {

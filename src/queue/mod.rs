@@ -1172,7 +1172,7 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     }
     /// Retrieves per-process metrics stored in the backing store.
     ///
-    /// Returns a map from worker [`Pid`] to [`ProcessMetrics`].
+    /// Returns a map from process ID (`u32`) to [`ProcessMetrics`].
     ///
     /// # Errors
     ///
