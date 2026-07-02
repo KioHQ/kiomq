@@ -18,6 +18,7 @@ use crossbeam::atomic::AtomicCell;
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
+use num_traits::AsPrimitive;
 use parking_lot::Mutex;
 #[cfg(feature = "redis-store")]
 use redis::aio::ConnectionLike;
@@ -464,14 +465,13 @@ where
             continue;
         }
 
-        let permit = match semaphore.clone().acquire_owned().await {
-            Ok(p) => p,
-            Err(_) => break, // break here if  the semaphore is closed or dropped
+        let Ok(permit) = semaphore.clone().acquire_owned().await else {
+            break; // semaphore is closed or dropped
         };
 
         let token_prefix = active_job_count.load();
         let next_id = Uuid::new_v4();
-        let token = JobToken(id, next_id, token_prefix as u64);
+        let token = JobToken(id, next_id, token_prefix.as_());
         let worker_id = id;
         let block_delay = block_until.load();
 
@@ -485,57 +485,54 @@ where
         )
         .await;
 
-        match next_job_result {
-            Ok(Some(job)) => {
-                if let Some(id) = job.id {
-                    let monitor = TaskMonitor::new();
-                    let state = job.state;
-                    let callback = processor.clone();
+        if let Ok(Some(job)) = next_job_result {
+            if let Some(id) = job.id {
+                let monitor = TaskMonitor::new();
+                let state = job.state;
+                let callback = processor.clone();
 
-                    queue
-                        .update_processing_count(true, worker_id, id, state)
-                        .await?;
+                queue
+                    .update_processing_count(true, worker_id, id, state)
+                    .await?;
 
-                    let process_fn = process_job(
-                        job.clone(),
+                let process_fn = process_job(
+                    job.clone(),
+                    token,
+                    jobs_in_progress.clone(),
+                    queue.clone(),
+                    callback,
+                    permit,
+                    worker_id,
+                    active_job_count.clone(),
+                );
+                let poll_histogram = Mutex::new(
+                    Histogram::new_with_max(HISTOGRAM_MAX_NS, HISTOGRAM_SIGFIG).unwrap(),
+                );
+
+                jobs_in_progress.insert(
+                    id,
+                    (
+                        job,
                         token,
-                        jobs_in_progress.clone(),
-                        queue.clone(),
-                        callback,
-                        permit,
-                        worker_id,
-                        active_job_count.clone(),
-                    );
-                    let poll_histogram = Mutex::new(
-                        Histogram::new_with_max(HISTOGRAM_MAX_NS, HISTOGRAM_SIGFIG).unwrap(),
-                    );
+                        TaskHandle::default(),
+                        monitor.clone(),
+                        poll_histogram,
+                        opts,
+                    ),
+                );
+                let task = processing
+                    .spawn(monitor.instrument(async_backtrace::frame!(process_fn.boxed())));
 
-                    jobs_in_progress.insert(
-                        id,
-                        (
-                            job,
-                            token,
-                            TaskHandle::default(),
-                            monitor.clone(),
-                            poll_histogram,
-                            opts,
-                        ),
-                    );
-                    let task = processing
-                        .spawn(monitor.instrument(async_backtrace::frame!(process_fn.boxed())));
-
-                    if let Some(re) = jobs_in_progress.get(&id) {
-                        let (_, _, stored_handle, _, _, _) = re.value();
-                        stored_handle.swap(Some(task.into()));
-                    }
+                if let Some(re) = jobs_in_progress.get(&id) {
+                    let (_, _, stored_handle, _, _, _) = re.value();
+                    stored_handle.swap(Some(task.into()));
                 }
-                tokio::task::yield_now().await;
             }
-            Ok(None) | Err(_) => {
-                drop(permit);
-                // BACKOFF: Prevents the loop from immediately spinning at 100% CPU when the queue is empty.
-                tokio::time::sleep(tokio::time::Duration::from_millis(MIN_DELAY_MS_LIMIT)).await;
-            }
+            tokio::task::yield_now().await;
+        } else {
+            drop(permit);
+            // BACKOFF: Prevents the loop from immediately spinning at 100% CPU when the queue is empty.
+            tokio::time::sleep(tokio::time::Duration::from_millis(MIN_DELAY_MS_LIMIT)).await;
         }
     }
     if cancellation_token.is_cancelled() {
@@ -872,6 +869,8 @@ where
                 );
                 process_queue_events(args, &store).instrument(span)
             };
+            #[cfg(feature = "tracing")]
+            event_processing_task.await?;
             #[cfg(not(feature = "tracing"))]
             process_queue_events(args, &store).await?;
             pause_or_resume_workers(&notifier, &metrics, &pause_workers, &is_inital);

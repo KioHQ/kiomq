@@ -190,10 +190,8 @@ fn process_callback<S: Store<ProcessData, ReturnData, Progress>>(
                 }
             }
 
-            FfmpegEvent::Error(failed_reason) => {
-                if failed_reason != "No streams found" {
-                    return Err(std::io::Error::other(failed_reason).into());
-                }
+            FfmpegEvent::Error(failed_reason) if failed_reason != "No streams found" => {
+                return Err(std::io::Error::other(failed_reason).into());
             }
             FfmpegEvent::ParsedDuration(duration) => {
                 total_duration = duration.duration;
