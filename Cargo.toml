@@ -110,9 +110,7 @@ version = "0.7.15"
 features = ["time", "rt"]
 
 [dependencies.typed-emitter]
-# version = "0.1.3"
-git = "https://github.com/spencerjibz/typed-emitter"
-branch = "main"
+version = "0.1.3"
 default-features = false
 
 [dependencies.uuid]

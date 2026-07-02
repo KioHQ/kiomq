@@ -23,13 +23,13 @@
 - Pluggable **Stores**: [`InMemoryStore`] (ephemeral), [`RedisStore`] (durable, distributed), `RocksDB` _(under construction)_.
 - **Scheduling** – delays, cron expressions, repeat policies.
 - **Reliability** – retries, backoff strategies, stalled-job detection.
-- **Observability** – events, progress updates, per-worker metrics.
+- **Observability** – events, progress updates, per-worker & per-process metrics.
 
 Inspired by [BullMQ](https://docs.bullmq.io/)'s ergonomics, implemented as an embeddable Rust library.
 
 ---
 
-**Contents:** [Key features](#key-features) · [Tokio runtime](#tokio-runtime-requirements) · [Installation](#installation) · [Quick-start](#quick-start) · [Panics & errors](#panics--errors-in-the-processor) · [Configuration](#configuration) · [Events & observability](#events--observability) · [Progress updates](#progress-updates) · [Backends](#backends) · [Benchmarks](#benchmarks) · [Testing](#testing) · [License](#license)
+**Contents:** [Key features](#key-features) · [Tokio runtime](#tokio-runtime-requirements) · [Installation](#installation) · [Quick-start](#quick-start) · [Panics & errors](#panics--errors-in-the-processor) · [Configuration](#configuration) · [Events & observability](#events--observability) · [Progress updates](#progress-updates) · [Process & worker metrics](#process--worker-metrics) · [Backends](#backends) · [Benchmarks](#benchmarks) · [Testing](#testing) · [License](#license)
 
 ---
 
@@ -272,6 +272,60 @@ async fn processor<S: Store<u64, u64, u8>>(
     Ok(job.data.unwrap_or_default() * 2)
 }
 ```
+
+---
+
+### Process & worker metrics
+
+`KioMQ` automatically collects two kinds of metrics in the background — no extra setup required.
+
+#### Process metrics ([`ProcessMetrics`])
+
+A process-level snapshot refreshed at a regular interval (`PROCESS_METRIC_UPDATE_INTERVAL`) and
+stored in the queue's store with a TTL. Each snapshot captures:
+
+- **`process_cpu_usage`** – CPU usage of the process tree (%)
+- **`memory_usage`** – RSS memory in bytes
+- **`memory_stats`** – heap allocator statistics via the built-in `Heapster` instrumented allocator
+- **`rt_metrics`** – Tokio runtime counters: thread count, live tasks, park counts, busy durations ([`RawRuntimeMetrics`])
+- **`workers`** – `Vec<WorkerMeta>` with the state, options, and active-job count of every registered worker
+- **`hostname`** / **`pid`** – process identity
+
+```rust,ignore
+// keyed by PID so multi-process deployments can be distinguished
+let snapshots: std::collections::BTreeMap<u32, ProcessMetrics> =
+    queue.fetch_proess_metrics().await?;
+
+if let Some(m) = snapshots.values().next() {
+    println!(
+        "cpu: {:.1}%  mem: {} MB  tokio workers: {}",
+        m.process_cpu_usage,
+        m.memory_usage / 1_024 / 1_024,
+        m.rt_metrics.workers_count,
+    );
+}
+```
+
+#### Worker metrics ([`WorkerMetrics`])
+
+Fine-grained, per-worker timing data for every in-flight job — useful for latency profiling
+and capacity planning:
+
+```rust,ignore
+let worker_metrics = queue.fetch_worker_metrics().await?;
+
+for (worker_id, wm) in &worker_metrics {
+    for task in &wm.tasks {
+        println!(
+            "worker {worker_id}  polls={}  idle={:?}",
+            task.metrics.total_poll_count,
+            task.metrics.total_idle_duration,
+        );
+    }
+}
+```
+
+Both are stored with a TTL and refreshed automatically by the queue's timer subsystem.
 
 ---
 
