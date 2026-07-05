@@ -1,6 +1,148 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## v0.2.1 (2026-07-05)
+
+
+
+### Bug Fixes
+
+- when using sysinfo, refresh all processes by @spencerjibz ([af127a9](https://github.com/KioHQ/kiomq/commit/af127a9a61fdf0906111714016319e4b9d8dd2af)) _(process_tree_tracker)_
+
+- update existing metrics entrics instead of adding new ones if they'are expired by @spencerjibz ([5b6716e](https://github.com/KioHQ/kiomq/commit/5b6716ecab644080c53d69de571ecec2ab9af4dd)) _(inmemory-store)_
+
+- metrics::is_idle shouldn't include last_id check by @spencerjibz ([817d36b](https://github.com/KioHQ/kiomq/commit/817d36b05586d25c8cc6ec7a4a303587aeb22998)) _(queue_metrics)_
+
+- fix logic bug in pause_or_resume_workers by @spencerjibz ([8102a90](https://github.com/KioHQ/kiomq/commit/8102a9041b8c0f7fe8e123b93aadc9fff7b0fdc9))
+
+- considered timed out runs during the test for processing delayed jobs by @spencerjibz ([8a5171b](https://github.com/KioHQ/kiomq/commit/8a5171b56ce02eabc3ac8103dcaa5a9daf9dcd75)) _(worker_tests)_
+
+
+### Chores
+
+- remove unnecessary block_in_place call in the `RedisStore.update_job_progress_sync` method. by @spencerjibz ([d46e2da](https://github.com/KioHQ/kiomq/commit/d46e2daae115647b9167028ee73c0e2e9e64f7c7)) _(redis-store)_
+
+- add sysinfo and heapster as dependancy for collecting Node/Process telemtry by @spencerjibz ([6a45bfe](https://github.com/KioHQ/kiomq/commit/6a45bfeb8755155494bab3accb514e19719a44ef)) _(deps)_
+
+- enable the parking_lot features for tokio by @spencerjibz ([44aa07a](https://github.com/KioHQ/kiomq/commit/44aa07aacb1c54c3bdace0033c9e4da86c5a8ff8)) _(deps)_
+
+- public expose snapshots of process monitoring essentials(metrics & consts) by @spencerjibz ([6b36301](https://github.com/KioHQ/kiomq/commit/6b3630114b042252dff9f617d9d477c75fe01a9f))
+
+- expose process-metrics store and fetch methods via the `Queue` instance by @spencerjibz ([2cacd74](https://github.com/KioHQ/kiomq/commit/2cacd74656361bfaf2cd3dd40c895143674b2949))
+
+- run all timers in one task globally by @spencerjibz ([5afacdb](https://github.com/KioHQ/kiomq/commit/5afacdbb5cc4759423b96c53e56a3534a8e61fbf)) _(timers)_
+
+- use flume as the channel instead of tokio::mspc by @spencerjibz ([d660cab](https://github.com/KioHQ/kiomq/commit/d660cab67bba7b3ac9ec39b301707644b5701a26)) _(deps)_
+
+- reduce Worker_state_ttl to 100 seconds by @spencerjibz ([da7c0df](https://github.com/KioHQ/kiomq/commit/da7c0dfa87d0b30fc39236d2dd0292a7627191f3))
+
+- add  cpu-thread-count to `ProcessMetricsCollector` struct  and memory & cpu usage to `ProcessMetrics struct` by @spencerjibz ([1f9e0a7](https://github.com/KioHQ/kiomq/commit/1f9e0a759796dca773489bd56edb99525d5f64f8)) _(process-metrics)_
+
+- running Re-register timer for even idle workers by @spencerjibz ([7d850be](https://github.com/KioHQ/kiomq/commit/7d850bea5fe6298c7f53d39898f72eec615fc83c)) _(timers)_
+
+- add tokio-stream as a dependency to create useful stream on tokio utils by @spencerjibz ([5dc6320](https://github.com/KioHQ/kiomq/commit/5dc632080c4739811236a23ddee1b81b6b9abf54)) _(deps)_
+
+- remove flume in favour of tokio-broadcast by @spencerjibz ([2aa3bef](https://github.com/KioHQ/kiomq/commit/2aa3befd2a59d5f6da00bce8db8cb93a48b5ff9a)) _(deps)_
+
+- Reduce channel buffers and simplify streams by @spencerjibz ([7c9ed08](https://github.com/KioHQ/kiomq/commit/7c9ed08b28c63a66edffdc79cddc99f2f7551063))
+
+- remove dashmap and add parking_lot by @spencerjibz ([f206257](https://github.com/KioHQ/kiomq/commit/f206257823b58d32449bf434dd71d7c210544f50)) _(deps)_
+
+- add compact_str as dependancy to reduce memory usage by @spencerjibz ([f09fc11](https://github.com/KioHQ/kiomq/commit/f09fc11c263614392b740cecebb5720100de19cc)) _(deps)_
+
+- add hostname crate and use it to get the machine's name instead by @spencerjibz ([53f0f0b](https://github.com/KioHQ/kiomq/commit/53f0f0b0e2a8cf230c1135dffa1fd75600383588)) _(deps)_
+
+- fix compile errors when tracing is enabled caused by compact_str refactor by @spencerjibz ([e7babde](https://github.com/KioHQ/kiomq/commit/e7babde6f27c095cc38765a3fd67e5684cbf831f)) _(tracing)_
+
+- clean up errors by @spencerjibz ([c173c3f](https://github.com/KioHQ/kiomq/commit/c173c3fd516cbc386903dde90e0a44bbaf74dfca))
+
+- fix error in redis-queue-tests, use to_string instead of to_compact_string by @spencerjibz ([2c71a52](https://github.com/KioHQ/kiomq/commit/2c71a523420cb3b4bb9d69b367c400a46ba41c75)) _(tests)_
+
+- add a timer existence check for queues by @spencerjibz ([05357f0](https://github.com/KioHQ/kiomq/commit/05357f051aa7d584b807972b843dc3fd8549a5e6)) _(timers)_
+
+- put individual queue_timer tasks to sleep for n millis where there is no work by @spencerjibz ([89a6208](https://github.com/KioHQ/kiomq/commit/89a6208fc48286e605f5837a52e499ba103b8320)) _(timers)_
+
+- remove triggerpromotion timers by @spencerjibz ([3f1ea45](https://github.com/KioHQ/kiomq/commit/3f1ea4579c0af128dd96064e44ffc4aed0ea77ba)) _(timers)_
+
+- add a worker to global registry on creation but register it's timers later. by @spencerjibz ([490d376](https://github.com/KioHQ/kiomq/commit/490d37643ed42f933e2677b6faa47ea04894a659)) _(timers)_
+
+- add more metadata about workers to the process_metrics by @spencerjibz ([e3dd09e](https://github.com/KioHQ/kiomq/commit/e3dd09e176f65eeb5cda9e08d91ee01c8ec2b51b)) _(process_metrics)_
+
+- remove lock checks in queue::move_to_finish_or_failed. by @spencerjibz ([7c71b0d](https://github.com/KioHQ/kiomq/commit/7c71b0de3fc927ed6fbf741b089b4633fad5e965)) _(queue)_
+
+
+### Documentation
+
+- add detailed documentation for the process-metrics module by @spencerjibz ([be703b8](https://github.com/KioHQ/kiomq/commit/be703b868bb45a7357ceaa9fe28e1fc379f34ead))
+
+- add ProcessMetrics section to README and fix rustdoc warnings by @spencerjibz ([3f9e1e9](https://github.com/KioHQ/kiomq/commit/3f9e1e9c3e9d7f80f32ae2297656a9f436bce3d9))
+
+
+### Features
+
+- Add node/process metrics using the heapster and systinfo crates by @spencerjibz ([7b50897](https://github.com/KioHQ/kiomq/commit/7b508978d547ac4f5077030e2ade6195419e2d17))
+
+- add publish process metrics to worker-timers and a dedicated health check for each worker by @spencerjibz ([4a7ec8d](https://github.com/KioHQ/kiomq/commit/4a7ec8d2db8aa2399e27c317d2458627141d7427)) _(Timers)_
+
+- add process metrics collection and fetching to `RedisStore` and `InMemoryStore` stores by @spencerjibz ([772217a](https://github.com/KioHQ/kiomq/commit/772217aaa6948d970ceab0480f40aea13d878512)) _(stores)_
+
+- add a lazy better timed_map implementation without locking on purged_expired method by @spencerjibz ([9795f02](https://github.com/KioHQ/kiomq/commit/9795f023307d6263fbe83f2e094144c02642ed28))
+
+
+### Refactoring
+
+- Extract worker metrics into metrics module by @spencerjibz ([1c053f7](https://github.com/KioHQ/kiomq/commit/1c053f76d589e7948a18144d7c52422a91abd8dd)) _(metrics)_
+
+- rename the `node_metrics` module  && `NodeMetrics` struct  to `process_metrics` & `ProcessMetrics` respectively by @spencerjibz ([1e0153f](https://github.com/KioHQ/kiomq/commit/1e0153faac7ad3610483ba44254b165d1d36861f))
+
+- process metrics collector and add serde support by @spencerjibz ([3f1f0b8](https://github.com/KioHQ/kiomq/commit/3f1f0b8b58c63459ec631d857e649f8e201b4c5e))
+
+- move timers(stall_check,extend_lock& collect_metrics) to the queue instead of workers by @spencerjibz ([bda760b](https://github.com/KioHQ/kiomq/commit/bda760b625283fbca4b3976db57b1197a612dbd9))
+
+- move all timer-logic to a singleton processor by @spencerjibz ([2522114](https://github.com/KioHQ/kiomq/commit/2522114e154a34d33f66967dacb5ca47b4dd54bc))
+
+- move fetching scheduled delayed jobs to a dedicated timer by @spencerjibz ([e471aa3](https://github.com/KioHQ/kiomq/commit/e471aa31ae79d320df742d380d4b1ff6affcf3fe))
+
+- move worker pausing logic from the timer_reciever-task to each worker's main loop. by @spencerjibz ([a98d90c](https://github.com/KioHQ/kiomq/commit/a98d90cb39eaa1080bbdc5ea73df975b7c43fab5)) _(worker)_
+
+- `Queue::add_worker` now also registers existing workers by @spencerjibz ([1820372](https://github.com/KioHQ/kiomq/commit/182037224f346a55bf6b39f0d46cb91cf0210537))
+
+- Switch queues to SkipMap instead of a ttl-timed map by @spencerjibz ([9490dbf](https://github.com/KioHQ/kiomq/commit/9490dbfe2c58d640ea42f42f487afc5070d3b523)) _(ProcessMetricsCollector)_
+
+- use a tokio::watch channel for process-metrics updates instead of the same flume channel as timers by @spencerjibz ([5efc7a6](https://github.com/KioHQ/kiomq/commit/5efc7a66cd7109a83ebefc3ec54b9198e64f9f75))
+
+- remove usages of dashmap in favour of parking_lot by @spencerjibz ([e31bf37](https://github.com/KioHQ/kiomq/commit/e31bf3749262e68be0aa321e5dd88456923160f9))
+
+- use std::process::id() instead of the sysinfo's method by @spencerjibz ([2ba550b](https://github.com/KioHQ/kiomq/commit/2ba550b88ae703c84de7a42433f37431c8e06f19))
+
+- use different strategies for cpu metrics for linux and other platforms by @spencerjibz ([3364fe9](https://github.com/KioHQ/kiomq/commit/3364fe93d22487787e42bbb3fa6bd142ac5661e6)) _(process_metrics)_
+
+- use tokio::utils::DelayQueue instead of futures-intrusive && futures-delay-queue by @spencerjibz ([3715a22](https://github.com/KioHQ/kiomq/commit/3715a2255c1f3dc55876f7c6a4ba919441b79b80)) _(delay_queue_map)_
+
+- remove module delay_queue_map.rs  to concurrent_timed_map.rs by @spencerjibz ([4f3ca57](https://github.com/KioHQ/kiomq/commit/4f3ca578f09545602002d7e0c6759fb91158acf0))
+
+- merge the event_stream_task and the timer_task_listener task into one background task. by @spencerjibz ([32d8c7c](https://github.com/KioHQ/kiomq/commit/32d8c7cba19bc70870986efac1ff8c3f81804e02)) _(stores)_
+
+- use tokio::join instead of a tokio::select to run both the stream_listener_task and timer_task. by @spencerjibz ([9d75cf2](https://github.com/KioHQ/kiomq/commit/9d75cf2482ef4d82624d795b0b3b84cd17a6518c)) _(queue_timer)_
+
+- periodically update queue metrics inside the worker_metrics collection timers instead of within stores(redis-store for instance). by @spencerjibz ([8af8891](https://github.com/KioHQ/kiomq/commit/8af8891b250984d42179829ee15804aa19fa956f))
+
+- Flattened down the worker's reactor loop to a single cleanly controlled loop. by @spencerjibz ([9e54443](https://github.com/KioHQ/kiomq/commit/9e54443474488c623a3f388505abda3f4155dd27)) _(worker_reactor_loop)_
+
+- replace numeric as casts with num_traits::AsPrimitive. by @spencerjibz ([653c942](https://github.com/KioHQ/kiomq/commit/653c9429a3c916a655e8f849a91e0d71ef2d0f11))
+
+
+### Release
+
+- 0.2.0 (#80) by @github-actions[bot] ([#80](https://github.com/KioHQ/kiomq/pull/80)) _(release)_
+
+
+
+### Contributors
+
+- @github-actions[bot]
+
+- @spencerjibz
 ## v0.2.0 (2026-05-06)
 
 
