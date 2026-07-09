@@ -414,8 +414,10 @@ impl<
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
     /// Stops the worker's processing loop.
     ///
-    /// Signals the internal cancellation token and waits for the main loop
-    /// task to finish.  Already-running jobs are allowed to complete.
+    /// Signals the internal cancellation token and returns immediately without
+    /// blocking the calling thread.  The main loop winds down asynchronously:
+    /// already-running jobs are allowed to complete and the worker then
+    /// transitions to [`WorkerState::Closed`].
     ///
     /// Calling `close` on a worker that is not running is a no-op (idempotent).
     ///
@@ -438,16 +440,19 @@ impl<
         self.queue.worker_notifier.notify_waiters();
         self.queue.pause_workers.store(false);
         self.cancellation_token.cancel();
-        let mut main_task = self.main_task.load_full();
-        if let Some(handle) = main_task.take() {
-            // wait for handle to finishd
-            #[cfg(feature = "tracing")]
-            {
-                let running_tasks = self.processing.len();
-                warn!("waiting for all {running_tasks} tasks to complete or abort");
-            }
-            // wait for the main loop to close
-            while !handle.is_finished() {}
+        // Signal shutdown and return. The main loop observes the cancellation on
+        // its next poll, drains in-flight jobs (`processing.wait().await`) and
+        // transitions to `Closed` on its own — see `utils::main_loop`. In-flight
+        // job tasks are tracked independently on `processing`, so they still run
+        // to completion. We must NOT block the calling thread waiting for that:
+        // spin-waiting here pegs a CPU core and deadlocks on a current-thread
+        // runtime (the main loop can never be polled to make progress).
+        #[cfg(feature = "tracing")]
+        {
+            let running_tasks = self.processing.len();
+            warn!(
+                "shutdown signalled; {running_tasks} in-flight task(s) will drain in the background"
+            );
         }
         self.queue.remove_worker(self.id);
     }
