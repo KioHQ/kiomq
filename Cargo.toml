@@ -1,7 +1,7 @@
 [package]
 name = "kiomq"
 version = "0.2.1"
-edition = "2021"
+edition = "2024"
 authors = [ "Spencer Najib" ]
 keywords = [ "async", "task-queue", "tokio", "worker", "scheduler" ]
 description = "An all-in-one task-queue and orchestration library for Rust"
