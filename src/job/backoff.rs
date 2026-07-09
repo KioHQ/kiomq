@@ -80,7 +80,12 @@ impl BackOff {
         let backoff = Self::default();
         backoff.register("exponential", |delay: i64| {
             Arc::new(move |atempts: i64| -> i64 {
-                2_i64.pow(u32::try_from(atempts).unwrap_or(u32::MAX)) * delay
+                // Saturate rather than panic/wrap: uncapped repeat jobs push the
+                // attempt count arbitrarily high, and `2^attempt * delay`
+                // overflows i64 long before that.
+                2_i64
+                    .saturating_pow(u32::try_from(atempts).unwrap_or(u32::MAX))
+                    .saturating_mul(delay)
             })
         });
 
@@ -229,7 +234,11 @@ mod tests {
             .expect("exponential strategy should exist");
 
         let delay = strategy(64);
-        assert_eq!(delay, i64::MAX, "overflowing backoff must saturate, not wrap");
+        assert_eq!(
+            delay,
+            i64::MAX,
+            "overflowing backoff must saturate, not wrap"
+        );
     }
     #[test]
     fn test_fixed_back() {
