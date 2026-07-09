@@ -1,37 +1,33 @@
+name: Benchmark pull requests
+
 on: [pull_request]
-name: benchmark pull requests
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   runBenchmark:
-    name: run benchmark
+    name: Run benchmark
     runs-on: blacksmith-4vcpu-ubuntu-2204
     permissions:
       pull-requests: write
       contents: read
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Install latest stable Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-          override: true
-
-      - name: Cache Cargo
-        uses: actions/cache@v4
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
+          restore-keys: ${{ runner.os }}-cargo-
       - uses: boa-dev/criterion-compare-action@v3
         with:
-          # Optional. Disables the default features of a crate
+          # Disable the crate's default features for the benchmark.
           defaultFeatures: false
-          # Optional. Features activated in the benchmark
-          # Needed. The name of the branch to compare with.
+          # Branch to compare against.
           branchName: ${{ github.base_ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
