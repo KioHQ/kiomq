@@ -2,7 +2,7 @@
 use crate::error::{JobError, KioError};
 use crate::events::QueueStreamEvent;
 use crate::job::{Job, JobState};
-use crate::metrics::{TimerCommand, WorkerMetrics, P_METRICS_COLLECTOR};
+use crate::metrics::{P_METRICS_COLLECTOR, TimerCommand, WorkerMetrics};
 use crate::timers::{DelayQueueTimer, TimerSender};
 use crate::utils::{promote_jobs, resume_helper};
 use crate::worker::{JobMap, ProcessingQueue, WorkerOpts, WorkerState};
@@ -15,16 +15,16 @@ use compact_str::ToCompactString;
 use crossbeam::atomic::AtomicCell;
 use crossbeam_skiplist::SkipMap;
 use futures::future::Future;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::{BTreeMap, VecDeque};
 use std::marker::PhantomData;
 use std::sync::Arc;
-use tokio::sync::broadcast::{self, Sender};
 use tokio::sync::Notify;
+use tokio::sync::broadcast::{self, Sender};
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
-use tracing::{debug_span, info, instrument, Instrument, Span};
+use tracing::{Instrument, Span, debug_span, info, instrument};
 use uuid::Uuid;
 mod options;
 use crate::stores::Store;
@@ -107,11 +107,11 @@ pub struct Queue<D, R, P, S> {
 }
 
 impl<
-        D: Clone + Serialize + DeserializeOwned + Send + 'static + Sync,
-        R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
-        S: Clone + Store<D, R, P> + Send + 'static + Sync,
-        P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
-    > Queue<D, R, P, S>
+    D: Clone + Serialize + DeserializeOwned + Send + 'static + Sync,
+    R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
+    S: Clone + Store<D, R, P> + Send + 'static + Sync,
+    P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
+> Queue<D, R, P, S>
 {
     /// add a worker and  its usual metadata in the queue
     pub(crate) fn add_worker(
@@ -191,11 +191,12 @@ impl<
 
         let events_mode_exits: bool = store.metadata_field_exists("event_mode").await?;
         let event_mode = metrics.event_mode.clone();
-        if let Some(passed_mode) = opts.event_mode {
-            if !events_mode_exits && passed_mode != event_mode.load() {
-                store.set_event_mode(passed_mode).await?;
-                event_mode.swap(passed_mode);
-            }
+        if let Some(passed_mode) = opts.event_mode
+            && !events_mode_exits
+            && passed_mode != event_mode.load()
+        {
+            store.set_event_mode(passed_mode).await?;
+            event_mode.swap(passed_mode);
         }
         let _queue_name = store.queue_name();
         #[cfg(feature = "tracing")]
@@ -546,16 +547,16 @@ impl<
         token: JobToken,
     ) -> KioResult<bool> {
         let previous: Option<JobToken> = self.store.get_token(job_id).await;
-        if let Some(prev_token) = previous {
-            if prev_token == token {
-                self.store
-                    .set_lock(CollectionSuffix::Lock(job_id), Some(token), lock_duration)
-                    .await?;
-                self.store
-                    .remove_item(CollectionSuffix::Stalled, job_id)
-                    .await?;
-                return Ok(true);
-            }
+        if let Some(prev_token) = previous
+            && prev_token == token
+        {
+            self.store
+                .set_lock(CollectionSuffix::Lock(job_id), Some(token), lock_duration)
+                .await?;
+            self.store
+                .remove_item(CollectionSuffix::Stalled, job_id)
+                .await?;
+            return Ok(true);
         }
         Ok(false)
     }
@@ -939,12 +940,11 @@ impl<
                             .expire(CollectionSuffix::Job(job_id), expire_in_secs)
                             .await?;
                     }
-                    if let Some(max_to_keep) = count {
-                        if max_to_keep.is_positive()
-                            && i64::try_from(id).unwrap_or(i64::MAX) > max_to_keep
-                        {
-                            self.store.remove(CollectionSuffix::Job(job_id)).await?;
-                        }
+                    if let Some(max_to_keep) = count
+                        && max_to_keep.is_positive()
+                        && i64::try_from(id).unwrap_or(i64::MAX) > max_to_keep
+                    {
+                        self.store.remove(CollectionSuffix::Job(job_id)).await?;
                     }
                 }
             }

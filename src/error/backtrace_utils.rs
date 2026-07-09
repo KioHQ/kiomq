@@ -1,5 +1,5 @@
 use async_backtrace::Location as LocationTrace;
-use compact_str::{format_compact, CompactString, ToCompactString};
+use compact_str::{CompactString, ToCompactString, format_compact};
 use futures::future::{Future, FutureExt};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{LazyLock, Mutex};

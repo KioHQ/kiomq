@@ -1,5 +1,5 @@
 use crossbeam::atomic::AtomicCell;
-use crossbeam_skiplist::{map::Entry, SkipMap};
+use crossbeam_skiplist::{SkipMap, map::Entry};
 use derive_more::IsVariant;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -192,7 +192,7 @@ impl<K: Ord + Clone + Send + 'static + Sync, V: Send + 'static + Sync> TimedMap<
 mod tests {
     use super::TimedMap;
     use std::sync::Arc;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_purge_removes_expired_async() {

@@ -1,11 +1,11 @@
+use crate::Counter;
 use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo, JobError, QueueError};
 use crate::events::QueueStreamEvent;
 use crate::stores::Store;
 use crate::timers::{TimerSender, TimerType};
 use crate::worker::{
-    JobMap, ProcessingQueue, TaskHandle, WorkerCallback, WorkerState, MIN_DELAY_MS_LIMIT,
+    JobMap, MIN_DELAY_MS_LIMIT, ProcessingQueue, TaskHandle, WorkerCallback, WorkerState,
 };
-use crate::Counter;
 use crate::{
     EventEmitter, EventParameters, FailedDetails, JobOptions, JobState, JobToken, KioError,
     QueueEventMode, QueueOpts, Trace, WorkerOpts,
@@ -13,7 +13,7 @@ use crate::{
 use chrono::Utc;
 use compact_str::ToCompactString;
 #[cfg(feature = "redis-store")]
-use compact_str::{format_compact, CompactString};
+use compact_str::{CompactString, format_compact};
 use crossbeam::atomic::AtomicCell;
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
@@ -21,10 +21,10 @@ use futures::{FutureExt, StreamExt};
 use num_traits::AsPrimitive;
 use parking_lot::Mutex;
 #[cfg(feature = "redis-store")]
-use redis::aio::ConnectionLike;
-#[cfg(feature = "redis-store")]
 use redis::ParsingError;
-use serde::{de::DeserializeOwned, Serialize};
+#[cfg(feature = "redis-store")]
+use redis::aio::ConnectionLike;
+use serde::{Serialize, de::DeserializeOwned};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio_metrics::TaskMonitor;
 use tokio_util::sync::CancellationToken;
@@ -93,21 +93,32 @@ pub async fn get_queue_metrics<C: redis::aio::ConnectionLike>(
     name: &str,
     conn: &mut C,
 ) -> KioResult<QueueMetrics> {
-    let [job_id_key, stalled_key, active_key, completed_key, meta_key, delayed_key, _priority_counter_key, waiting_key, paused_key, prioritized_key, failed_key] =
-        [
-            CollectionSuffix::Id,
-            CollectionSuffix::Stalled,
-            CollectionSuffix::Active,
-            CollectionSuffix::Completed,
-            CollectionSuffix::Meta,
-            CollectionSuffix::Delayed,
-            CollectionSuffix::PriorityCounter,
-            CollectionSuffix::Wait,
-            CollectionSuffix::Paused,
-            CollectionSuffix::Prioritized,
-            CollectionSuffix::Failed,
-        ]
-        .map(|key| key.to_collection_name(prefix, name));
+    let [
+        job_id_key,
+        stalled_key,
+        active_key,
+        completed_key,
+        meta_key,
+        delayed_key,
+        _priority_counter_key,
+        waiting_key,
+        paused_key,
+        prioritized_key,
+        failed_key,
+    ] = [
+        CollectionSuffix::Id,
+        CollectionSuffix::Stalled,
+        CollectionSuffix::Active,
+        CollectionSuffix::Completed,
+        CollectionSuffix::Meta,
+        CollectionSuffix::Delayed,
+        CollectionSuffix::PriorityCounter,
+        CollectionSuffix::Wait,
+        CollectionSuffix::Paused,
+        CollectionSuffix::Prioritized,
+        CollectionSuffix::Failed,
+    ]
+    .map(|key| key.to_collection_name(prefix, name));
     let mut pipeline = redis::pipe();
     pipeline.atomic();
     pipeline.zcard(completed_key.as_str());
@@ -186,8 +197,8 @@ where
     P: Clone + Serialize + DeserializeOwned + Send + 'static + Sync,
     S: Clone + Store<D, R, P> + Send + 'static + Sync,
 {
-    use crate::worker::WorkerCallback;
     use crate::JobState;
+    use crate::worker::WorkerCallback;
     let job_id = job.id.unwrap_or_default();
     let job_added_at = job.ts;
     let processed_on = job.processed_on;
@@ -298,12 +309,12 @@ where
             if let Some(entry) = jobs_in_progress.remove(&job_id) {
                 let (job, _, handle, _, _, _) = entry.value();
                 // retry failed jobs
-                if failed_job.attempts_made < job.opts.attempts {
-                    if let Some(backoff_job_opts) = job.opts.backoff.as_ref() {
-                        queue
-                            .retry_job(job_id, backoff_job_opts, failed_job.attempts_made - 1)
-                            .await?;
-                    }
+                if failed_job.attempts_made < job.opts.attempts
+                    && let Some(backoff_job_opts) = job.opts.backoff.as_ref()
+                {
+                    queue
+                        .retry_job(job_id, backoff_job_opts, failed_job.attempts_made - 1)
+                        .await?;
                 }
                 // clean up if the number of attempts is exhausted
                 if failed_job.attempts_made == job.opts.attempts {
@@ -863,7 +874,7 @@ where
                 (event_mode, block_interval, &emitter, metrics.clone());
             #[cfg(feature = "tracing")]
             let event_processing_task = {
-                use tracing::{info_span, Instrument};
+                use tracing::{Instrument, info_span};
                 let queue_name = format!("{}:{}", store.queue_prefix(), store.queue_name());
                 let span = info_span!(
                     parent: None,

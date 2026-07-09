@@ -12,7 +12,7 @@ worker_store_suite!(worker_inmemory_store, async {
 #[cfg(all(feature = "redis-store", not(feature = "default")))]
 mod worker_redis {
     use super::*;
-    use kiomq::{fetch_redis_pass, Config, RedisStore, SharedRedis};
+    use kiomq::{Config, RedisStore, SharedRedis, fetch_redis_pass};
     use std::sync::LazyLock;
 
     pub static SHARED_REDIS: LazyLock<SharedRedis> = LazyLock::new(|| {
