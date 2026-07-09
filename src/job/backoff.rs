@@ -210,6 +210,27 @@ mod tests {
             assert_eq!(strategy(5), 3200);
         }
     }
+    #[tokio::test]
+    async fn test_exponential_backoff_high_attempt_does_not_overflow() {
+        // A repeat-with-exponential-backoff job increments `attempts` on every
+        // run and is never capped, so the attempt count eventually reaches the
+        // point where `2^attempt * delay` overflows i64. The delay function
+        // must saturate rather than panic (debug) / wrap to a negative delay
+        // (release).
+        let backoff = BackOff::new();
+        let strategy = backoff
+            .lookup_strategy(
+                BackOffOptions {
+                    delay: Some(100),
+                    type_: Some("exponential".to_compact_string()),
+                },
+                None,
+            )
+            .expect("exponential strategy should exist");
+
+        let delay = strategy(64);
+        assert_eq!(delay, i64::MAX, "overflowing backoff must saturate, not wrap");
+    }
     #[test]
     fn test_fixed_back() {
         let backoff = BackOff::new();
