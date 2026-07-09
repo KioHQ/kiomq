@@ -419,6 +419,11 @@ impl<
     /// already-running jobs are allowed to complete and the worker then
     /// transitions to [`WorkerState::Closed`].
     ///
+    /// The worker is deregistered from the queue **after** its in-flight jobs
+    /// have drained (via a detached task), so those jobs keep having their locks
+    /// extended and cannot be re-claimed as stalled by another worker while they
+    /// finish.
+    ///
     /// Calling `close` on a worker that is not running is a no-op (idempotent).
     ///
     /// # Note
@@ -440,13 +445,17 @@ impl<
         self.queue.worker_notifier.notify_waiters();
         self.queue.pause_workers.store(false);
         self.cancellation_token.cancel();
-        // Signal shutdown and return. The main loop observes the cancellation on
-        // its next poll, drains in-flight jobs (`processing.wait().await`) and
-        // transitions to `Closed` on its own — see `utils::main_loop`. In-flight
-        // job tasks are tracked independently on `processing`, so they still run
-        // to completion. We must NOT block the calling thread waiting for that:
-        // spin-waiting here pegs a CPU core and deadlocks on a current-thread
-        // runtime (the main loop can never be polled to make progress).
+        // Signal shutdown and return without blocking the caller. The main loop
+        // observes the cancellation on its next poll, drains in-flight jobs
+        // (`processing.wait().await`) and transitions to `Closed` on its own —
+        // see `utils::main_loop`. We must NOT block the calling thread waiting
+        // for that: spin-waiting pegs a CPU core and deadlocks on a
+        // current-thread runtime (the main loop can never be polled).
+        //
+        // Deregistration is deferred until the drain completes: while jobs are
+        // still finishing the worker must stay in `queue.workers` so the
+        // ExtendLock timer keeps their locks alive — otherwise a job that
+        // outlives `lock_duration` gets re-claimed as stalled and runs twice.
         #[cfg(feature = "tracing")]
         {
             let running_tasks = self.processing.len();
@@ -454,7 +463,22 @@ impl<
                 "shutdown signalled; {running_tasks} in-flight task(s) will drain in the background"
             );
         }
-        self.queue.remove_worker(self.id);
+        let worker_id = self.id;
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let queue = self.queue.clone();
+            let processing = self.processing.clone();
+            // `processing` is already closed; `wait()` resolves once every
+            // tracked job task (including any final one the loop spawns before
+            // it sees the cancellation) has completed.
+            runtime.spawn(async move {
+                processing.wait().await;
+                queue.remove_worker(worker_id);
+            });
+        } else {
+            // No runtime to await the drain on (nothing is executing either);
+            // deregister immediately.
+            self.queue.remove_worker(worker_id);
+        }
     }
 
     /// Registers a listener for a specific job-state event on the underlying queue.
