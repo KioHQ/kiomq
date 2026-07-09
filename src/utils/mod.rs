@@ -70,7 +70,10 @@ pub fn serialize_into_pairs<V: Serialize>(item: &V) -> Vec<(String, String)> {
     vec![]
 }
 pub const fn calculate_next_priority_score(priority: u64, prio_counter: u64) -> u64 {
-    (priority << 32) + (prio_counter & 0xffff_ffff_ffff)
+    // Priority occupies the high 32 bits; the FIFO tie-break counter the low 32.
+    // The mask must stay within 32 bits or the counter bleeds into the priority
+    // band and corrupts ordering.
+    (priority << 32) + (prio_counter & 0xffff_ffff)
 }
 
 use crate::{CollectionSuffix, QueueMetrics};
@@ -932,8 +935,7 @@ mod priority_score_tests {
         // counter can outrank a higher-priority job.
         let high_priority = calculate_next_priority_score(2, 0);
         // Counter just past the 32-bit boundary on the lower priority.
-        let low_priority_big_counter =
-            calculate_next_priority_score(1, u64::from(u32::MAX) + 1);
+        let low_priority_big_counter = calculate_next_priority_score(1, u64::from(u32::MAX) + 1);
 
         assert!(
             low_priority_big_counter < high_priority,
