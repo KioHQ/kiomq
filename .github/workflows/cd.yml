@@ -14,13 +14,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  job1:
+  release_pr:
     name: fetch tag, update Cargo.toml, generate changelog, and open PR
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout files
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -82,17 +82,17 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
 
-  job3:
-    needs: job1
+  github_release:
+    needs: release_pr
     name: Create GitHub Release (from tag)
     runs-on: ubuntu-latest
 
     outputs:
-      tag: ${{ needs.job1.outputs.tag }}
+      tag: ${{ needs.release_pr.outputs.tag }}
 
     steps:
       - name: Checkout (full history for git-cliff)
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -130,21 +130,18 @@ jobs:
           draft: false
           prerelease: ${{ contains(steps.tag.outputs.tag, '-') }}
 
-  job2:
-    needs: job3
+  publish_crate:
+    needs: github_release
     name: Publish to crates.io
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout release branch
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
-          ref: update-release-${{ needs.job3.outputs.tag }}
+          ref: update-release-${{ needs.github_release.outputs.tag }}
 
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
+      - uses: dtolnay/rust-toolchain@stable
 
       - name: Install native dependencies for RocksDB (Ubuntu)
         run: |
