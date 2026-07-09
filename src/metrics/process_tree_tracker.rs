@@ -63,12 +63,11 @@ impl ProcessTreeTracker {
 
         if let Ok(processes) = procfs::process::all_processes() {
             for child_proc in processes.filter_map(|process_result| {
-                if let Ok(process) = process_result {
-                    if let Ok(stat) = process.stat() {
-                        if stat.ppid == self.me.pid {
-                            return Some(process);
-                        }
-                    }
+                if let Ok(process) = process_result
+                    && let Ok(stat) = process.stat()
+                    && stat.ppid == self.me.pid
+                {
+                    return Some(process);
                 }
                 None
             }) {
