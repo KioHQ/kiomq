@@ -169,13 +169,13 @@ impl ProcessTreeTracker {
             .iter()
             .filter(|(pid, _)| **pid != self.pid)
         {
-            if let Some(parent_pid) = process.parent() {
-                if parent_pid == self.pid {
-                    cpu_usage += process.cpu_usage();
-                    rss_bytes += process.memory();
-                    virt_bytes += process.virtual_memory();
-                    self.child_processes.insert(process.pid());
-                }
+            if let Some(parent_pid) = process.parent()
+                && parent_pid == self.pid
+            {
+                cpu_usage += process.cpu_usage();
+                rss_bytes += process.memory();
+                virt_bytes += process.virtual_memory();
+                self.child_processes.insert(process.pid());
             }
         }
         cpu_usage /= <usize as AsPrimitive<f32>>::as_(self.cpu_count);

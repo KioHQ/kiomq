@@ -927,15 +927,15 @@ where
         _event_mode: QueueEventMode,
         event: QueueStreamEvent<R, P>,
     ) -> KioResult<()> {
-        if let Some(emitter) = self.events.load().as_ref() {
-            if let (Some(stored), Some(notifier), Some(pause_workers)) = (
+        if let Some(emitter) = self.events.load().as_ref()
+            && let (Some(stored), Some(notifier), Some(pause_workers)) = (
                 self.stored_metrics.load().as_ref(),
                 self.notifier.load().as_ref(),
                 self.pause_workers.load().as_ref(),
-            ) {
-                process_each_event(event, emitter, self, stored).await?;
-                pause_or_resume_workers(notifier, stored, pause_workers, &self.is_inital);
-            }
+            )
+        {
+            process_each_event(event, emitter, self, stored).await?;
+            pause_or_resume_workers(notifier, stored, pause_workers, &self.is_inital);
         }
         Ok(())
     }

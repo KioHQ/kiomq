@@ -764,8 +764,8 @@ where
             .await
             .expect("failed to get connection");
         let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
-        let result = conn.exists(job_key.as_str()).await.unwrap_or_default();
-        result
+
+        conn.exists(job_key.as_str()).await.unwrap_or_default()
     }
 
     async fn clear_collections(&self) -> KioResult<()> {
