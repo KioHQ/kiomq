@@ -29,7 +29,7 @@ fn bench_bulk_add(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_end_to_end_throughput(c: &mut Criterion) {
+fn _bench_end_to_end_throughput(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let mut group = c.benchmark_group("queue_end_to_end_throughput");
 
@@ -127,7 +127,7 @@ fn bench_single_job_latency(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_bulk_add,
-    bench_end_to_end_throughput,
+    //bench_end_to_end_throughput,
     bench_single_job_latency
 );
 criterion_main!(benches);
