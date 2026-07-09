@@ -1,6 +1,6 @@
 use super::{BackOff, BackOffJobOptions};
 use chrono::{TimeDelta, Utc};
-use croner::{errors::CronError, Cron};
+use croner::{Cron, errors::CronError};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 /// Repeat / scheduling policy for a job.

@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use crate::{
-    error::QueueError, BackOffJobOptions, FailedDetails, JobMetrics, JobState, JobToken,
-    RemoveOnCompletionOrFailure, Repeat, Trace,
+    BackOffJobOptions, FailedDetails, JobMetrics, JobState, JobToken, RemoveOnCompletionOrFailure,
+    Repeat, Trace, error::QueueError,
 };
-use compact_str::{format_compact, CompactString};
+use compact_str::{CompactString, format_compact};
 #[cfg(feature = "redis-store")]
 use redis::{FromRedisValue, ParsingError, ToRedisArgs, ToSingleRedisArg, Value};
 use serde::{Deserialize, Serialize};

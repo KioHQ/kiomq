@@ -1,20 +1,20 @@
+use crate::Dt;
 #[cfg(feature = "redis-store")]
 use crate::utils::to_redis_parsing_error;
-use crate::Dt;
 use chrono::Utc;
 #[cfg(feature = "redis-store")]
 use redis::{self, FromRedisValue, ParsingError};
 use serde::{
-    de::{self, Visitor},
     Deserialize, Serialize,
+    de::{self, Visitor},
 };
 use std::fmt;
 use std::time::Duration;
 use tokio_metrics::TaskMetrics;
 use uuid::Uuid;
 
-use hdrhistogram::serialization::{Deserializer, Serializer, V2Serializer};
 use hdrhistogram::Histogram;
+use hdrhistogram::serialization::{Deserializer, Serializer, V2Serializer};
 /// Maximum poll duration we track: 100 seconds in nanoseconds.
 pub const HISTOGRAM_MAX_NS: u64 = 100_000_000_000;
 /// Significant figures for HDR histogram precision.

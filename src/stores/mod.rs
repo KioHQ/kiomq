@@ -1,9 +1,9 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
-    events::QueueStreamEvent, metrics::WorkerMetrics, CollectionSuffix, EventEmitter, Job,
-    JobField, JobOptions, JobState, JobToken, KioResult, ProcessMetrics, ProcessedResult,
-    QueueEventMode, QueueMetrics, QueueOpts, Trace,
+    CollectionSuffix, EventEmitter, Job, JobField, JobOptions, JobState, JobToken, KioResult,
+    ProcessMetrics, ProcessedResult, QueueEventMode, QueueMetrics, QueueOpts, Trace,
+    events::QueueStreamEvent, metrics::WorkerMetrics,
 };
 use std::collections::VecDeque;
 mod inmemory_store;
@@ -17,7 +17,7 @@ mod redis_store;
 #[cfg(feature = "redis-store")]
 pub use redis_store::{RedisStore, RedisVersion, SharedRedis};
 #[cfg(feature = "rocksdb-store")]
-pub use rocksdb_store::{ivec_to_number, temporary_rocks_db, RocksDbStore};
+pub use rocksdb_store::{RocksDbStore, ivec_to_number, temporary_rocks_db};
 use tokio::sync::Notify;
 enum Lock {
     Token(JobToken),

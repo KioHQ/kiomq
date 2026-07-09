@@ -1,11 +1,11 @@
 use compact_str::format_compact;
 #[cfg(all(feature = "redis-store", not(feature = "default")))]
-use kiomq::{fetch_redis_pass, Config, RedisStore, SharedRedis};
+use kiomq::{Config, RedisStore, SharedRedis, fetch_redis_pass};
 use kiomq::{
-    framed, EventParameters, InMemoryStore, Job, KioResult, Queue, Store, Worker, WorkerOpts,
+    EventParameters, InMemoryStore, Job, KioResult, Queue, Store, Worker, WorkerOpts, framed,
 };
 #[cfg(feature = "rocksdb-store")]
-use kiomq::{temporary_rocks_db, RocksDbStore};
+use kiomq::{RocksDbStore, temporary_rocks_db};
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
