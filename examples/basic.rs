@@ -1,6 +1,6 @@
 use compact_str::ToCompactString;
 use std::{
-    sync::{atomic::AtomicUsize, Arc},
+    sync::{Arc, atomic::AtomicUsize},
     time::Instant,
 };
 #[cfg(feature = "tracing")]
@@ -12,14 +12,14 @@ macro_rules! info {
 }
 
 use kiomq::{
-    framed, BackOffJobOptions, EventParameters, InMemoryStore, Job, JobOptions, KioResult, Queue,
-    QueueEventMode, QueueOpts, RemoveOnCompletionOrFailure, Store, Worker, WorkerOpts,
+    BackOffJobOptions, EventParameters, InMemoryStore, Job, JobOptions, KioResult, Queue,
+    QueueEventMode, QueueOpts, RemoveOnCompletionOrFailure, Store, Worker, WorkerOpts, framed,
 };
 
 #[cfg(all(feature = "redis-store", not(feature = "default")))]
-use kiomq::{fetch_redis_pass, Config, RedisStore, SharedRedis};
+use kiomq::{Config, RedisStore, SharedRedis, fetch_redis_pass};
 #[cfg(feature = "rocksdb-store")]
-use kiomq::{temporary_rocks_db, RocksDbStore};
+use kiomq::{RocksDbStore, temporary_rocks_db};
 use uuid::Uuid;
 #[tokio::main]
 #[framed]

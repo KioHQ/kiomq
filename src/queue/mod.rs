@@ -2,7 +2,7 @@
 use crate::error::{JobError, KioError};
 use crate::events::QueueStreamEvent;
 use crate::job::{Job, JobState};
-use crate::metrics::{TimerCommand, WorkerMetrics, P_METRICS_COLLECTOR};
+use crate::metrics::{P_METRICS_COLLECTOR, TimerCommand, WorkerMetrics};
 use crate::timers::{DelayQueueTimer, TimerSender};
 use crate::utils::{promote_jobs, resume_helper};
 use crate::worker::{JobMap, ProcessingQueue, WorkerOpts, WorkerState};
@@ -15,16 +15,16 @@ use compact_str::ToCompactString;
 use crossbeam::atomic::AtomicCell;
 use crossbeam_skiplist::SkipMap;
 use futures::future::Future;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::{BTreeMap, VecDeque};
 use std::marker::PhantomData;
 use std::sync::Arc;
-use tokio::sync::broadcast::{self, Sender};
 use tokio::sync::Notify;
+use tokio::sync::broadcast::{self, Sender};
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
-use tracing::{debug_span, info, instrument, Instrument, Span};
+use tracing::{Instrument, Span, debug_span, info, instrument};
 use uuid::Uuid;
 mod options;
 use crate::stores::Store;
@@ -107,11 +107,11 @@ pub struct Queue<D, R, P, S> {
 }
 
 impl<
-        D: Clone + Serialize + DeserializeOwned + Send + 'static + Sync,
-        R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
-        S: Clone + Store<D, R, P> + Send + 'static + Sync,
-        P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
-    > Queue<D, R, P, S>
+    D: Clone + Serialize + DeserializeOwned + Send + 'static + Sync,
+    R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
+    S: Clone + Store<D, R, P> + Send + 'static + Sync,
+    P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
+> Queue<D, R, P, S>
 {
     /// add a worker and  its usual metadata in the queue
     pub(crate) fn add_worker(

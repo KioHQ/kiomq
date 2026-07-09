@@ -64,8 +64,8 @@ pub(crate) use events::EventEmitter;
 pub use events::EventParameters;
 pub use job::*;
 pub use metrics::{
-    HistogramWrapper, ProcessMetrics, RawRuntimeMetrics, TaskInfo, TaskStats, WorkerMeta,
-    WorkerMetrics, PROCESS_METRIC_UPDATE_INTERVAL, WORKER_STATE_TTL,
+    HistogramWrapper, PROCESS_METRIC_UPDATE_INTERVAL, ProcessMetrics, RawRuntimeMetrics, TaskInfo,
+    TaskStats, WORKER_STATE_TTL, WorkerMeta, WorkerMetrics,
 };
 pub use queue::*;
 pub use stores::*;

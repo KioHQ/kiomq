@@ -3,24 +3,24 @@ use super::{
     JobState, JobToken, KioResult, Lock, Notify, QueueEventMode, QueueMetrics, QueueOpts,
     QueueStreamEvent, SharedEmitter, Store, WorkerMetrics,
 };
+use crate::KioError;
 use crate::timers::TimedMap;
 use crate::utils::{
-    calculate_next_priority_score, pause_or_resume_workers, process_each_event, update_job_opts,
-    ConcurrentDeque,
+    ConcurrentDeque, calculate_next_priority_score, pause_or_resume_workers, process_each_event,
+    update_job_opts,
 };
 use crate::worker::MIN_DELAY_MS_LIMIT;
-use crate::KioError;
 use crate::{Counter, Dt, QueueError};
 use crate::{ProcessMetrics, ProcessedResult};
 use chrono::Utc;
-use compact_str::{format_compact, CompactString, ToCompactString};
+use compact_str::{CompactString, ToCompactString, format_compact};
 use crossbeam::atomic::AtomicCell;
 use crossbeam_skiplist::{SkipMap, SkipSet};
 use derive_more::Debug;
-use futures::future::BoxFuture;
 use futures::FutureExt;
+use futures::future::BoxFuture;
 use num_traits::AsPrimitive;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::collections::VecDeque;
 use std::time::Duration;
 use uuid::Uuid;

@@ -1,21 +1,21 @@
 use crate::{
-    stores::Store, utils::processor_types::SharedStore, worker::processor_types::SyncFn, Job,
-    JobState, JobToken, KioError, KioResult, Queue,
+    Job, JobState, JobToken, KioError, KioResult, Queue, stores::Store,
+    utils::processor_types::SharedStore, worker::processor_types::SyncFn,
 };
 
 use crate::utils::main_loop;
 use chrono::Utc;
 use derive_more::Debug;
 use futures::future::{Future, FutureExt};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::sync::Arc;
 use uuid::Uuid;
 mod worker_opts;
 use crate::Dt;
 
+use crate::Counter;
 use crate::error::WorkerError;
 use crate::events::EventParameters;
-use crate::Counter;
 use arc_swap::ArcSwapOption;
 use hdrhistogram::Histogram;
 use parking_lot::Mutex;
@@ -56,7 +56,7 @@ pub enum WorkerState {
 #[cfg(feature = "tracing")]
 use compact_str::ToCompactString;
 #[cfg(feature = "tracing")]
-use tracing::{debug, instrument, warn, Instrument, Span};
+use tracing::{Instrument, Span, debug, instrument, warn};
 
 pub use worker_opts::MIN_DELAY_MS_LIMIT;
 /// A job processor that consumes jobs from a [`Queue`].
@@ -134,11 +134,11 @@ use processor_types::Callback;
 pub type WorkerCallback<D, R, P, S> = Callback<D, R, P, S>;
 
 impl<
-        D: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
-        R: Clone + DeserializeOwned + 'static + Serialize + Send + Sync,
-        P: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
-        S: Clone + Store<D, R, P> + Send + 'static + Sync,
-    > Worker<D, R, P, S>
+    D: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
+    R: Clone + DeserializeOwned + 'static + Serialize + Send + Sync,
+    P: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
+    S: Clone + Store<D, R, P> + Send + 'static + Sync,
+> Worker<D, R, P, S>
 {
     /// Creates a worker with a **sync** (blocking) processor function.
     ///
