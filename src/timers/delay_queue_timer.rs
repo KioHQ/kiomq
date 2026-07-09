@@ -184,7 +184,7 @@ impl<
         &self,
         rx: Receiver<TimerCommand>,
         process_metrics_rx: watch::Receiver<Option<ProcessMetrics>>,
-    ) -> impl std::future::Future<Output = KioResult<()>> {
+    ) -> impl std::future::Future<Output = KioResult<()>> + use<D, R, P, S> {
         let queue = self.queue.clone();
         let (workers, jobs, token, sender, _) = (
             self.workers.clone(),
