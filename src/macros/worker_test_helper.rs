@@ -32,6 +32,27 @@ macro_rules! worker_store_suite {
             use std::sync::Arc;
             use std::time::Duration;
 
+            /// Spin-wait while `$cond` holds, but fail with a clear message
+            /// after 15s instead of hanging forever. Turns an intermittent
+            /// stall (e.g. a delayed job that never gets promoted) into a fast,
+            /// diagnosable test failure rather than a wedged process that pins a
+            /// CPU core. Polls with `yield_now` to preserve the original loops'
+            /// scheduling behaviour — some tests are sensitive to the exact
+            /// pause/idle timing.
+            macro_rules! wait_while {
+                ($cond:expr, $what:expr) => {{
+                    let __deadline = std::time::Instant::now() + Duration::from_secs(15);
+                    while $cond {
+                        assert!(
+                            std::time::Instant::now() < __deadline,
+                            "timed out after 15s waiting for {}",
+                            $what
+                        );
+                        tokio::task::yield_now().await;
+                    }
+                }};
+            }
+
             type D = i32;
             type R = i32;
             type P = i32;
@@ -73,10 +94,10 @@ macro_rules! worker_store_suite {
                 assert!(worker.is_running());
 
                 let jobs = queue.bulk_add(job_iterator).await?;
-                while !queue.current_metrics.all_jobs_completed() {
-                    tokio::task::yield_now().await;
-
-                }
+                wait_while!(
+                    !queue.current_metrics.all_jobs_completed(),
+                    "all jobs to complete"
+                );
 
                 worker.close();
                 assert!(!worker.is_running());
@@ -166,9 +187,10 @@ macro_rules! worker_store_suite {
                 let _jobs = queue.bulk_add(job_iterator).await?;
                 assert!(worker.is_running());
 
-                while completed.len() != count as usize {
-                    tokio::time::sleep(Duration::from_millis(1)).await;
-                }
+                wait_while!(
+                    completed.len() != count as usize,
+                    "delayed jobs to be promoted and completed"
+                );
                 worker.close();
                 assert!(!worker.is_running());
                 assert_eq!(completed.len(), count as usize);
@@ -235,18 +257,14 @@ macro_rules! worker_store_suite {
                 assert!(worker.is_running());
 
                 queue.bulk_add(job_iterator).await?;
-                while completed.len() <4 {
-                    tokio::task::yield_now().await;
-                }
+                wait_while!(completed.len() < 4, "first 4 jobs to complete");
 
                 queue.pause_active_workers();
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 assert!(worker.is_idle(), "meant to be Idle");
 
                 queue.add_job("test", 1, None).await?;
-                while active.len()<5 {
-                    tokio::task::yield_now().await;
-                }
+                wait_while!(active.len() < 5, "worker to resume and pick up the job");
 
                 assert!(!worker.is_idle(), "meant to be Idle");
                 assert!(worker.is_running());
@@ -254,10 +272,7 @@ macro_rules! worker_store_suite {
                 let metrics = queue.get_metrics().await?;
                 assert_eq!(metrics.waiting.load(), 0);
 
-                while completed.len() < 5{
-                    tokio::task::yield_now().await;
-
-                }
+                wait_while!(completed.len() < 5, "all 5 jobs to complete");
                 queue.obliterate().await?;
                 Ok(())
             }
@@ -301,15 +316,19 @@ macro_rules! worker_store_suite {
                 worker.run()?;
 
                 let jobs = queue.bulk_add(job_iterator).await?;
-                while moved_to_active.len() < count as usize {}
+                wait_while!(
+                    moved_to_active.len() < count as usize,
+                    "all prioritized jobs to move to active"
+                );
                 assert_eq!(moved_to_active.len(), count as usize);
 
                 let metrics = queue.current_metrics.as_ref();
                 assert_eq!(metrics.waiting.load(), 0);
 
-                while !queue.current_metrics.all_jobs_completed() {
-                    tokio::task::yield_now().await;
-                }
+                wait_while!(
+                    !queue.current_metrics.all_jobs_completed(),
+                    "all jobs to complete"
+                );
 
                 let mut expected_ordered: VecDeque<u64> = jobs
                     .into_iter()
@@ -370,9 +389,10 @@ macro_rules! worker_store_suite {
                 assert!(worker.is_running());
 
                 let jobs = queue.bulk_add(job_iterator).await?;
-                while completed.len() < count as usize {
-                    tokio::task::yield_now().await
-                }
+                wait_while!(
+                    completed.len() < count as usize,
+                    "all jobs to complete before cleanup check"
+                );
                 worker.close();
                  // allow some time to pass and clean up happens
                  tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -429,9 +449,7 @@ macro_rules! worker_store_suite {
                 let worker = Worker::new_sync(&queue, processor, None)?;
                 worker.run()?;
 
-                while failed.len() <2  {
-                    tokio::task::yield_now().await
-                }
+                wait_while!(failed.len() < 2, "both jobs to fail");
 
                 queue.obliterate().await?;
                 Ok(())
@@ -473,9 +491,7 @@ macro_rules! worker_store_suite {
                 let worker = Worker::new_async(&queue, processor, None)?;
                 worker.run()?;
 
-                while failed.len() < 2 {
-                    tokio::task::yield_now().await;
-                }
+                wait_while!(failed.len() < 2, "both jobs to fail");
                 assert_eq!(failed.len(), 2);
                 queue.obliterate().await?;
                 Ok(())
@@ -520,9 +536,10 @@ macro_rules! worker_store_suite {
 
                 assert!(found_non_zero);
 
-                while !queue.current_metrics.all_jobs_completed() {
-                    tokio::task::yield_now().await;
-                }
+                wait_while!(
+                    !queue.current_metrics.all_jobs_completed(),
+                    "all jobs to complete"
+                );
                 worker.close();
                 Ok(())
             }
