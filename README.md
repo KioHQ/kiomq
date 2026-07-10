@@ -393,9 +393,19 @@ cargo bench
 
 ### Testing
 
+Run the suite with [`cargo nextest`](https://nexte.st/):
+
 ```bash
-cargo test
+cargo nextest run
 ```
+
+> **Note:** use `cargo nextest run`, not `cargo test`. The integration tests
+> share process-global state (the metrics collector), so they must each run in
+> their own process — which nextest does by default. Under `cargo test` (a
+> single process) they interfere with one another and fail. CI runs nextest;
+> local development should too. The [`.config/nextest.toml`](.config/nextest.toml)
+> profile also terminates any hung test so a stall fails fast instead of wedging
+> the run.
 
 ### License
 
