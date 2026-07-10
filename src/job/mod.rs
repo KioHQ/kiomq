@@ -13,7 +13,7 @@ use std::str::FromStr;
 mod backoff;
 mod delay;
 mod repeat;
-use crate::{job::delay::JobDelay, KioError};
+use crate::{KioError, job::delay::JobDelay};
 pub use backoff::{BackOff, BackOffJobOptions, BackOffOptions, StoredFn};
 pub use repeat::Repeat;
 use std::time::Duration;

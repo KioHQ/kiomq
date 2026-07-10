@@ -1,7 +1,7 @@
 use crate::KioError;
 use futures::{
-    future::{BoxFuture, Future, FutureExt},
     TryFutureExt,
+    future::{BoxFuture, Future, FutureExt},
 };
 use std::marker::PhantomData;
 

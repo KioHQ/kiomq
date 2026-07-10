@@ -1,8 +1,8 @@
 use crate::metrics::{
-    TaskInfo, TimerCommand, WorkerMetrics, HISTOGRAM_MAX_NS, P_METRICS_COLLECTOR, WORKER_STATE_TTL,
+    HISTOGRAM_MAX_NS, P_METRICS_COLLECTOR, TaskInfo, TimerCommand, WORKER_STATE_TTL, WorkerMetrics,
 };
 use crate::utils::pause_or_resume_workers;
-use crate::worker::{ProcessingQueue, WorkerState, MIN_DELAY_MS_LIMIT as EVICTION_INTERVAL_MS};
+use crate::worker::{MIN_DELAY_MS_LIMIT as EVICTION_INTERVAL_MS, ProcessingQueue, WorkerState};
 
 use crate::Dt;
 use crate::{KioResult, ProcessMetrics, WorkerMetaData};
@@ -14,7 +14,7 @@ use derive_more::{Debug, Display};
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt};
 use num_traits::AsPrimitive;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,7 +25,7 @@ use tokio::task::JoinHandle;
 use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
-use tracing::{info, info_span, instrument, Span};
+use tracing::{Span, info, info_span, instrument};
 use uuid::Uuid;
 // model the timers (stall_check_lock,  extend_lock and job_promotion)
 #[derive(Debug, Clone, Copy, Display)]
@@ -62,8 +62,8 @@ impl TimerType {
 }
 
 use crate::{
-    worker::{JobMap, Task},
     Queue, Store, WorkerOpts,
+    worker::{JobMap, Task},
 };
 #[derive(Debug)]
 struct SenderInner {
@@ -123,11 +123,11 @@ pub struct DelayQueueTimer<D, R, P, S> {
 }
 
 impl<
-        D: Clone + DeserializeOwned + 'static + Send + Serialize + Sync,
-        R: Clone + DeserializeOwned + 'static + Serialize + Send + Sync,
-        P: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
-        S: Clone + Store<D, R, P> + Send + 'static + Sync,
-    > DelayQueueTimer<D, R, P, S>
+    D: Clone + DeserializeOwned + 'static + Send + Serialize + Sync,
+    R: Clone + DeserializeOwned + 'static + Serialize + Send + Sync,
+    P: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
+    S: Clone + Store<D, R, P> + Send + 'static + Sync,
+> DelayQueueTimer<D, R, P, S>
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -184,7 +184,7 @@ impl<
         &self,
         rx: Receiver<TimerCommand>,
         process_metrics_rx: watch::Receiver<Option<ProcessMetrics>>,
-    ) -> impl std::future::Future<Output = KioResult<()>> {
+    ) -> impl std::future::Future<Output = KioResult<()>> + use<D, R, P, S> {
         let queue = self.queue.clone();
         let (workers, jobs, token, sender, _) = (
             self.workers.clone(),
@@ -343,7 +343,7 @@ where
                 .collect();
             for pair in jobs
                 .iter()
-                .filter(|entry| workers.contains(&entry.value().1 .0))
+                .filter(|entry| workers.contains(&entry.value().1.0))
             {
                 let (job, token, _handle, _, _, opts) = pair.value();
 

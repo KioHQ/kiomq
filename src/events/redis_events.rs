@@ -9,7 +9,7 @@ use compact_str::ToCompactString;
 use derive_more::Debug;
 #[cfg(feature = "redis-store")]
 use redis::{ParsingError, ToSingleRedisArg};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::str::FromStr;
 use uuid::Uuid;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash, Debug)]
@@ -101,8 +101,8 @@ impl<R, P> Default for QueueStreamEvent<R, P> {
 }
 #[cfg(feature = "redis-store")]
 use redis::{
-    streams::{StreamId, StreamReadReply},
     FromRedisValue, ToRedisArgs,
+    streams::{StreamId, StreamReadReply},
 };
 #[cfg(feature = "redis-store")]
 impl<R: DeserializeOwned, P: DeserializeOwned> QueueStreamEvent<R, P> {

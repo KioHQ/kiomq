@@ -80,7 +80,12 @@ impl BackOff {
         let backoff = Self::default();
         backoff.register("exponential", |delay: i64| {
             Arc::new(move |atempts: i64| -> i64 {
-                2_i64.pow(u32::try_from(atempts).unwrap_or(u32::MAX)) * delay
+                // Saturate rather than panic/wrap: uncapped repeat jobs push the
+                // attempt count arbitrarily high, and `2^attempt * delay`
+                // overflows i64 long before that.
+                2_i64
+                    .saturating_pow(u32::try_from(atempts).unwrap_or(u32::MAX))
+                    .saturating_mul(delay)
             })
         });
 
@@ -131,11 +136,11 @@ impl BackOff {
         attempts: i64,
         custom_strategy: Option<StoredFn>,
     ) -> Option<i64> {
-        if let Some(opts) = backoff_opts {
-            if let Some(strategy) = self.lookup_strategy(opts, custom_strategy) {
-                let calculated_delay = strategy(attempts);
-                return Some(calculated_delay);
-            }
+        if let Some(opts) = backoff_opts
+            && let Some(strategy) = self.lookup_strategy(opts, custom_strategy)
+        {
+            let calculated_delay = strategy(attempts);
+            return Some(calculated_delay);
         }
 
         None
@@ -158,13 +163,12 @@ impl BackOff {
         custom_strategy: Option<StoredFn>,
     ) -> Option<StoredFn>
 where {
-        if let Some(t) = backoff.type_ {
-            if let (Some(entry), Some(delay)) =
+        if let Some(t) = backoff.type_
+            && let (Some(entry), Some(delay)) =
                 (self.builtin_strategies.get(t.as_str()), backoff.delay)
-            {
-                let strategy = entry.value();
-                return Some(strategy(delay));
-            }
+        {
+            let strategy = entry.value();
+            return Some(strategy(delay));
         }
 
         if let Some(strategy) = custom_strategy {
@@ -209,6 +213,31 @@ mod tests {
             assert_eq!(strategy(4), 1600);
             assert_eq!(strategy(5), 3200);
         }
+    }
+    #[tokio::test]
+    async fn test_exponential_backoff_high_attempt_does_not_overflow() {
+        // A repeat-with-exponential-backoff job increments `attempts` on every
+        // run and is never capped, so the attempt count eventually reaches the
+        // point where `2^attempt * delay` overflows i64. The delay function
+        // must saturate rather than panic (debug) / wrap to a negative delay
+        // (release).
+        let backoff = BackOff::new();
+        let strategy = backoff
+            .lookup_strategy(
+                BackOffOptions {
+                    delay: Some(100),
+                    type_: Some("exponential".to_compact_string()),
+                },
+                None,
+            )
+            .expect("exponential strategy should exist");
+
+        let delay = strategy(64);
+        assert_eq!(
+            delay,
+            i64::MAX,
+            "overflowing backoff must saturate, not wrap"
+        );
     }
     #[test]
     fn test_fixed_back() {

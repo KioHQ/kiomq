@@ -29,7 +29,7 @@ use tokio::sync::broadcast::Sender;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_metrics::{RuntimeMetrics, RuntimeMonitor};
 use tokio_util::sync::CancellationToken;
-use tokio_util::time::{delay_queue::Key, DelayQueue};
+use tokio_util::time::{DelayQueue, delay_queue::Key};
 use uuid::Uuid;
 /// Worker state TTL (milliseconds)
 ///

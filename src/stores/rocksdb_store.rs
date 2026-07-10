@@ -6,13 +6,13 @@ use crate::utils::{
 };
 use crate::worker::MIN_DELAY_MS_LIMIT;
 use crate::{
-    job, CollectionSuffix, Dt, FailedDetails, JobError, KioError, KioResult, QueueError,
-    QueueEventMode,
+    CollectionSuffix, Dt, FailedDetails, JobError, KioError, KioResult, QueueError, QueueEventMode,
+    job,
 };
 use chrono::Utc;
 use crossbeam::queue::SegQueue;
-use crossbeam_skiplist::map::Entry;
 use crossbeam_skiplist::SkipMap;
+use crossbeam_skiplist::map::Entry;
 use derive_more::Debug;
 use futures::FutureExt;
 use rocksdb::{
@@ -20,15 +20,15 @@ use rocksdb::{
     Options, ReadOptions, WriteBatch, WriteBatchWithTransaction, WriteOptions,
 };
 use serde::Deserialize;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::convert::TryInto;
 use std::future::IntoFuture;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 #[track_caller]
 pub fn ivec_to_number<T: AsRef<[u8]>>(mut src: T) -> i64 {
     let array: [u8; 8] = src.as_ref().try_into().ok().unwrap_or_default();
