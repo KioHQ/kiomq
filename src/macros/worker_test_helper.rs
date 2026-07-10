@@ -195,7 +195,10 @@ macro_rules! worker_store_suite {
                 assert!(!worker.is_running());
                 assert_eq!(completed.len(), count as usize);
 
-                let metrics = queue.current_metrics.as_ref();
+                // `current_metrics` is only refreshed by the periodic metrics
+                // timer, which stops once the worker is closed — so it can hold a
+                // stale count here. Read the live store count instead.
+                let metrics = queue.get_metrics().await?;
                 assert_eq!(metrics.delayed.load(), 0);
 
                 while let Some(id) = completed.pop() {
