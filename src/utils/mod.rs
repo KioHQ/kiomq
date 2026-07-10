@@ -927,8 +927,8 @@ pub fn to_redis_parsing_error(err: impl ToString) -> ParsingError {
 mod priority_score_tests {
     use super::calculate_next_priority_score;
 
-    #[tokio::test]
-    async fn tie_break_counter_never_bleeds_into_priority() {
+    #[test]
+    fn tie_break_counter_never_bleeds_into_priority() {
         // Priority packs into the high 32 bits, the FIFO tie-break counter into
         // the low 32 bits. A job's tie-break counter must never change which
         // priority band it lands in, otherwise a lower-priority job with a large
