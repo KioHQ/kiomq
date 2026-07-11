@@ -1,8 +1,8 @@
-#[cfg(not(target_os = "linux"))]
-use num_cpus::get;
-#[cfg(target_os = "linux")]
-use num_cpus::get;
 use num_traits::AsPrimitive;
+/// Number of logical CPUs, falling back to 1 when the platform can't report it.
+fn get() -> usize {
+    std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
+}
 #[cfg(not(target_os = "linux"))]
 use std::collections::HashSet;
 #[cfg(target_os = "linux")]

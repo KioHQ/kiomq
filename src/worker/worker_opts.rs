@@ -2,6 +2,10 @@ use derive_more::Debug;
 use serde::{Deserialize, Serialize};
 /// Minimum acceptable delay in milliseconds
 pub const MIN_DELAY_MS_LIMIT: u64 = 50;
+/// Number of logical CPUs, falling back to 1 when the platform can't report it.
+fn logical_cpus() -> usize {
+    std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
+}
 /// Configuration options for a [`Worker`](crate::Worker).
 ///
 /// All durations are in **milliseconds** unless otherwise noted.
@@ -50,7 +54,7 @@ pub struct WorkerOpts {
 impl Default for WorkerOpts {
     fn default() -> Self {
         Self {
-            concurrency: num_cpus::get(),
+            concurrency: logical_cpus(),
 
             stalled_interval: 30000,
             lock_duration: 30000,
@@ -94,7 +98,7 @@ mod tests {
     #[test]
     fn default_concurrency_equals_logical_cpu_count() {
         let opts = WorkerOpts::default();
-        assert_eq!(opts.concurrency, num_cpus::get());
+        assert_eq!(opts.concurrency, logical_cpus());
     }
 
     /// `WorkerOpts` is `Copy`; a copy must be independent of its source.
@@ -107,7 +111,7 @@ mod tests {
         assert_ne!(copy.concurrency, original.concurrency);
         assert_ne!(copy.autorun, original.autorun);
         // The original must be untouched by mutations to the copy.
-        assert_eq!(original.concurrency, num_cpus::get());
+        assert_eq!(original.concurrency, logical_cpus());
         assert!(!original.autorun);
     }
 
