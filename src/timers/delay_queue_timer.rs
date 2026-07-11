@@ -13,7 +13,6 @@ use crossbeam_skiplist::SkipMap;
 use derive_more::{Debug, Display};
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt};
-use num_traits::AsPrimitive;
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -227,9 +226,10 @@ impl<
                          if let Some(metrics) = process_metrics {
                           #[cfg(feature = "tracing")]
                            info!("Collecting Process Metrics");
+                             #[allow(clippy::cast_possible_truncation)]
                              queue
                                  .store
-                                 .store_process_metrics(metrics, interval.as_())
+                                 .store_process_metrics(metrics, interval as u64)
                                  .await?;
                          }
 

@@ -1,4 +1,3 @@
-use num_traits::AsPrimitive;
 /// Number of logical CPUs, falling back to 1 when the platform can't report it.
 fn get() -> usize {
     std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
@@ -9,6 +8,7 @@ use std::collections::HashSet;
 use std::time::Instant;
 #[cfg(not(target_os = "linux"))]
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
+
 #[derive(Debug, Clone, Copy)]
 pub struct ProcessTreeStats {
     pub cpu_usage: f32,
@@ -28,9 +28,10 @@ pub struct ProcessTreeTracker {
 
 #[cfg(target_os = "linux")]
 impl ProcessTreeTracker {
+    #[allow(clippy::cast_precision_loss)]
     pub fn new() -> Self {
         let me = procfs::process::Process::myself().expect("Failed to access /proc/self");
-        let ticks_per_second = procfs::ticks_per_second().as_();
+        let ticks_per_second = procfs::ticks_per_second() as f32;
         let page_size = procfs::page_size();
         let cpu_count = get();
 
@@ -48,15 +49,17 @@ impl ProcessTreeTracker {
         tracker
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn sample_tree_metrics(&self) -> (f32, u64, u64) {
         let mut total_ticks = 0.0;
         let mut total_rss_pages = 0;
         let mut total_virt_bytes = 0;
 
         if let Ok(stat) = self.me.stat() {
-            total_ticks += <u64 as AsPrimitive<f32>>::as_(
-                stat.utime + stat.stime + stat.cutime.cast_unsigned() + stat.cstime.cast_unsigned(),
-            );
+            total_ticks += (stat.utime
+                + stat.stime
+                + stat.cutime.cast_unsigned()
+                + stat.cstime.cast_unsigned()) as f32;
             total_rss_pages += stat.rss;
             total_virt_bytes += stat.vsize;
         }
@@ -72,8 +75,7 @@ impl ProcessTreeTracker {
                 None
             }) {
                 if let Ok(child_stat) = child_proc.stat() {
-                    total_ticks +=
-                        <u64 as AsPrimitive<f32>>::as_(child_stat.utime + child_stat.stime);
+                    total_ticks += (child_stat.utime + child_stat.stime) as f32;
                     total_rss_pages += child_stat.rss;
                     total_virt_bytes += child_stat.vsize;
                 }
@@ -87,6 +89,7 @@ impl ProcessTreeTracker {
         )
     }
 
+    #[allow(clippy::cast_precision_loss)]
     pub fn sample(&mut self) -> ProcessTreeStats {
         let now = Instant::now();
         let elapsed_secs = now.duration_since(self.prev_time).as_secs_f32();
@@ -96,8 +99,8 @@ impl ProcessTreeTracker {
         let cpu_time_spent = delta_ticks / self.ticks_per_second;
         let mut cpu_usage = (cpu_time_spent / elapsed_secs) * 100.0;
 
-        // Normalize across CPU cores to match non-Linux implementation
-        cpu_usage /= <usize as AsPrimitive<f32>>::as_(self.cpu_count);
+        // Normalise across CPU cores to match non-Linux implementation
+        cpu_usage /= self.cpu_count as f32;
 
         self.prev_total_ticks = current_total_ticks;
         self.prev_time = now;
@@ -122,7 +125,7 @@ pub struct ProcessTreeTracker {
 impl ProcessTreeTracker {
     pub fn new() -> Self {
         let mut sys = sysinfo::System::new();
-        let pid = sysinfo::Pid::from(<u32 as AsPrimitive<usize>>::as_(std::process::id()));
+        let pid = sysinfo::Pid::from(std::process::id() as usize);
         let process_refresh_kind = ProcessRefreshKind::nothing().with_memory().with_cpu();
 
         sys.refresh_processes_specifics(
@@ -139,6 +142,7 @@ impl ProcessTreeTracker {
             child_processes,
         }
     }
+    #[allow(clippy::cast_precision_loss)]
     pub fn sample(&mut self) -> ProcessTreeStats {
         let mut processes: Vec<_> = self.child_processes.iter().copied().collect();
         processes.push(self.pid);
@@ -177,7 +181,7 @@ impl ProcessTreeTracker {
                 self.child_processes.insert(process.pid());
             }
         }
-        cpu_usage /= <usize as AsPrimitive<f32>>::as_(self.cpu_count);
+        cpu_usage /= self.cpu_count as f32;
         ProcessTreeStats {
             cpu_usage,
             rss_bytes,

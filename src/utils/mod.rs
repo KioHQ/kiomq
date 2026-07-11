@@ -18,7 +18,6 @@ use crossbeam::atomic::AtomicCell;
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
-use num_traits::AsPrimitive;
 use parking_lot::Mutex;
 #[cfg(feature = "redis-store")]
 use redis::ParsingError;
@@ -487,7 +486,7 @@ where
 
         let token_prefix = active_job_count.load();
         let next_id = Uuid::new_v4();
-        let token = JobToken(id, next_id, token_prefix.as_());
+        let token = JobToken(id, next_id, token_prefix as u64);
         let worker_id = id;
         let block_delay = block_until.load();
 

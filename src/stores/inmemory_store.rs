@@ -19,7 +19,6 @@ use crossbeam_skiplist::{SkipMap, SkipSet};
 use derive_more::Debug;
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use num_traits::AsPrimitive;
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -541,14 +540,14 @@ where
         let metrics = QueueMetrics::new(
             self.id_counter.load(),
             self.processing.load(),
-            self.active.len().as_(),
-            self.stalled.iter().count().as_(),
-            self.completed.iter().count().as_(),
-            self.delayed.iter().count().as_(),
-            self.prioritized.iter().count().as_(),
-            self.paused.len().as_(),
-            self.failed.iter().count().as_(),
-            self.waiting.len().as_(),
+            self.active.len() as u64,
+            self.stalled.iter().count() as u64,
+            self.completed.iter().count() as u64,
+            self.delayed.iter().count() as u64,
+            self.prioritized.iter().count() as u64,
+            self.paused.len() as u64,
+            self.failed.iter().count() as u64,
+            self.waiting.len() as u64,
             self.is_paused.load(),
             self.event_mode,
         );
