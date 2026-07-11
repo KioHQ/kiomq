@@ -442,3 +442,144 @@ where
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod timer_type_tests {
+    //! Robustness tests for [`TimerType`], the only piece of
+    //! `delay_queue_timer` that can be exercised without constructing a full
+    //! `Queue`/`Store`/`JobMap` harness. These focus on the scheduling
+    //! contract exposed through `next_duration` plus the `Display`/`Debug`
+    //! representations, across zero, tiny and very large delays.
+    use super::{EVICTION_INTERVAL_MS, TimerType, WORKER_STATE_TTL};
+    use std::time::Duration;
+    use uuid::Uuid;
+
+    #[test]
+    fn next_duration_echoes_the_configured_interval_for_polling_timers() {
+        // StalledCheck, ExtendLock and CollectMetrics must return exactly the
+        // duration they were built with so the timer reschedules at the same
+        // cadence.
+        let cases = [
+            Duration::from_millis(250),
+            Duration::from_secs(30),
+            Duration::from_millis(1),
+        ];
+        for duration in cases {
+            assert_eq!(
+                TimerType::StalledCheck(duration).next_duration(),
+                duration,
+                "StalledCheck must echo its interval"
+            );
+            assert_eq!(
+                TimerType::ExtendLock(duration).next_duration(),
+                duration,
+                "ExtendLock must echo its interval"
+            );
+            assert_eq!(
+                TimerType::CollectMetrics(duration).next_duration(),
+                duration,
+                "CollectMetrics must echo its interval"
+            );
+        }
+    }
+
+    #[test]
+    fn next_duration_handles_zero_and_very_large_intervals_without_panicking() {
+        // A zero interval is a legitimate (if aggressive) request and must be
+        // returned verbatim rather than clamped.
+        assert_eq!(
+            TimerType::StalledCheck(Duration::ZERO).next_duration(),
+            Duration::ZERO,
+            "a zero interval must round-trip unchanged"
+        );
+        // A very large but non-overflowing interval must also round-trip.
+        let very_large = Duration::from_hours(8760); // one year
+        assert_eq!(
+            TimerType::ExtendLock(very_large).next_duration(),
+            very_large,
+            "a very large interval must round-trip unchanged"
+        );
+    }
+
+    #[test]
+    fn promoted_delayed_always_uses_the_fixed_eviction_interval() {
+        // PromotedDelayed ignores any per-instance data and always fires again
+        // after the fixed eviction interval, regardless of job id or queue id.
+        let expected = Duration::from_millis(EVICTION_INTERVAL_MS);
+        for job_id in [0_u64, 1, u64::MAX] {
+            let timer = TimerType::PromotedDelayed(job_id, Uuid::new_v4());
+            assert_eq!(
+                timer.next_duration(),
+                expected,
+                "PromotedDelayed must always reschedule after EVICTION_INTERVAL_MS"
+            );
+        }
+    }
+
+    #[test]
+    fn reregister_worker_uses_the_worker_state_ttl() {
+        // ReregisterWorker reschedules after the worker-state TTL so heartbeats
+        // are refreshed before the registry entry expires.
+        let ttl_ms = u64::try_from(WORKER_STATE_TTL).expect("worker-state TTL must fit in u64");
+        // The TTL must be strictly positive, otherwise the timer would busy-loop.
+        assert!(
+            ttl_ms > 0,
+            "worker-state TTL must be positive to avoid a tight reschedule loop"
+        );
+        assert_eq!(
+            TimerType::ReregisterWorker.next_duration(),
+            Duration::from_millis(ttl_ms),
+            "ReregisterWorker must reschedule after WORKER_STATE_TTL"
+        );
+    }
+
+    #[test]
+    fn timer_type_is_copy_so_rescheduling_never_moves_the_original() {
+        // `next_timer.replace(key)` relies on `TimerType: Copy`; confirm the
+        // original remains usable after being copied.
+        let original = TimerType::StalledCheck(Duration::from_millis(10));
+        let copied = original;
+        assert_eq!(original.next_duration(), copied.next_duration());
+    }
+
+    #[test]
+    fn display_representation_includes_the_expected_context() {
+        let stalled = format!("{}", TimerType::StalledCheck(Duration::from_millis(5)));
+        assert!(
+            stalled.contains("StalledCheck") && stalled.contains("5ms"),
+            "unexpected StalledCheck Display: {stalled}"
+        );
+        let extend = format!("{}", TimerType::ExtendLock(Duration::from_millis(7)));
+        assert!(
+            extend.contains("ExtendLock") && extend.contains("7ms"),
+            "unexpected ExtendLock Display: {extend}"
+        );
+        let queue_id = Uuid::new_v4();
+        let promoted = format!("{}", TimerType::PromotedDelayed(42, queue_id));
+        assert!(
+            promoted.contains("42") && promoted.contains(&queue_id.to_string()),
+            "unexpected PromotedDelayed Display: {promoted}"
+        );
+        let collect = format!("{}", TimerType::CollectMetrics(Duration::from_millis(9)));
+        assert!(
+            collect.contains("9ms"),
+            "unexpected CollectMetrics Display: {collect}"
+        );
+    }
+
+    #[test]
+    fn debug_representation_uses_stable_short_labels() {
+        assert_eq!(
+            format!("{:?}", TimerType::StalledCheck(Duration::from_millis(1))),
+            "StalledCheck"
+        );
+        assert_eq!(
+            format!("{:?}", TimerType::ExtendLock(Duration::from_millis(1))),
+            "ExtendLock"
+        );
+        assert_eq!(
+            format!("{:?}", TimerType::PromotedDelayed(1, Uuid::nil())),
+            "PromoteJob"
+        );
+    }
+}

@@ -501,3 +501,492 @@ impl QueueMetrics {
         self.update(&default);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{FailedDetails, JobMetrics, JobState, JobToken, Trace};
+
+    #[test]
+    fn queue_opts_default_uses_documented_values() {
+        let opts = QueueOpts::default();
+        // `attempts` must default to exactly 1 (a single attempt, no retries).
+        assert_eq!(opts.attempts, 1);
+        // The default event mode is the persistent Stream, never PubSub.
+        assert_eq!(opts.event_mode, Some(QueueEventMode::Stream));
+        // Retention and repeat policies are opt-in and therefore absent.
+        assert!(opts.remove_on_fail.is_none());
+        assert!(opts.remove_on_complete.is_none());
+        assert!(opts.repeat.is_none());
+        assert!(opts.default_backoff.is_none());
+    }
+
+    #[test]
+    fn queue_opts_clone_is_a_faithful_copy() {
+        let opts = QueueOpts {
+            attempts: 7,
+            event_mode: Some(QueueEventMode::PubSub),
+            ..Default::default()
+        };
+        let cloned = opts.clone();
+        // Compare against the original (still live) to prove the clone is faithful.
+        assert_eq!(cloned.attempts, opts.attempts);
+        assert_eq!(cloned.event_mode, opts.event_mode);
+        assert_eq!(cloned.attempts, 7);
+        assert_eq!(cloned.event_mode, Some(QueueEventMode::PubSub));
+    }
+
+    #[test]
+    fn queue_event_mode_default_is_stream() {
+        assert_eq!(QueueEventMode::default(), QueueEventMode::Stream);
+    }
+
+    #[test]
+    fn queue_event_mode_discriminant_bytes_are_stable() {
+        // The `#[repr(u8)]` values are persisted to the store, so they must not
+        // drift: Stream is 0 and PubSub is 1.
+        assert_eq!(QueueEventMode::Stream as u8, 0);
+        assert_eq!(QueueEventMode::PubSub as u8, 1);
+    }
+
+    #[test]
+    fn queue_event_mode_try_from_accepts_known_bytes() {
+        assert_eq!(
+            QueueEventMode::try_from(0u8).expect("0 is Stream"),
+            QueueEventMode::Stream
+        );
+        assert_eq!(
+            QueueEventMode::try_from(1u8).expect("1 is PubSub"),
+            QueueEventMode::PubSub
+        );
+    }
+
+    #[test]
+    fn queue_event_mode_try_from_rejects_every_unknown_byte() {
+        // Anything outside {0, 1} must fail loudly with the dedicated error,
+        // rather than silently defaulting.
+        for byte in 2u8..=u8::MAX {
+            let err = QueueEventMode::try_from(byte)
+                .expect_err("bytes above 1 are not valid event modes");
+            assert!(
+                matches!(err, QueueError::UnKnownEventMode),
+                "byte {byte} produced unexpected error {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn queue_event_mode_byte_round_trips_both_directions() {
+        for mode in [QueueEventMode::Stream, QueueEventMode::PubSub] {
+            let byte = mode as u8;
+            let back = QueueEventMode::try_from(byte).expect("valid mode byte");
+            assert_eq!(back, mode);
+        }
+    }
+
+    /// Fieldless variants that `from_tag` is documented/able to decode.
+    const ROUND_TRIPPABLE_FIELDLESS: [CollectionSuffix; 15] = [
+        CollectionSuffix::Active,
+        CollectionSuffix::Completed,
+        CollectionSuffix::Delayed,
+        CollectionSuffix::Stalled,
+        CollectionSuffix::Prioritized,
+        CollectionSuffix::PriorityCounter,
+        CollectionSuffix::Id,
+        CollectionSuffix::Meta,
+        CollectionSuffix::Events,
+        CollectionSuffix::Wait,
+        CollectionSuffix::Paused,
+        CollectionSuffix::Failed,
+        CollectionSuffix::Marker,
+        CollectionSuffix::Prefix,
+        CollectionSuffix::StalledCheck,
+    ];
+
+    #[test]
+    fn collection_suffix_fieldless_tags_round_trip() {
+        for suffix in ROUND_TRIPPABLE_FIELDLESS {
+            let tag = suffix.tag();
+            let decoded =
+                CollectionSuffix::from_tag(tag).expect("known fieldless discriminant must decode");
+            assert_eq!(decoded, suffix, "round-trip failed for {suffix:?}");
+        }
+    }
+
+    #[test]
+    fn collection_suffix_job_and_lock_round_trip_within_payload_range() {
+        // Payloads up to 2^56 - 1 fit in the lower 56 bits and must survive.
+        for id in [0u64, 1, 42, 1_000_000, 0x00FF_FFFF_FFFF_FFFF] {
+            let job = CollectionSuffix::Job(id);
+            let lock = CollectionSuffix::Lock(id);
+            assert_eq!(
+                CollectionSuffix::from_tag(job.tag()),
+                Some(CollectionSuffix::Job(id)),
+                "Job({id}) failed to round-trip"
+            );
+            assert_eq!(
+                CollectionSuffix::from_tag(lock.tag()),
+                Some(CollectionSuffix::Lock(id)),
+                "Lock({id}) failed to round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn collection_suffix_job_payload_is_truncated_above_56_bits() {
+        // The top 8 bits are reserved for the discriminant, so an ID that uses
+        // them is masked. This documents the (lossy) boundary behaviour.
+        let id = u64::MAX;
+        let masked = id & 0x00FF_FFFF_FFFF_FFFF;
+        let decoded = CollectionSuffix::from_tag(CollectionSuffix::Job(id).tag());
+        assert_eq!(decoded, Some(CollectionSuffix::Job(masked)));
+        assert_ne!(decoded, Some(CollectionSuffix::Job(id)));
+    }
+
+    #[test]
+    fn collection_suffix_from_tag_rejects_unknown_discriminants() {
+        // Discriminant 0 and everything at/above 20 are undefined.
+        for disc in [0u8, 20, 21, 100, u8::MAX] {
+            let tag = u64::from(disc) << 56;
+            assert_eq!(
+                CollectionSuffix::from_tag(tag),
+                None,
+                "discriminant {disc} should not decode"
+            );
+        }
+    }
+
+    #[ignore = "SUSPECTED BUG: `discriminant()`/`tag()` encode WorkerMetrics=18 \
+                and ProcessMetrics=19, but `from_tag` only decodes discriminants \
+                1..=17, so these two variants silently fail to round-trip. This \
+                test asserts the DESIRED round-trip and fails until from_tag \
+                decodes discriminants 18 and 19."]
+    #[test]
+    fn collection_suffix_worker_and_process_metrics_tags_round_trip() {
+        assert_eq!(
+            CollectionSuffix::from_tag(CollectionSuffix::WorkerMetrics.tag()),
+            Some(CollectionSuffix::WorkerMetrics)
+        );
+        assert_eq!(
+            CollectionSuffix::from_tag(CollectionSuffix::ProcessMetrics.tag()),
+            Some(CollectionSuffix::ProcessMetrics)
+        );
+    }
+
+    #[test]
+    fn collection_suffix_to_bytes_matches_big_endian_tag() {
+        for suffix in [
+            CollectionSuffix::Active,
+            CollectionSuffix::Job(123),
+            CollectionSuffix::Lock(456),
+            CollectionSuffix::Prefix,
+        ] {
+            assert_eq!(suffix.to_bytes(), suffix.tag().to_be_bytes());
+        }
+    }
+
+    #[test]
+    fn collection_suffix_to_collection_name_is_lowercased_and_delimited() {
+        // Mixed-case prefix and name must be fully lowercased.
+        let key = CollectionSuffix::Active.to_collection_name("Kio", "MyQueue");
+        assert_eq!(key, "kio:myqueue:active");
+    }
+
+    #[test]
+    fn collection_suffix_to_collection_name_embeds_numeric_payloads() {
+        assert_eq!(
+            CollectionSuffix::Job(5).to_collection_name("p", "n"),
+            "p:n:5"
+        );
+        assert_eq!(
+            CollectionSuffix::Lock(9).to_collection_name("p", "n"),
+            "p:n:9:lock"
+        );
+    }
+
+    #[test]
+    fn collection_suffix_to_collection_name_handles_empty_prefix_and_name() {
+        // The Prefix variant renders as an empty suffix, producing a
+        // trailing-colon key; empty prefix/name must not panic.
+        assert_eq!(CollectionSuffix::Prefix.to_collection_name("", ""), "::");
+    }
+
+    #[test]
+    fn collection_suffix_display_special_variants() {
+        assert_eq!(CollectionSuffix::Job(7).to_string(), "7");
+        assert_eq!(CollectionSuffix::Prefix.to_string(), "");
+        assert_eq!(CollectionSuffix::Lock(7).to_string(), "7:lock");
+        assert_eq!(CollectionSuffix::StalledCheck.to_string(), "stalled_check");
+        assert_eq!(
+            CollectionSuffix::WorkerMetrics.to_string(),
+            "worker_metrics"
+        );
+        assert_eq!(
+            CollectionSuffix::ProcessMetrics.to_string(),
+            "process_metrics"
+        );
+    }
+
+    #[test]
+    fn collection_suffix_ordering_follows_declaration() {
+        // Ord is derived; Active precedes Completed precedes Delayed.
+        assert!(CollectionSuffix::Active < CollectionSuffix::Completed);
+        assert!(CollectionSuffix::Completed < CollectionSuffix::Delayed);
+    }
+
+    #[test]
+    fn collection_suffix_from_job_state_covers_every_state() {
+        // Exhaustive mapping — guards against a mis-routed state.
+        assert_eq!(
+            CollectionSuffix::from(JobState::Wait),
+            CollectionSuffix::Wait
+        );
+        assert_eq!(
+            CollectionSuffix::from(JobState::Stalled),
+            CollectionSuffix::Paused
+        );
+        assert_eq!(
+            CollectionSuffix::from(JobState::Paused),
+            CollectionSuffix::Paused
+        );
+        assert_eq!(
+            CollectionSuffix::from(JobState::Active),
+            CollectionSuffix::Active
+        );
+        assert_eq!(
+            CollectionSuffix::from(JobState::Resumed),
+            CollectionSuffix::Active
+        );
+        assert_eq!(
+            CollectionSuffix::from(JobState::Completed),
+            CollectionSuffix::Completed
+        );
+        assert_eq!(
+            CollectionSuffix::from(JobState::Failed),
+            CollectionSuffix::Failed
+        );
+        assert_eq!(
+            CollectionSuffix::from(JobState::Delayed),
+            CollectionSuffix::Delayed
+        );
+        assert_eq!(
+            CollectionSuffix::from(JobState::Progress),
+            CollectionSuffix::Prefix
+        );
+        assert_eq!(
+            CollectionSuffix::from(JobState::Prioritized),
+            CollectionSuffix::Prioritized
+        );
+        assert_eq!(
+            CollectionSuffix::from(JobState::Processing),
+            CollectionSuffix::Meta
+        );
+        assert_eq!(
+            CollectionSuffix::from(JobState::Obliterated),
+            CollectionSuffix::Events
+        );
+    }
+
+    #[test]
+    fn queue_metrics_default_is_idle_but_not_completed() {
+        let metrics = QueueMetrics::default();
+        // Nothing enqueued: the queue is quiescent yet "all completed" is false
+        // because no job was ever added (last_id == 0).
+        assert!(metrics.is_idle());
+        assert!(!metrics.all_jobs_completed());
+        assert!(!metrics.queue_has_work());
+        assert!(metrics.workers_idle());
+        assert!(!metrics.has_active_jobs());
+        assert!(!metrics.queue_is_paused());
+    }
+
+    /// Helper to build a fully-idle, fully-completed metrics snapshot.
+    fn completed_metrics(last_id: u64, failed: u64, paused: u64) -> QueueMetrics {
+        QueueMetrics::new(
+            last_id, // last_id
+            0,       // processing
+            0,       // active
+            0,       // stalled
+            last_id, // completed
+            0,       // delayed
+            0,       // prioritized
+            paused,  // paused
+            failed,  // failed
+            0,       // waiting
+            false,   // is_paused
+            QueueEventMode::Stream,
+        )
+    }
+
+    #[test]
+    fn queue_metrics_all_jobs_completed_true_case() {
+        let metrics = completed_metrics(3, 0, 0);
+        assert!(metrics.all_jobs_completed());
+    }
+
+    #[test]
+    fn queue_metrics_all_jobs_completed_ignores_failed_and_paused_counts() {
+        // `all_jobs_completed` only inspects last_id/completed/active/idle, so
+        // non-zero failed and paused counters must not disturb it.
+        let metrics = completed_metrics(3, 9, 7);
+        assert!(metrics.all_jobs_completed());
+    }
+
+    #[test]
+    fn queue_metrics_all_jobs_completed_false_when_a_job_is_active() {
+        let metrics = QueueMetrics::new(
+            2,
+            0,
+            1, // active > 0
+            0,
+            2,
+            0,
+            0,
+            0,
+            0,
+            0,
+            false,
+            QueueEventMode::Stream,
+        );
+        assert!(!metrics.all_jobs_completed());
+    }
+
+    #[test]
+    fn queue_metrics_all_jobs_completed_false_when_completed_below_last_id() {
+        let metrics = QueueMetrics::new(
+            5,
+            0,
+            0,
+            0,
+            4, // completed < last_id
+            0,
+            0,
+            0,
+            0,
+            0,
+            false,
+            QueueEventMode::Stream,
+        );
+        assert!(!metrics.all_jobs_completed());
+    }
+
+    #[test]
+    fn queue_metrics_queue_has_work_triggers_on_each_pending_bucket() {
+        // waiting, delayed, stalled and prioritized should each independently
+        // mark the queue as having work.
+        let buckets = [
+            (9, 0, 0, 0), // waiting
+            (0, 9, 0, 0), // delayed
+            (0, 0, 9, 0), // stalled
+            (0, 0, 0, 9), // prioritized
+        ];
+        for (waiting, delayed, stalled, prioritized) in buckets {
+            let metrics = QueueMetrics::new(
+                1,
+                0,
+                0,
+                stalled,
+                0,
+                delayed,
+                prioritized,
+                0,
+                0,
+                waiting,
+                false,
+                QueueEventMode::Stream,
+            );
+            assert!(
+                metrics.queue_has_work(),
+                "expected work for (w={waiting}, d={delayed}, s={stalled}, p={prioritized})"
+            );
+            assert!(!metrics.is_idle());
+        }
+    }
+
+    #[test]
+    fn queue_metrics_workers_idle_reflects_processing_counter() {
+        let busy = QueueMetrics::new(1, 3, 0, 0, 0, 0, 0, 0, 0, 0, false, QueueEventMode::Stream);
+        assert!(!busy.workers_idle());
+        assert!(!busy.is_idle());
+    }
+
+    #[test]
+    fn queue_metrics_has_delayed_and_active_helpers() {
+        let metrics =
+            QueueMetrics::new(1, 0, 2, 0, 0, 4, 0, 0, 0, 0, false, QueueEventMode::Stream);
+        assert!(metrics.has_delayed());
+        assert!(metrics.has_active_jobs());
+    }
+
+    #[test]
+    fn queue_metrics_queue_is_paused_reads_flag() {
+        let metrics = QueueMetrics::new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, true, QueueEventMode::Stream);
+        assert!(metrics.queue_is_paused());
+    }
+
+    #[test]
+    fn queue_metrics_update_replaces_all_counters() {
+        let target = QueueMetrics::default();
+        let source =
+            QueueMetrics::new(10, 1, 2, 3, 4, 5, 6, 7, 8, 9, false, QueueEventMode::PubSub);
+        target.update(&source);
+        assert_eq!(target.last_id.load(), 10);
+        assert_eq!(target.processing.load(), 1);
+        assert_eq!(target.active.load(), 2);
+        assert_eq!(target.stalled.load(), 3);
+        assert_eq!(target.completed.load(), 4);
+        assert_eq!(target.delayed.load(), 5);
+        assert_eq!(target.prioritized.load(), 6);
+        assert_eq!(target.paused.load(), 7);
+        assert_eq!(target.failed.load(), 8);
+        assert_eq!(target.waiting.load(), 9);
+        assert_eq!(target.event_mode.load(), QueueEventMode::PubSub);
+    }
+
+    #[test]
+    fn queue_metrics_clear_zeroes_counters() {
+        let metrics =
+            QueueMetrics::new(10, 1, 2, 3, 4, 5, 6, 7, 8, 9, false, QueueEventMode::PubSub);
+        metrics.clear();
+        assert_eq!(metrics.last_id.load(), 0);
+        assert_eq!(metrics.processing.load(), 0);
+        assert_eq!(metrics.active.load(), 0);
+        assert_eq!(metrics.completed.load(), 0);
+        assert_eq!(metrics.waiting.load(), 0);
+        assert!(metrics.is_idle());
+    }
+
+    #[test]
+    fn retry_options_from_backoff_ref_is_failed_variant() {
+        let backoff = BackOffJobOptions::Number(500);
+        let opt: RetryOptions<'_> = (&backoff).into();
+        assert!(matches!(opt, RetryOptions::Failed(_)));
+    }
+
+    #[test]
+    fn retry_options_from_repeat_ref_is_with_repeat_variant() {
+        let repeat = Repeat::Immediately(3);
+        let opt: RetryOptions<'_> = (&repeat).into();
+        assert!(matches!(opt, RetryOptions::WithRepeat(_)));
+    }
+
+    #[test]
+    fn job_field_name_matches_store_field_keys() {
+        assert_eq!(JobField::<i32>::Token(JobToken::default()).name(), "token");
+        assert_eq!(
+            JobField::<i32>::Payload(ProcessedResult::Success(1, JobMetrics::default())).name(),
+            "returnedValue"
+        );
+        assert_eq!(
+            JobField::<i32>::Payload(ProcessedResult::Failed(FailedDetails::default())).name(),
+            "failedReason"
+        );
+        assert_eq!(JobField::<i32>::ProcessedOn(0).name(), "processedOn");
+        assert_eq!(JobField::<i32>::FinishedOn(0).name(), "finishedOn");
+        assert_eq!(JobField::<i32>::State(JobState::Wait).name(), "state");
+        assert_eq!(
+            JobField::<i32>::BackTrace(Trace::default()).name(),
+            "stackTrace"
+        );
+    }
+}
