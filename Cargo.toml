@@ -2,6 +2,7 @@
 name = "kiomq"
 version = "0.2.1"
 edition = "2024"
+rust-version = "1.85.0"
 authors = ["Spencer Najib"]
 keywords = ["async", "task-queue", "tokio", "worker", "scheduler"]
 description = "An all-in-one task-queue and orchestration library for Rust"
@@ -94,7 +95,7 @@ version = "1.0.219"
 features = ["derive"]
 
 [dependencies.simd-json]
-version = "0.17.0"
+version = "0.15.1"
 features = ["serde", "known-key"]
 optional = true
 
@@ -137,7 +138,7 @@ features = ["crossbeam-queue"]
 procfs = "0.17"
 
 [target."cfg(not(target_os = \"linux\"))".dependencies.sysinfo]
-version = "0.39.1"
+version = "0.36"
 features = ["debug", "serde"]
 
 [dev-dependencies]
