@@ -679,10 +679,26 @@ mod tests {
         let worker = doubling_worker(&queue, None)?;
         worker.run()?;
 
-        // With nothing to do the worker must simply idle-poll, not crash or close.
+        // With nothing to do the worker idles. Note the queue auto-pauses a
+        // worker to `WorkerState::Idle` when there is no work (to avoid busy
+        // spinning), so it is deliberately NOT `Active` here — "not spinning
+        // out" means it must not close itself.
         tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(worker.is_running(), "an idle worker stays running");
-        assert!(!worker.closed());
+        assert!(!worker.closed(), "an idle worker must not close itself");
+        assert_ne!(
+            worker.state.load(),
+            WorkerState::Closed,
+            "an idle worker must stay alive, not shut down"
+        );
+
+        // And it must recover: once a job arrives, the idle worker resumes and
+        // processes it — proving it never truly spun out.
+        queue.add_job("job", 21, None).await?;
+        wait_until(
+            || queue.current_metrics.all_jobs_completed(),
+            "the idle worker to resume and complete the job",
+        )
+        .await;
 
         worker.close();
         Ok(())
