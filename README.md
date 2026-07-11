@@ -11,6 +11,7 @@
   <a href="https://crates.io/crates/kiomq"><img alt="crates.io" src="https://img.shields.io/crates/v/kiomq.svg" /></a>
   <a href="https://github.com/KioHQ/kiomq/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/KioHQ/kiomq/ci.yml?branch=main" /></a>
   <a href="https://docs.rs/kiomq"><img alt="docs.rs" src="https://img.shields.io/docsrs/kiomq" /></a>
+  <a href="https://releases.rs/docs/1.85.0/"><img alt="MSRV" src="https://img.shields.io/badge/MSRV-1.85.0-blue.svg" /></a>
   <a href= "https://opensource.org/licenses/MIT"> <img alt ="LICENSE" src="https://img.shields.io/badge/License-MIT-yellow.svg"/> </a>
   <a href="https://discord.gg/Y6Vy2k9Rf"><img alt="Discord" src="https://img.shields.io/badge/Discord-join%20chat-5865F2?logo=discord&logoColor=white" /></a>
 </p>
@@ -70,6 +71,8 @@ kiomq = "0.2.1"
 ```
 
 Cargo features: `redis-store` _(default)_, `rocksdb-store`, `tracing`.
+
+**MSRV:** Rust 1.85.0 (aligned with the 2024 edition).
 
 ---
 
