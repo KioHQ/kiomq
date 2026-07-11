@@ -185,3 +185,86 @@ impl ProcessTreeTracker {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Assert the machine-independent invariants every sample must uphold, so the
+    /// suite stays portable across CI hosts, PIDs and core counts.
+    fn assert_sane(stats: &ProcessTreeStats) {
+        assert!(
+            stats.cpu_usage.is_finite(),
+            "CPU usage must never be NaN or infinite (got {})",
+            stats.cpu_usage
+        );
+        assert!(
+            stats.cpu_usage >= 0.0,
+            "CPU usage must never be negative (got {})",
+            stats.cpu_usage
+        );
+        assert!(
+            stats.rss_bytes > 0,
+            "the tracker's own process must report non-zero resident memory"
+        );
+        assert!(
+            stats.virt_bytes >= stats.rss_bytes,
+            "virtual memory must be at least resident memory (virt={}, rss={})",
+            stats.virt_bytes,
+            stats.rss_bytes
+        );
+    }
+
+    #[test]
+    fn new_tracker_constructs_without_panicking() {
+        // Constructing the tracker touches live OS state (/proc or sysinfo); it
+        // must succeed on any supported host.
+        let _tracker = ProcessTreeTracker::new();
+    }
+
+    #[test]
+    fn first_sample_upholds_invariants() {
+        let mut tracker = ProcessTreeTracker::new();
+        let stats = tracker.sample();
+        assert_sane(&stats);
+    }
+
+    #[test]
+    fn repeated_sampling_stays_sane_and_never_panics() {
+        let mut tracker = ProcessTreeTracker::new();
+        // Rapid back-to-back samples exercise the elapsed-time delta maths, which
+        // could divide by a near-zero interval — the result must stay finite.
+        for _ in 0..8 {
+            let stats = tracker.sample();
+            assert_sane(&stats);
+        }
+    }
+
+    #[test]
+    fn independent_trackers_can_sample_concurrently_without_panicking() {
+        // Each tracker owns its own OS handle; sampling from several threads at
+        // once must not panic or produce insane readings.
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    let mut tracker = ProcessTreeTracker::new();
+                    let stats = tracker.sample();
+                    assert_sane(&stats);
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("sampling thread must not panic");
+        }
+    }
+
+    #[test]
+    fn stats_are_copy_so_snapshots_are_value_independent() {
+        // Compile-time guard: `ProcessTreeStats` must be `Copy`, so a captured
+        // snapshot is a value that a later `sample()` can never mutate. Asserting
+        // this at runtime would be a tautology, so pin the property in the type
+        // system instead.
+        const fn assert_copy<T: Copy>() {}
+        assert_copy::<ProcessTreeStats>();
+    }
+}
