@@ -64,11 +64,12 @@ impl ProcessTreeTracker {
 
         if let Ok(processes) = procfs::process::all_processes() {
             for child_proc in processes.filter_map(|process_result| {
-                if let Ok(process) = process_result
-                    && let Ok(stat) = process.stat()
-                    && stat.ppid == self.me.pid
-                {
-                    return Some(process);
+                if let Ok(process) = process_result {
+                    if let Ok(stat) = process.stat() {
+                        if stat.ppid == self.me.pid {
+                            return Some(process);
+                        }
+                    }
                 }
                 None
             }) {
@@ -169,13 +170,13 @@ impl ProcessTreeTracker {
             .iter()
             .filter(|(pid, _)| **pid != self.pid)
         {
-            if let Some(parent_pid) = process.parent()
-                && parent_pid == self.pid
-            {
-                cpu_usage += process.cpu_usage();
-                rss_bytes += process.memory();
-                virt_bytes += process.virtual_memory();
-                self.child_processes.insert(process.pid());
+            if let Some(parent_pid) = process.parent() {
+                if parent_pid == self.pid {
+                    cpu_usage += process.cpu_usage();
+                    rss_bytes += process.memory();
+                    virt_bytes += process.virtual_memory();
+                    self.child_processes.insert(process.pid());
+                }
             }
         }
         cpu_usage /= self.cpu_count as f32;
