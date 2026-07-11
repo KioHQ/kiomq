@@ -44,7 +44,7 @@ type ListQueue = ConcurrentDeque<u64>;
 /// # async fn main() -> kiomq::KioResult<()> {
 /// use kiomq::{InMemoryStore, Queue};
 ///
-/// let store: InMemoryStore<CompactString, CompactString, ()> =
+/// let store: InMemoryStore<String, String, ()> =
 ///     InMemoryStore::new(Some("myapp"), "email-queue");
 /// let queue = Queue::new(store, None).await?;
 /// # Ok(())
