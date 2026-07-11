@@ -1243,3 +1243,508 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
         Ok(current)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::QueueError;
+    use crate::worker::MIN_DELAY_MS_LIMIT;
+    use crate::{BackOffJobOptions, BackOffOptions, InMemoryStore, JobOptions};
+    use std::sync::Arc;
+
+    type D = i32;
+    type R = i32;
+    type P = i32;
+    type TestQueue = Queue<D, R, P, InMemoryStore<D, R, P>>;
+
+    /// Builds an isolated in-memory-backed queue with a unique name so that
+    /// tests never share the global metrics collector's per-queue state.
+    async fn make_queue(opts: Option<QueueOpts>) -> KioResult<TestQueue> {
+        let name = Uuid::new_v4().to_string();
+        let store = InMemoryStore::<D, R, P>::new(None, &name);
+        Queue::new(store, opts).await
+    }
+
+    async fn make_queue_with_prefix(prefix: &str, name: &str) -> KioResult<TestQueue> {
+        let store = InMemoryStore::<D, R, P>::new(Some(prefix), name);
+        Queue::new(store, None).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_with_none_opts_applies_defaults() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        assert_eq!(queue.opts.attempts, 1);
+        assert_eq!(queue.opts.event_mode, Some(QueueEventMode::Stream));
+        assert!(!queue.is_paused());
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_honours_custom_attempts_and_event_mode() -> KioResult<()> {
+        let opts = QueueOpts {
+            attempts: 9,
+            event_mode: Some(QueueEventMode::PubSub),
+            ..Default::default()
+        };
+        let queue = make_queue(Some(opts)).await?;
+        assert_eq!(queue.opts.attempts, 9);
+        assert_eq!(queue.event_mode.load(), QueueEventMode::PubSub);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn name_and_prefix_accessors_reflect_store() -> KioResult<()> {
+        let queue = make_queue_with_prefix("myprefix", "orders").await?;
+        assert_eq!(queue.name(), "orders");
+        assert_eq!(queue.prefix(), "myprefix");
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn default_prefix_is_kio() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        assert_eq!(queue.prefix(), "kio");
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn add_single_job_increments_waiting_and_assigns_id() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let job = queue.add_job("task", 1, None).await?;
+        assert!(job.id.is_some(), "store must assign a job id");
+
+        let metrics = queue.get_metrics().await?;
+        assert_eq!(metrics.waiting.load(), 1);
+        assert_eq!(metrics.last_id.load(), job.id.expect("id present"));
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_job_returns_none_for_unknown_id() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        // Nothing was ever enqueued, so any id must be absent.
+        assert!(queue.get_job(999_999).await.is_none());
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn added_job_is_retrievable_by_id() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let job = queue.add_job("fetch-me", 77, None).await?;
+        let id = job.id.expect("id present");
+        let fetched = queue.get_job(id).await.expect("job should be retrievable");
+        assert_eq!(fetched.id, job.id);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn add_job_accepts_empty_name() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let job = queue.add_job("", 1, None).await?;
+        assert!(job.id.is_some());
+        assert_eq!(queue.get_metrics().await?.waiting.load(), 1);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn add_job_accepts_very_long_name() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let long_name = "n".repeat(10_000);
+        let job = queue.add_job(&long_name, 1, None).await?;
+        assert!(job.id.is_some());
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn duplicate_named_jobs_receive_distinct_ids() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let first = queue.add_job("dup", 1, None).await?;
+        let second = queue.add_job("dup", 1, None).await?;
+        assert_ne!(
+            first.id, second.id,
+            "identically named jobs must not collide on id"
+        );
+        assert_eq!(queue.get_metrics().await?.waiting.load(), 2);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zero_delay_job_goes_straight_to_waiting() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let opts = JobOptions {
+            delay: 0i64.into(),
+            ..Default::default()
+        };
+        queue.add_job("immediate", 1, Some(opts)).await?;
+        let metrics = queue.get_metrics().await?;
+        assert_eq!(metrics.waiting.load(), 1);
+        assert_eq!(metrics.delayed.load(), 0);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn delay_just_below_limit_is_rejected() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let below = MIN_DELAY_MS_LIMIT.saturating_sub(1); // 49 ms
+        let opts = JobOptions {
+            delay: below.cast_signed().into(),
+            ..Default::default()
+        };
+        let err = queue
+            .add_job("too-soon", 1, Some(opts))
+            .await
+            .expect_err("sub-limit delay must be rejected");
+        assert!(
+            matches!(
+                err,
+                KioError::QueueError(QueueError::DelayBelowAllowedLimit { limit_ms, current_ms })
+                    if limit_ms == MIN_DELAY_MS_LIMIT && current_ms == below
+            ),
+            "unexpected error variant: {err:?}"
+        );
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn delay_exactly_at_limit_is_accepted() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let opts = JobOptions {
+            delay: MIN_DELAY_MS_LIMIT.cast_signed().into(), // 50 ms — the boundary
+            ..Default::default()
+        };
+        queue.add_job("boundary", 1, Some(opts)).await?;
+        let metrics = queue.get_metrics().await?;
+        assert_eq!(metrics.delayed.load(), 1);
+        assert!(metrics.has_delayed());
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn comfortably_delayed_job_lands_in_delayed_set() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let opts = JobOptions {
+            delay: 500i64.into(),
+            ..Default::default()
+        };
+        let job = queue.add_job("later", 1, Some(opts)).await?;
+        let id = job.id.expect("id present");
+        let fetched = queue.get_job(id).await.expect("delayed job present");
+        assert_eq!(fetched.state, JobState::Delayed);
+        assert_eq!(queue.get_metrics().await?.delayed.load(), 1);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prioritised_job_enters_prioritized_state() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let opts = JobOptions {
+            priority: 5,
+            ..Default::default()
+        };
+        let job = queue.add_job("vip", 1, Some(opts)).await?;
+        let id = job.id.expect("id present");
+        let fetched = queue.get_job(id).await.expect("prioritised job present");
+        assert_eq!(fetched.priority, 5);
+        assert_eq!(fetched.state, JobState::Prioritized);
+        assert_eq!(queue.get_metrics().await?.prioritized.load(), 1);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bulk_add_empty_iterator_adds_nothing() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let empty: Vec<(String, Option<JobOptions>, D)> = Vec::new();
+        let jobs = queue.bulk_add(empty.into_iter()).await?;
+        assert!(jobs.is_empty());
+        assert_eq!(queue.get_metrics().await?.waiting.load(), 0);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bulk_add_large_batch_counts_all_jobs() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let batch = (0..250).map(|i| (format!("job-{i}"), None, i));
+        let jobs = queue.bulk_add(batch).await?;
+        assert_eq!(jobs.len(), 250);
+        assert_eq!(queue.get_metrics().await?.waiting.load(), 250);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bulk_add_only_still_enqueues_jobs() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let batch = (0..8).map(|i| (format!("j{i}"), None, i));
+        queue.bulk_add_only(batch).await?;
+        assert_eq!(queue.get_metrics().await?.waiting.load(), 8);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fetch_jobs_ignores_missing_ids() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let job = queue.add_job("real", 1, None).await?;
+        let id = job.id.expect("id present");
+        // Mix one real id with ids that never existed.
+        let fetched = queue.fetch_jobs(&[id, 424_242, 999_999]).await?;
+        assert_eq!(fetched.len(), 1, "only the real job should come back");
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_job_ids_in_state_lists_waiting_jobs() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        queue
+            .bulk_add((0..3).map(|i| (format!("w{i}"), None, i)))
+            .await?;
+        let ids = queue
+            .get_job_ids_in_state(JobState::Wait, None, None)
+            .await?;
+        assert_eq!(ids.len(), 3);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pause_or_resume_moves_jobs_between_wait_and_paused() -> KioResult<()> {
+        let opts = QueueOpts {
+            event_mode: Some(QueueEventMode::PubSub),
+            ..Default::default()
+        };
+        let queue = make_queue(Some(opts)).await?;
+        queue.add_job("p", 1, None).await?;
+        assert_eq!(queue.get_metrics().await?.waiting.load(), 1);
+
+        queue.pause_or_resume().await?;
+        // Assert on the fresh store-returned metrics, which are the reliable
+        // signal. (The in-memory `queue.is_paused()` flag is intentionally not
+        // asserted here — see the ignored test below documenting its staleness.)
+        let paused = queue.get_metrics().await?;
+        assert!(paused.is_paused.load());
+        assert_eq!(paused.waiting.load(), 0);
+        assert_eq!(paused.paused.load(), 1);
+
+        queue.pause_or_resume().await?;
+        let resumed = queue.get_metrics().await?;
+        assert!(!resumed.is_paused.load());
+        assert_eq!(resumed.waiting.load(), 1);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[ignore = "SUSPECTED BUG: QueueMetrics::update never swaps the `is_paused` \
+                flag, so the in-memory `queue.is_paused()` value is never refreshed \
+                by get_metrics(), contradicting the is_paused() docs which say to \
+                call get_metrics() first for a fresh value."]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn is_paused_flag_is_refreshed_by_get_metrics() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        queue.add_job("p", 1, None).await?;
+        queue.pause_or_resume().await?;
+        // Fresh store metrics report paused == true.
+        let refreshed = queue.get_metrics().await?;
+        assert!(refreshed.is_paused.load(), "store reports paused");
+        // But the in-memory flag remains stale (this assertion currently fails).
+        assert!(
+            queue.is_paused(),
+            "in-memory is_paused() should reflect the store after get_metrics()"
+        );
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn obliterate_clears_all_counters() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        queue
+            .bulk_add((0..5).map(|i| (format!("o{i}"), None, i)))
+            .await?;
+        assert_eq!(queue.get_metrics().await?.waiting.load(), 5);
+
+        queue.obliterate().await?;
+        assert_eq!(queue.current_metrics.waiting.load(), 0);
+        assert_eq!(queue.current_metrics.last_id.load(), 0);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn calculate_next_delay_ms_zero_number_yields_none() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        // A fixed backoff of 0 ms normalises to "no backoff" → None.
+        assert_eq!(
+            queue.calculate_next_delay_ms(&BackOffJobOptions::Number(0), 3),
+            None
+        );
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn calculate_next_delay_ms_fixed_is_constant() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let opts = BackOffJobOptions::Number(120);
+        assert_eq!(queue.calculate_next_delay_ms(&opts, 1), Some(120));
+        assert_eq!(queue.calculate_next_delay_ms(&opts, 9), Some(120));
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn calculate_next_delay_ms_exponential_grows() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let opts = BackOffJobOptions::Opts(BackOffOptions {
+            type_: Some("exponential".into()),
+            delay: Some(100),
+        });
+        // Exponential backoff is 2^attempt * delay: 2^2 * 100 = 400, 2^3 * 100 = 800.
+        let attempt_2 = queue.calculate_next_delay_ms(&opts, 2);
+        let attempt_3 = queue.calculate_next_delay_ms(&opts, 3);
+        assert_eq!(attempt_2, Some(400));
+        assert_eq!(attempt_3, Some(800));
+        assert!(
+            attempt_3 > attempt_2,
+            "delay must strictly grow with attempts ({attempt_3:?} > {attempt_2:?})"
+        );
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn calculate_next_delay_ms_unknown_strategy_yields_none() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let opts = BackOffJobOptions::Opts(BackOffOptions {
+            type_: Some("does-not-exist".into()),
+            delay: Some(100),
+        });
+        assert_eq!(queue.calculate_next_delay_ms(&opts, 2), None);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn register_backoff_strategy_adds_a_new_named_strategy() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        queue.register_backoff_strategy("triple", |delay| {
+            Arc::new(move |attempts: i64| attempts.saturating_mul(delay))
+        });
+        let opts = BackOffJobOptions::Opts(BackOffOptions {
+            type_: Some("triple".into()),
+            delay: Some(10),
+        });
+        assert_eq!(queue.calculate_next_delay_ms(&opts, 4), Some(40));
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn register_backoff_strategy_does_not_replace_builtin() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        // Attempt to shadow the built-in "exponential" with a constant.
+        queue.register_backoff_strategy("exponential", |_delay| Arc::new(|_attempts: i64| 999));
+        let opts = BackOffJobOptions::Opts(BackOffOptions {
+            type_: Some("exponential".into()),
+            delay: Some(100),
+        });
+        // The original exponential formula (2^2 * 100 = 400) must survive.
+        assert_eq!(queue.calculate_next_delay_ms(&opts, 2), Some(400));
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn event_listener_can_be_registered_then_removed_once() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let id = queue.on(JobState::Completed, |_evt| async move {});
+        // First removal succeeds and returns the same id.
+        assert_eq!(queue.remove_event_listener(id), Some(id));
+        // A second removal finds nothing.
+        assert_eq!(queue.remove_event_listener(id), None);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn removing_unknown_listener_returns_none() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        assert_eq!(queue.remove_event_listener(Uuid::new_v4()), None);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn on_all_events_returns_a_handle() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        // The emitter permits only a single catch-all listener, so a distinct-id
+        // check is impossible. Instead prove the handle is meaningful by showing
+        // the listener actually fires — a bare non-nil v4 UUID could never fail.
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hits_in_cb = std::sync::Arc::clone(&hits);
+        let id = queue.on_all_events(move |_evt: EventParameters<R, P>| {
+            let hits = std::sync::Arc::clone(&hits_in_cb);
+            async move {
+                hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        assert!(
+            !id.is_nil(),
+            "catch-all registration must yield a non-nil handle"
+        );
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            queue
+                .emitter
+                .emit(JobState::Completed, EventParameters::Void),
+        )
+        .await
+        .expect("emit must not hang");
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the catch-all listener must fire for the emitted event"
+        );
+
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[ignore = "SUSPECTED BUG: on_all_events() docs promise the returned Uuid \
+                'can later be passed to remove_event_listener', but removal of a \
+                catch-all listener returns None (per-event listeners remove fine)."]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn on_all_events_listener_is_removable() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let id = queue.on_all_events(|_evt| async move {});
+        assert_eq!(queue.remove_event_listener(id), Some(id));
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[test]
+    fn move_to_active_result_debug_renders_simple_variants() {
+        let paused: MoveToActiveResult<D, R, P> = MoveToActiveResult::Paused;
+        let rate: MoveToActiveResult<D, R, P> = MoveToActiveResult::RateLimit(250);
+        let delay: MoveToActiveResult<D, R, P> = MoveToActiveResult::DelayUntil(1_000);
+        assert!(format!("{paused:?}").contains("Paused"));
+        assert!(format!("{rate:?}").contains("250"));
+        assert!(format!("{delay:?}").contains("1000"));
+    }
+}
