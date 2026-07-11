@@ -70,7 +70,7 @@ pub type WorkerMetaData = Arc<
 /// # async fn main() -> kiomq::KioResult<()> {
 /// use kiomq::{InMemoryStore, Queue};
 ///
-/// let store: InMemoryStore<CompactString, CompactString, ()> = InMemoryStore::new(None, "my-queue");
+/// let store: InMemoryStore<String, String, ()> = InMemoryStore::new(None, "my-queue");
 /// let queue = Queue::new(store, None).await?;
 /// # Ok(())
 /// # }
@@ -311,7 +311,7 @@ impl<
     /// let store: InMemoryStore<u64, u64, ()> = InMemoryStore::new(None, "bulk-demo");
     /// let queue = Queue::new(store, None).await?;
     ///
-    /// queue.bulk_add_only((0..5u64).map(|i| (format_compact!("job-{i}"), None, i))).await?;
+    /// queue.bulk_add_only((0..5u64).map(|i| (format!("job-{i}"), None, i))).await?;
     /// # Ok(())
     /// # }
     /// ```

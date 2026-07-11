@@ -319,7 +319,7 @@ impl<'a> From<&'a Repeat> for RetryOptions<'a> {
 /// let opts = QueueOpts {
 ///     attempts: 3,
 ///     default_backoff: Some(BackOffJobOptions::Opts(BackOffOptions {
-///         type_: Some("exponential".to_owned()),
+///         type_: Some("exponential".into()),
 ///         delay: Some(500),
 ///     })),
 ///     remove_on_complete: Some(RemoveOnCompletionOrFailure::Bool(true)),
