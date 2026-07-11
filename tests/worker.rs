@@ -9,24 +9,29 @@ worker_store_suite!(worker_inmemory_store, async {
     Ok::<_, kiomq::KioError>(InMemoryStore::<i32, i32, i32>::new(None, &name))
 });
 
-// `Worker::close` busy-waits on the main-loop task with `while !handle.is_finished() {}`.
-// On a current-thread runtime that spin blocks the single worker thread, so the
-// main loop can never be polled to observe the cancellation → deadlock.
-// We drive it from a helper OS thread and fail (rather than hang the suite) via a
-// timeout on the completion signal.
+// `Worker::close()` is a synchronous "stop and drain" barrier and is meant to be
+// callable from ordinary sync code (workers are typically long-lived singletons).
+// Here we start the worker inside a multi-threaded runtime, then call `close()`
+// from a plain thread that is *not* on the runtime — exercising the
+// `futures::executor::block_on` path. The runtime stays alive on its own worker
+// threads to poll the main loop to completion while `close()` blocks. We drive it
+// from a helper OS thread and fail (rather than hang the suite) via a timeout on
+// the completion signal.
 #[test]
-fn close_does_not_deadlock_on_current_thread_runtime() {
+fn close_from_sync_code_blocks_until_drained() {
     use kiomq::{InMemoryStore, Job, KioError, Queue, Worker};
     use std::sync::mpsc;
     use std::time::Duration;
 
     let (done_tx, done_rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
             .enable_all()
             .build()
-            .expect("failed to build current-thread runtime");
-        rt.block_on(async {
+            .expect("failed to build multi-thread runtime");
+        // Create and start the worker inside the runtime.
+        let worker = rt.block_on(async {
             let name = Uuid::new_v4().to_string();
             let store = InMemoryStore::<u64, u64, ()>::new(None, &name);
             let queue = Queue::new(store, None).await.expect("queue");
@@ -37,14 +42,21 @@ fn close_does_not_deadlock_on_current_thread_runtime() {
             )
             .expect("worker");
             worker.run().expect("run");
-            worker.close();
+            worker
         });
+        // Close from sync code (no runtime on this thread).
+        worker.close();
+        assert!(
+            !worker.is_running(),
+            "worker should be stopped after close()"
+        );
+        drop(rt);
         let _ = done_tx.send(());
     });
 
     done_rx
         .recv_timeout(Duration::from_secs(5))
-        .expect("worker.close() deadlocked on a current-thread runtime (busy-wait spin)");
+        .expect("worker.close() from sync code hung instead of draining");
 }
 
 #[cfg(all(feature = "redis-store", not(feature = "default")))]
