@@ -70,7 +70,10 @@ pub fn serialize_into_pairs<V: Serialize>(item: &V) -> Vec<(String, String)> {
     vec![]
 }
 pub const fn calculate_next_priority_score(priority: u64, prio_counter: u64) -> u64 {
-    (priority << 32) + (prio_counter & 0xffff_ffff_ffff)
+    // Priority occupies the high 32 bits; the FIFO tie-break counter the low 32.
+    // The mask must stay within 32 bits or the counter bleeds into the priority
+    // band and corrupts ordering.
+    (priority << 32) + (prio_counter & 0xffff_ffff)
 }
 
 use crate::{CollectionSuffix, QueueMetrics};
@@ -918,4 +921,26 @@ pub fn pause_or_resume_workers(
 #[allow(clippy::needless_pass_by_value)]
 pub fn to_redis_parsing_error(err: impl ToString) -> ParsingError {
     ParsingError::from(err.to_string())
+}
+
+#[cfg(test)]
+mod priority_score_tests {
+    use super::calculate_next_priority_score;
+
+    #[test]
+    fn tie_break_counter_never_bleeds_into_priority() {
+        // Priority packs into the high 32 bits, the FIFO tie-break counter into
+        // the low 32 bits. A job's tie-break counter must never change which
+        // priority band it lands in, otherwise a lower-priority job with a large
+        // counter can outrank a higher-priority job.
+        let high_priority = calculate_next_priority_score(2, 0);
+        // Counter just past the 32-bit boundary on the lower priority.
+        let low_priority_big_counter = calculate_next_priority_score(1, u64::from(u32::MAX) + 1);
+
+        assert!(
+            low_priority_big_counter < high_priority,
+            "priority 1 (counter {}) must always sort below priority 2, got {low_priority_big_counter} >= {high_priority}",
+            u64::from(u32::MAX) + 1,
+        );
+    }
 }
