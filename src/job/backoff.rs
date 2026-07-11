@@ -136,11 +136,11 @@ impl BackOff {
         attempts: i64,
         custom_strategy: Option<StoredFn>,
     ) -> Option<i64> {
-        if let Some(opts) = backoff_opts
-            && let Some(strategy) = self.lookup_strategy(opts, custom_strategy)
-        {
-            let calculated_delay = strategy(attempts);
-            return Some(calculated_delay);
+        if let Some(opts) = backoff_opts {
+            if let Some(strategy) = self.lookup_strategy(opts, custom_strategy) {
+                let calculated_delay = strategy(attempts);
+                return Some(calculated_delay);
+            }
         }
 
         None
@@ -163,12 +163,13 @@ impl BackOff {
         custom_strategy: Option<StoredFn>,
     ) -> Option<StoredFn>
 where {
-        if let Some(t) = backoff.type_
-            && let (Some(entry), Some(delay)) =
+        if let Some(t) = backoff.type_ {
+            if let (Some(entry), Some(delay)) =
                 (self.builtin_strategies.get(t.as_str()), backoff.delay)
-        {
-            let strategy = entry.value();
-            return Some(strategy(delay));
+            {
+                let strategy = entry.value();
+                return Some(strategy(delay));
+            }
         }
 
         if let Some(strategy) = custom_strategy {

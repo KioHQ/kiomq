@@ -307,12 +307,12 @@ where
             if let Some(entry) = jobs_in_progress.remove(&job_id) {
                 let (job, _, handle, _, _, _) = entry.value();
                 // retry failed jobs
-                if failed_job.attempts_made < job.opts.attempts
-                    && let Some(backoff_job_opts) = job.opts.backoff.as_ref()
-                {
-                    queue
-                        .retry_job(job_id, backoff_job_opts, failed_job.attempts_made - 1)
-                        .await?;
+                if failed_job.attempts_made < job.opts.attempts {
+                    if let Some(backoff_job_opts) = job.opts.backoff.as_ref() {
+                        queue
+                            .retry_job(job_id, backoff_job_opts, failed_job.attempts_made - 1)
+                            .await?;
+                    }
                 }
                 // clean up if the number of attempts is exhausted
                 if failed_job.attempts_made == job.opts.attempts {

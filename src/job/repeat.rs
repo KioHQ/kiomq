@@ -90,10 +90,10 @@ impl Repeat {
                 delay_ms,
                 max_attempts,
             } => {
-                if let Some(max_ts) = max_attempts
-                    && attempts >= *max_ts
-                {
-                    return None;
+                if let Some(max_ts) = max_attempts {
+                    if attempts >= *max_ts {
+                        return None;
+                    }
                 }
                 let next_dt = now + TimeDelta::milliseconds(*delay_ms);
                 Some(next_dt.timestamp_millis())
