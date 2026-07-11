@@ -45,12 +45,14 @@ use std::sync::Arc;
 #[cfg(feature = "redis-store")]
 /// Reads the Redis password from the `REDIS_PASSWORD` environment variable.
 ///
-/// Loads a `.env` file via `dotenv` if one is present before reading the
+/// Loads a `.env` file via `dotenvy` if one is present before reading the
 /// variable.  Returns `None` when the variable is unset.
 #[must_use]
 pub fn fetch_redis_pass() -> Option<String> {
-    if let Err(_err) = dotenv::dotenv() {
-        // dothing; continue
+    // A missing `.env` is expected (env vars may be set directly), so ignore
+    // that specific error rather than propagate it.
+    if let Err(_err) = dotenvy::dotenv() {
+        // no-op: continue with the process environment
     }
     std::env::var("REDIS_PASSWORD").ok()
 }

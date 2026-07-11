@@ -58,8 +58,8 @@ features = ["send_guard"]
 version = "0.9.1"
 features = ["serde"]
 
-[dependencies.dotenv]
-version = "0.15.0"
+[dependencies.dotenvy]
+version = "0.15.7"
 default-features = false
 optional = true
 
@@ -159,9 +159,9 @@ features = ["env-filter"]
 
 [features]
 default = ["redis-store"]
-rocksdb-store = ["dep:rocksdb", "dep:tempfile"]
+rocksdb-store = ["dep:rocksdb", "dep:tempfile", "dep:simd-json"]
 tracing = ["dep:tracing"]
-redis-store = ["dep:redis", "dep:deadpool-redis", "dep:simd-json", "dep:dotenv"]
+redis-store = ["dep:redis", "dep:deadpool-redis", "dep:simd-json", "dep:dotenvy"]
 
 [[bench]]
 name = "queue_bench"
