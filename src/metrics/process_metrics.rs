@@ -485,3 +485,236 @@ impl FromRedisValue for ProcessMetrics {
         Ok(metrics)
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::float_cmp)]
+mod tests {
+    use super::*;
+    use compact_str::ToCompactString;
+    use tokio_metrics::RuntimeMetrics;
+
+    fn sample_tree_stats() -> ProcessTreeStats {
+        ProcessTreeStats {
+            cpu_usage: 12.5,
+            rss_bytes: 4_096,
+            virt_bytes: 8_192,
+        }
+    }
+
+    #[test]
+    fn raw_runtime_metrics_from_default_are_all_zero() {
+        let raw: RawRuntimeMetrics = RuntimeMetrics::default().into();
+        assert_eq!(raw.workers_count, 0);
+        assert_eq!(raw.live_tasks_count, 0);
+        assert_eq!(raw.total_park_count, 0);
+        assert_eq!(raw.max_park_count, 0);
+        assert_eq!(raw.min_park_count, 0);
+        assert_eq!(raw.global_queue_depth, 0);
+        assert_eq!(raw.total_busy_duration, Duration::ZERO);
+        assert_eq!(raw.max_busy_duration, Duration::ZERO);
+        assert_eq!(raw.min_busy_duration, Duration::ZERO);
+        assert_eq!(raw.elapsed, Duration::ZERO);
+    }
+
+    #[cfg(feature = "redis-store")]
+    #[test]
+    fn raw_runtime_metrics_survive_a_serde_round_trip() {
+        let original = RawRuntimeMetrics {
+            workers_count: 8,
+            live_tasks_count: 42,
+            total_park_count: 1_000,
+            max_park_count: 500,
+            min_park_count: 1,
+            total_busy_duration: Duration::from_millis(1_234),
+            max_busy_duration: Duration::from_micros(999),
+            min_busy_duration: Duration::from_nanos(7),
+            global_queue_depth: 3,
+            elapsed: Duration::from_secs(60),
+        };
+        let mut json = simd_json::to_string(&original)
+            .expect("RawRuntimeMetrics must serialise")
+            .into_bytes();
+        let decoded: RawRuntimeMetrics =
+            simd_json::from_slice(&mut json).expect("RawRuntimeMetrics must deserialise");
+        assert_eq!(decoded, original, "serde round-trip must be lossless");
+    }
+
+    #[test]
+    fn worker_meta_new_preserves_all_fields() {
+        let id = Uuid::new_v4();
+        let started = Utc::now();
+        let opts = WorkerOpts::default();
+        let meta = WorkerMeta::new(id, started, WorkerState::Active, opts, 5);
+        assert_eq!(meta.worker_id, id);
+        assert_eq!(meta.started_at, started);
+        assert_eq!(meta.state, WorkerState::Active);
+        assert_eq!(meta.processing, 5);
+        assert!(
+            meta.last_updated >= started,
+            "last_updated is stamped at construction and must not precede started_at"
+        );
+    }
+
+    #[test]
+    fn process_metrics_new_maps_process_tree_stats_and_passthrough_fields() {
+        let stats = sample_tree_stats();
+        let metrics = ProcessMetrics::new(
+            "test-host".to_compact_string(),
+            4_321,
+            RuntimeMetrics::default(),
+            stats,
+            Vec::new(),
+        );
+        assert_eq!(metrics.hostname, "test-host");
+        assert_eq!(metrics.pid, 4_321);
+        assert_eq!(
+            metrics.memory_usage, stats.rss_bytes,
+            "memory_usage must mirror the sampled resident set size"
+        );
+        assert_eq!(
+            metrics.process_cpu_usage, stats.cpu_usage,
+            "process_cpu_usage must mirror the sampled CPU usage"
+        );
+        assert!(metrics.workers.is_empty());
+    }
+
+    #[test]
+    fn process_metrics_new_handles_extreme_process_tree_stats() {
+        // Saturated / degenerate OS readings must not panic during construction.
+        let stats = ProcessTreeStats {
+            cpu_usage: 0.0,
+            rss_bytes: u64::MAX,
+            virt_bytes: u64::MAX,
+        };
+        let metrics = ProcessMetrics::new(
+            CompactString::default(),
+            0,
+            RuntimeMetrics::default(),
+            stats,
+            Vec::new(),
+        );
+        assert_eq!(metrics.memory_usage, u64::MAX);
+        assert_eq!(metrics.process_cpu_usage, 0.0);
+    }
+
+    #[cfg(feature = "redis-store")]
+    #[test]
+    fn process_metrics_survive_a_serde_round_trip() {
+        let meta = WorkerMeta::new(
+            Uuid::new_v4(),
+            Utc::now(),
+            WorkerState::Idle,
+            WorkerOpts::default(),
+            2,
+        );
+        let original = ProcessMetrics::new(
+            "host".to_compact_string(),
+            99,
+            RuntimeMetrics::default(),
+            sample_tree_stats(),
+            vec![meta],
+        );
+        let mut json = simd_json::to_string(&original)
+            .expect("ProcessMetrics must serialise")
+            .into_bytes();
+        let decoded: ProcessMetrics =
+            simd_json::from_slice(&mut json).expect("ProcessMetrics must deserialise");
+        assert_eq!(decoded.hostname, original.hostname);
+        assert_eq!(decoded.pid, original.pid);
+        assert_eq!(decoded.memory_usage, original.memory_usage);
+        assert_eq!(decoded.workers.len(), original.workers.len());
+        assert_eq!(decoded.workers[0].worker_id, original.workers[0].worker_id);
+    }
+
+    fn worker_state_tuple() -> (
+        Arc<AtomicCell<WorkerState>>,
+        crate::worker::ProcessingQueue,
+        WorkerOpts,
+        Dt,
+    ) {
+        (
+            Arc::new(AtomicCell::new(WorkerState::Idle)),
+            crate::worker::ProcessingQueue::new(),
+            WorkerOpts::default(),
+            Utc::now(),
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_worker_registration_loses_no_updates() {
+        let collector = &*P_METRICS_COLLECTOR;
+        // Distinct ids registered from many tasks at once must all land in the
+        // registry with no lost updates and no panics.
+        let ids: Vec<Uuid> = (0..64).map(|_| Uuid::new_v4()).collect();
+        let mut handles = Vec::new();
+        for id in ids.clone() {
+            handles.push(tokio::spawn(async move {
+                P_METRICS_COLLECTOR.register_worker(id, worker_state_tuple());
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("registration task must not panic");
+        }
+
+        for id in &ids {
+            assert!(
+                collector.inner.workers.contains_key(id),
+                "every concurrently registered worker must be present"
+            );
+        }
+
+        // Clean up so we do not leak test workers into the global singleton.
+        for id in &ids {
+            collector.unregister_worker(*id);
+            assert!(
+                !collector.inner.workers.contains_key(id),
+                "unregister must remove the worker"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn register_worker_is_idempotent_for_a_repeated_id() {
+        let collector = &*P_METRICS_COLLECTOR;
+        let id = Uuid::new_v4();
+        // First registration stores a distinguishable state.
+        let first = worker_state_tuple();
+        let original_state = first.0.clone();
+        original_state.store(WorkerState::Active);
+        collector.register_worker(id, first);
+
+        // A second registration for the same id is a no-op: it must not panic and
+        // must NOT replace the existing entry with the new tuple. The second tuple
+        // carries a different state so a replace-on-reregister would be observable.
+        let second = worker_state_tuple();
+        second.0.store(WorkerState::Idle);
+        collector.register_worker(id, second);
+
+        assert!(collector.inner.workers.contains_key(&id));
+        let stored = collector
+            .inner
+            .workers
+            .get(&id)
+            .expect("worker must still be registered");
+        assert_eq!(
+            stored.lock().0.load(),
+            WorkerState::Active,
+            "the original entry must survive; a repeated registration must not replace it"
+        );
+
+        collector.unregister_worker(id);
+        assert!(!collector.inner.workers.contains_key(&id));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn timer_exists_is_false_for_an_unknown_queue() {
+        let collector = &*P_METRICS_COLLECTOR;
+        // Querying a timer that was never registered must safely return false.
+        let unknown_queue = Uuid::new_v4();
+        let timer = TimerType::StalledCheck(Duration::from_secs(30));
+        assert!(
+            !collector.timer_exists(&timer, &unknown_queue),
+            "an unregistered queue must have no timer"
+        );
+    }
+}
