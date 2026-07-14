@@ -45,7 +45,7 @@ pub struct BackOffOptions {
 ///
 /// // Exponential backoff starting at 200 ms
 /// let exp = BackOffJobOptions::Opts(BackOffOptions {
-///     type_: Some("exponential".to_owned()),
+///     type_: Some("exponential".into()),
 ///     delay: Some(200),
 /// });
 /// ```
