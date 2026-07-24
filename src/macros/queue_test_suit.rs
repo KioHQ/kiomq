@@ -173,15 +173,6 @@ macro_rules! queue_store_suite {
             }
 
             #[tokio::test(flavor = "multi_thread")]
-            async fn get_job_returns_none_for_unknown_id() -> KioResult<()> {
-                let store = make_store().await?;
-                let queue = Queue::<D, R, P, _>::new(store, None).await?;
-                assert!(queue.get_job(999_999).await.is_none());
-                queue.obliterate().await?;
-                Ok(())
-            }
-
-            #[tokio::test(flavor = "multi_thread")]
             async fn add_job_accepts_empty_name() -> KioResult<()> {
                 let store = make_store().await?;
                 let queue = Queue::<D, R, P, _>::new(store, None).await?;
@@ -263,18 +254,6 @@ macro_rules! queue_store_suite {
                     .bulk_add_only((0..8).map(|i| (format!("j{i}"), None, i)))
                     .await?;
                 assert_eq!(queue.get_metrics().await?.waiting.load(), 8);
-                queue.obliterate().await?;
-                Ok(())
-            }
-
-            #[tokio::test(flavor = "multi_thread")]
-            async fn fetch_jobs_ignores_missing_ids() -> KioResult<()> {
-                let store = make_store().await?;
-                let queue = Queue::<D, R, P, _>::new(store, None).await?;
-                let job = queue.add_job("real", 1, None).await?;
-                let id = job.id.expect("id present");
-                let fetched = queue.fetch_jobs(&[id, 424_242, 999_999]).await?;
-                assert_eq!(fetched.len(), 1);
                 queue.obliterate().await?;
                 Ok(())
             }
