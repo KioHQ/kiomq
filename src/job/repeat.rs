@@ -340,7 +340,6 @@ mod tests {
             type_: Some("exponential".into()),
             delay: Some(100),
         }));
-        // The addition inside `next_occurrence` panics before it can return.
         let _unreached = repeat.next_occurrence(&backoff, 64);
     }
 
@@ -350,7 +349,6 @@ mod tests {
     #[should_panic]
     fn test_every_i64_max_delay_overflows_and_panics() {
         let backoff = BackOff::new();
-        // The addition inside `next_occurrence` panics before it can return.
         let _unreached = Repeat::Every {
             delay_ms: i64::MAX,
             max_attempts: None,

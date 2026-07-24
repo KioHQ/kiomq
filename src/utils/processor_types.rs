@@ -84,7 +84,6 @@ mod callback_conversion_tests {
     type TestStore = ();
     type TestCallback = Callback<u64, u64, (), TestStore>;
 
-    /// Builds a `Job` carrying the supplied input payload.
     fn job_with_data(data: u64) -> Job<u64, u64, ()> {
         debug_assert!(
             Job::<u64, u64, ()>::default().id.is_none(),

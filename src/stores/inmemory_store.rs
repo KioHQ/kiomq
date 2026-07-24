@@ -1104,40 +1104,21 @@ where
     clippy::doc_markdown
 )]
 mod tests {
-    //! Robustness-focused unit tests exercised directly against
-    //! [`InMemoryStore`].  The store is generic and needs no external server,
-    //! so every test drives the concrete `InMemoryStore<i32, i32, i32>` through
-    //! the public [`Store`] trait surface.
+    //! Robustness-focused unit tests driving the concrete
+    //! `InMemoryStore<i32, i32, i32>` through the public [`Store`] trait.
     //!
-    //! Coverage angles: push/pop lifecycle, empty-store behaviour, unknown /
-    //! repeated operations (idempotency), priority ordering and ties,
-    //! delayed-job visibility, pause/resume, counters, and heavy concurrency
-    //! (many tokio tasks pushing and popping simultaneously — asserting that no
-    //! job is lost or delivered twice).
+    //! # Suspected bug — duplicate job delivery under concurrent pop
     //!
-    //! # Suspected bug report — duplicate job delivery under concurrent pop
-    //!
-    //! Two concurrency tests are marked `#[ignore]` because they reproduce a
-    //! real, repeatable defect rather than a flaky expectation:
-    //!
-    //! - [`test_concurrent_consumers_deliver_each_job_once`]
-    //! - [`test_concurrent_push_pop_loses_no_jobs`]
-    //!
-    //! With a queue of exactly `N` distinct jobs drained by several concurrent
-    //! consumers, the total number of successful pops exceeds `N` (observed e.g.
-    //! `count out 1001 > unique 1000`): the **same job id is handed to more than
-    //! one consumer**.  The store moves a job from `Wait` to `Active` via
-    //! `pop_back_push_front`, which calls [`crate::utils::ConcurrentDeque::pop_back`].
-    //! That method is not linearizable — it reads the tail with `back()` and then
-    //! removes it in a separate step, so concurrent poppers can observe and return
-    //! the same element.  Real workers moving jobs off the waiting list therefore
-    //! risk processing a job twice.
-    //!
-    //! This may be intended as *at-least-once* delivery that the worker layer
-    //! deduplicates via per-job locks/tokens; that has not been verified here.
-    //! Production code was left untouched per the task brief — run the ignored
-    //! tests with `cargo test --lib stores::inmemory_store -- --ignored` to
-    //! reproduce.
+    //! Two concurrency tests are `#[ignore]`d because they reproduce a real,
+    //! repeatable defect: with `N` distinct jobs drained by several concurrent
+    //! consumers, successful pops exceed `N` (e.g. `count out 1001 > unique
+    //! 1000`) — the same job id reaches more than one consumer.
+    //! `pop_back_push_front` calls [`crate::utils::ConcurrentDeque::pop_back`],
+    //! which is not linearizable: it reads the tail with `back()` then removes it
+    //! separately, so concurrent poppers can return the same element. This may be
+    //! intended at-least-once delivery deduplicated by the worker layer (not
+    //! verified here). Reproduce with
+    //! `cargo test --lib stores::inmemory_store -- --ignored`.
 
     use super::*;
     use std::collections::HashSet;
@@ -1149,21 +1130,20 @@ mod tests {
     /// hang surfaces as a test failure rather than a stuck CI job.
     const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-    /// Builds a fresh, empty store for a test.  Each store is independent
-    /// (all state lives behind per-instance `Arc`s).
+    /// A fresh, independent store (all state lives behind per-instance `Arc`s).
     fn new_store() -> InMemoryStore<i32, i32, i32> {
         InMemoryStore::new(None, "robustness-tests")
     }
 
-    /// Awaits `fut`, failing loudly if it exceeds [`TEST_TIMEOUT`].  Keeps the
-    /// concurrency tests honest: a lost wake-up can never deadlock the suite.
+    /// Awaits `fut`, failing loudly if it exceeds [`TEST_TIMEOUT`] so a lost
+    /// wake-up surfaces as a failure instead of a deadlocked suite.
     async fn within_timeout<T>(fut: impl std::future::Future<Output = T>) -> T {
         tokio::time::timeout(TEST_TIMEOUT, fut)
             .await
             .expect("operation exceeded the test timeout budget")
     }
 
-    /// Collects the IDs currently sitting in `state` (unpaginated).
+    /// Collects the IDs currently in `state` (unpaginated).
     async fn ids_in_state(store: &InMemoryStore<i32, i32, i32>, state: JobState) -> Vec<u64> {
         store
             .get_job_ids_in_state(state, None, None)
@@ -1173,9 +1153,7 @@ mod tests {
             .collect()
     }
 
-    /// Enqueues a batch of jobs via the bulk API using default options,
-    /// returning the created records.  Asserts the batch is non-empty as a
-    /// precondition guard (TigerStyle).
+    /// Enqueues `count` jobs via the bulk API with default options.
     async fn add_default_jobs(
         store: &InMemoryStore<i32, i32, i32>,
         count: i32,
@@ -1234,8 +1212,7 @@ mod tests {
     #[tokio::test]
     async fn test_pop_from_empty_waiting_returns_none() {
         let store = new_store();
-        // Nothing enqueued: the wait->active transition must yield nothing and
-        // must not panic or fabricate an ID.
+        // Empty wait->active transition must yield None, not panic or fabricate an ID.
         let moved = store
             .pop_back_push_front(CollectionSuffix::Wait, CollectionSuffix::Active)
             .await;
@@ -1344,12 +1321,11 @@ mod tests {
     #[tokio::test]
     async fn test_remove_unknown_item_is_a_noop() {
         let store = new_store();
-        // Removing from a list that never held the item must be a clean no-op.
         store
             .remove_item(CollectionSuffix::Wait, 999)
             .await
             .expect("removing an absent list item must be Ok");
-        // Repeat on a sorted set.
+        // Same for a sorted set.
         store
             .remove_item(CollectionSuffix::Completed, 999)
             .await
@@ -1363,7 +1339,6 @@ mod tests {
             .add_item(CollectionSuffix::Failed, 5, Some(100), false)
             .await
             .expect("add_item");
-        // First removal takes it out; the second is a harmless no-op.
         store
             .remove_item(CollectionSuffix::Failed, 5)
             .await
@@ -1511,8 +1486,8 @@ mod tests {
                 false,
             )
             .await;
-        // Assert the specific rejection reason, so a failure for the wrong
-        // cause (bad batch, serialisation, etc.) cannot pass green.
+        // Assert the specific rejection reason so a failure for the wrong cause
+        // (bad batch, serialisation, etc.) cannot pass green.
         let err =
             result.expect_err("a sub-limit delay must produce an error, not a silent success");
         assert!(
@@ -1553,7 +1528,6 @@ mod tests {
     #[tokio::test]
     async fn test_set_fields_on_unknown_job_is_noop() {
         let store = new_store();
-        // No such job — must not panic, must return Ok.
         store
             .set_fields(4_242, vec![JobField::State(JobState::Failed)])
             .await
@@ -1639,7 +1613,7 @@ mod tests {
     #[tokio::test]
     async fn test_incr_on_unknown_job_returns_zero() {
         let store = new_store();
-        // No job record exists: the field increment resolves to 0, not a panic.
+        // Field increment on an absent job resolves to 0, not a panic.
         let next = store
             .incr(CollectionSuffix::Job(9_999), 1, Some("attempts_made"))
             .await
@@ -1674,7 +1648,6 @@ mod tests {
             "max pop must return the highest score"
         );
 
-        // The middle element remains.
         let remaining = store
             .pop_set(CollectionSuffix::Prioritized, true)
             .await
@@ -1685,9 +1658,9 @@ mod tests {
     #[tokio::test]
     async fn test_sorted_set_equal_scores_collapse_last_write_wins() {
         let store = new_store();
-        // A sorted set is keyed by score; two entries sharing a score collide,
-        // and the later write wins (Redis ZADD-like semantics).  This documents
-        // that callers must supply unique scores (the priority counter does).
+        // A sorted set is keyed by score: two entries sharing a score collide and
+        // the later write wins (Redis ZADD-like), so callers must supply unique
+        // scores (the priority counter does).
         store
             .add_item(CollectionSuffix::Prioritized, 1, Some(5), true)
             .await
@@ -1837,8 +1810,7 @@ mod tests {
             .pause(true, QueueEventMode::PubSub)
             .await
             .expect("pause");
-        // Pausing an already-paused queue must be idempotent: the waiting list
-        // is empty so nothing new moves, and no job is duplicated.
+        // Pausing an already-paused queue is idempotent: nothing moves, nothing duplicates.
         store
             .pause(true, QueueEventMode::PubSub)
             .await
@@ -1916,13 +1888,11 @@ mod tests {
         let jobs = add_default_jobs(&store, 1).await;
         let id = jobs[0].id.expect("id");
 
-        // Wait -> Active.
         let moved = store
             .pop_back_push_front(CollectionSuffix::Wait, CollectionSuffix::Active)
             .await;
         assert_eq!(moved, Some(id));
 
-        // Ack: leave active, enter completed, mark state.
         store
             .remove_item(CollectionSuffix::Active, id)
             .await
@@ -1960,8 +1930,7 @@ mod tests {
             .add_item(CollectionSuffix::Active, 3, None, true)
             .await
             .expect("add_item");
-        // Acking twice: the second removal / completion insert must not corrupt
-        // state or panic.
+        // Acking twice must not corrupt state or panic.
         for _ in 0..2 {
             store
                 .remove_item(CollectionSuffix::Active, 3)
@@ -1984,9 +1953,8 @@ mod tests {
                 .await
                 .expect("exists")
         );
-        // Draining the Completed set must yield EXACTLY one entry for id 3: a
-        // second ack must not add a duplicate. Any non-idempotent double-insert
-        // would surface here as a second surviving entry.
+        // Draining Completed must yield exactly one entry for id 3: a
+        // non-idempotent double-insert would surface as a second surviving entry.
         let completed = store
             .pop_set(CollectionSuffix::Completed, true)
             .await
@@ -2148,7 +2116,6 @@ mod tests {
                     {
                         popped.lock().expect("poisoned").push(id);
                     } else if producers_done.load(SeqCst) {
-                        // Producers finished and we observed an empty queue: done.
                         break;
                     } else {
                         tokio::task::yield_now().await;
@@ -2157,7 +2124,6 @@ mod tests {
             }));
         }
 
-        // Producers push distinct IDs concurrently.
         let mut producer_handles = Vec::with_capacity(N as usize);
         for id in 1..=N {
             let store = store.clone();

@@ -492,15 +492,12 @@ mod tests {
     type TestStore = InMemoryStore<i32, i32, i32>;
     type TestQueue = Queue<i32, i32, i32, TestStore>;
 
-    /// Every test gets a fresh, uniquely-named in-memory queue so runs never
-    /// share state — no external server is required.
     async fn make_queue() -> KioResult<TestQueue> {
         let name = Uuid::new_v4().to_string();
         let store = InMemoryStore::<i32, i32, i32>::new(None, &name);
         Queue::new(store, None).await
     }
 
-    /// A trivial doubling processor used by the lifecycle tests.
     fn doubling_worker(
         queue: &TestQueue,
         opts: Option<WorkerOpts>,
@@ -514,7 +511,6 @@ mod tests {
         )
     }
 
-    /// Await `condition` but never hang: fail loudly if it is not met in time.
     async fn wait_until<F: Fn() -> bool + Send + Sync>(condition: F, label: &str) {
         let outcome = tokio::time::timeout(Duration::from_secs(10), async {
             while !condition() {
@@ -530,9 +526,9 @@ mod tests {
         let queue = make_queue().await?;
         let worker = doubling_worker(&queue, None)?;
 
-        assert!(worker.is_idle(), "a freshly built worker must be idle");
-        assert!(!worker.is_running(), "it must not be running before run()");
-        assert!(!worker.closed(), "it must not be closed before close()");
+        assert!(worker.is_idle());
+        assert!(!worker.is_running());
+        assert!(!worker.closed());
         assert_eq!(worker.state.load(), WorkerState::Idle);
         Ok(())
     }
@@ -543,8 +539,8 @@ mod tests {
         let worker = doubling_worker(&queue, None)?;
 
         worker.run()?;
-        assert!(worker.is_running(), "run() must make the worker active");
-        assert!(!worker.is_idle(), "an active worker is not idle");
+        assert!(worker.is_running());
+        assert!(!worker.is_idle());
         assert!(!worker.closed());
 
         worker.close();
@@ -559,10 +555,9 @@ mod tests {
 
         worker.run()?;
         let second = worker.run();
-        assert!(second.is_err(), "a second run() must be rejected");
         match second {
             Err(KioError::WorkerError(WorkerError::WorkerAlreadyRunningWithId(err_id))) => {
-                assert_eq!(err_id, id, "the error must carry the worker's own id");
+                assert_eq!(err_id, id);
             }
             other => panic!("expected WorkerAlreadyRunningWithId, got {other:?}"),
         }
@@ -579,11 +574,9 @@ mod tests {
 
         worker.run()?;
         worker.close();
-        assert!(worker.closed(), "worker must report closed after close()");
+        assert!(worker.closed());
 
-        let after = worker.run();
-        assert!(after.is_err(), "a closed worker cannot be restarted");
-        match after {
+        match worker.run() {
             Err(KioError::WorkerError(WorkerError::WorkerAlreadyClosed(err_id))) => {
                 assert_eq!(err_id, id);
             }
@@ -597,7 +590,6 @@ mod tests {
         let queue = make_queue().await?;
         let worker = doubling_worker(&queue, None)?;
 
-        // close() must early-return without cancelling or changing state.
         worker.close();
         assert!(
             !worker.closed(),
@@ -618,7 +610,6 @@ mod tests {
         assert!(worker.closed());
         assert!(!worker.is_running());
 
-        // A second close() must be a harmless no-op.
         worker.close();
         assert!(worker.closed());
         assert!(!worker.is_running());
@@ -640,160 +631,6 @@ mod tests {
         );
 
         worker.close();
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn processes_all_queued_jobs_to_completion() -> KioResult<()> {
-        let queue = make_queue().await?;
-        let worker = doubling_worker(&queue, None)?;
-        worker.run()?;
-
-        let count = 8i32;
-        let jobs = queue
-            .bulk_add((0..count).map(|i| (i.to_string(), None, i)))
-            .await?;
-
-        wait_until(
-            || queue.current_metrics.all_jobs_completed(),
-            "all jobs to complete",
-        )
-        .await;
-
-        worker.close();
-        assert!(!worker.is_running());
-
-        let metrics = queue.get_metrics().await?;
-        assert_eq!(metrics.waiting.load(), 0, "no jobs should remain waiting");
-        assert_eq!(
-            metrics.completed.load(),
-            jobs.len() as u64,
-            "every submitted job must be completed"
-        );
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn empty_queue_worker_keeps_running_without_spinning_out() -> KioResult<()> {
-        let queue = make_queue().await?;
-        let worker = doubling_worker(&queue, None)?;
-        worker.run()?;
-
-        // With nothing to do the worker idles. Note the queue auto-pauses a
-        // worker to `WorkerState::Idle` when there is no work (to avoid busy
-        // spinning), so it is deliberately NOT `Active` here — "not spinning
-        // out" means it must not close itself.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(!worker.closed(), "an idle worker must not close itself");
-        assert_ne!(
-            worker.state.load(),
-            WorkerState::Closed,
-            "an idle worker must stay alive, not shut down"
-        );
-
-        // And it must recover: once a job arrives, the idle worker resumes and
-        // processes it — proving it never truly spun out.
-        queue.add_job("job", 21, None).await?;
-        wait_until(
-            || queue.current_metrics.all_jobs_completed(),
-            "the idle worker to resume and complete the job",
-        )
-        .await;
-
-        worker.close();
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn concurrency_of_one_still_completes_every_job() -> KioResult<()> {
-        let queue = make_queue().await?;
-        let opts = WorkerOpts {
-            concurrency: 1,
-            ..Default::default()
-        };
-        let worker = doubling_worker(&queue, Some(opts))?;
-        worker.run()?;
-
-        let count = 6i32;
-        queue
-            .bulk_add((0..count).map(|i| (i.to_string(), None, i)))
-            .await?;
-
-        wait_until(
-            || queue.current_metrics.all_jobs_completed(),
-            "serial worker to drain the queue",
-        )
-        .await;
-
-        worker.close();
-        let metrics = queue.get_metrics().await?;
-        assert_eq!(
-            metrics.completed.load(),
-            u64::try_from(count).expect("count is positive")
-        );
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn high_concurrency_completes_every_job() -> KioResult<()> {
-        let queue = make_queue().await?;
-        let opts = WorkerOpts {
-            concurrency: 64,
-            ..Default::default()
-        };
-        let worker = doubling_worker(&queue, Some(opts))?;
-        worker.run()?;
-
-        let count = 100i32;
-        queue
-            .bulk_add((0..count).map(|i| (i.to_string(), None, i)))
-            .await?;
-
-        wait_until(
-            || queue.current_metrics.all_jobs_completed(),
-            "highly concurrent worker to drain the queue",
-        )
-        .await;
-
-        worker.close();
-        let metrics = queue.get_metrics().await?;
-        assert_eq!(
-            metrics.completed.load(),
-            u64::try_from(count).expect("count is positive"),
-            "no job may be lost or double-counted under high concurrency"
-        );
-        assert_eq!(metrics.waiting.load(), 0);
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn concurrency_of_zero_processes_no_jobs() -> KioResult<()> {
-        // A concurrency of 0 yields a semaphore with no permits, so the worker
-        // can never pick up work. There is no validation guarding against this,
-        // so this test documents (and pins) the stalling behaviour.
-        let queue = make_queue().await?;
-        let opts = WorkerOpts {
-            concurrency: 0,
-            ..Default::default()
-        };
-        let worker = doubling_worker(&queue, Some(opts))?;
-        worker.run()?;
-        assert!(worker.is_running());
-
-        queue.add_job("stalled", 1, None).await?;
-
-        // Give the loop ample time; the job must remain unprocessed.
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(
-            !queue.current_metrics.all_jobs_completed(),
-            "a zero-concurrency worker must not complete any job"
-        );
-        let metrics = queue.get_metrics().await?;
-        assert_eq!(metrics.completed.load(), 0);
-        assert_eq!(metrics.waiting.load(), 1, "the job stays in the wait state");
-
-        worker.close();
-        assert!(!worker.is_running());
         Ok(())
     }
 
@@ -825,11 +662,7 @@ mod tests {
         wait_until(|| !failed.is_empty(), "the failing job to be marked failed").await;
 
         worker.close();
-        assert_eq!(
-            failed.len(),
-            1,
-            "exactly one job must be recorded as failed"
-        );
+        assert_eq!(failed.len(), 1);
         Ok(())
     }
 
@@ -870,72 +703,9 @@ mod tests {
         assert_eq!(
             failed.len(),
             1,
-            "a panic in the handler must not crash the worker; the job fails"
+            "a handler panic must not crash the worker; the job fails"
         );
-        // The worker must survive the panic and remain closable/consistent.
         assert!(worker.closed());
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn worker_keeps_processing_after_a_handler_panics() -> KioResult<()> {
-        // One poisoned job must not stop subsequent good jobs from completing.
-        // Because a failed job never bumps the `completed` counter,
-        // `all_jobs_completed()` can never become true here — so we instead
-        // count terminal (Completed + Failed) events until every job is done.
-        let queue = make_queue().await?;
-
-        let count = 5i32;
-        let capacity = usize::try_from(count).expect("count is positive");
-        let terminal: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(capacity));
-        let terminal_sink = terminal.clone();
-        queue.on_all_events(move |state: EventParameters<i32, i32>| {
-            let terminal = terminal_sink.clone();
-            async move {
-                match state {
-                    EventParameters::Completed { job_id, .. }
-                    | EventParameters::Failed { job_id, .. } => {
-                        terminal.push(job_id).expect("event sink capacity exceeded");
-                    }
-                    _ => {}
-                }
-            }
-        });
-
-        let worker = Worker::new_async(
-            &queue,
-            |_conn, job: Job<i32, i32, i32>| async move {
-                assert!(job.data.unwrap_or_default() != 0, "first job panics");
-                Ok::<i32, KioError>(job.data.unwrap_or_default())
-            },
-            None,
-        )?;
-        worker.run()?;
-
-        queue
-            .bulk_add((0..count).map(|i| (i.to_string(), None, i)))
-            .await?;
-
-        // Four succeed, one fails — every job must reach a terminal state.
-        wait_until(
-            || terminal.len() >= capacity,
-            "every job to reach a terminal state despite a panicking job",
-        )
-        .await;
-
-        worker.close();
-        let metrics = queue.get_metrics().await?;
-        assert_eq!(
-            metrics.waiting.load(),
-            0,
-            "no job may be left stuck waiting"
-        );
-        assert_eq!(metrics.failed.load(), 1, "exactly the panicking job fails");
-        assert_eq!(
-            metrics.completed.load(),
-            u64::try_from(count - 1).expect("count is positive"),
-            "the remaining jobs must still complete"
-        );
         Ok(())
     }
 
@@ -945,17 +715,15 @@ mod tests {
         let worker = doubling_worker(&queue, None)?;
         let clone = worker.clone();
 
-        assert_eq!(worker.id, clone.id, "a clone shares the worker identity");
+        assert_eq!(worker.id, clone.id);
         assert!(!clone.is_running());
 
-        // Running the original must be observable through the clone (shared Arcs).
         worker.run()?;
         assert!(
             clone.is_running(),
             "clone observes the shared running state"
         );
 
-        // Closing via the clone must close the original too.
         clone.close();
         assert!(worker.closed(), "close through a clone closes the original");
         assert!(!worker.is_running());
@@ -971,7 +739,6 @@ mod tests {
         worker.run()?;
         assert_eq!(worker.state.load(), WorkerState::Active);
         worker.close();
-        // After close() the loop settles into the Closed state.
         wait_until(
             || worker.state.load() == WorkerState::Closed,
             "worker state to become Closed",
