@@ -202,7 +202,6 @@ mod error_tests {
 
     #[test]
     fn system_time_error_converts_and_renders() {
-        // `duration_since` on an earlier-vs-later pair yields a SystemTimeError.
         let now = std::time::SystemTime::now();
         let later = now + std::time::Duration::from_secs(60);
         let source = now
@@ -224,7 +223,6 @@ mod error_tests {
 
     #[test]
     fn json_error_converts_and_renders() {
-        // Feeding invalid JSON to simd-json yields a `simd_json::Error`.
         let mut bytes = b"{ this is not json".to_vec();
         let source =
             simd_json::to_owned_value(&mut bytes).expect_err("invalid JSON must fail to parse");
@@ -266,7 +264,6 @@ mod error_tests {
     fn queue_error_converts_into_kio_error_and_delegates_display() {
         let err = KioError::from(QueueError::CantOperateWhenPaused);
         assert!(matches!(err, KioError::QueueError(_)));
-        // Transparent wrapper renders exactly like the wrapped QueueError.
         assert_eq!(
             err.to_string(),
             QueueError::CantOperateWhenPaused.to_string()

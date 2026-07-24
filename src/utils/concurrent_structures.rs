@@ -186,7 +186,6 @@ mod concurrent_deque_tests {
         deque.push_front(5);
         deque.push_back(20);
         deque.push_front(1);
-        // Visible order front..back should be 1, 5, 10, 20.
         let ordered: Vec<i64> = deque.iter().map(|e| *e.value()).collect();
         assert_eq!(
             ordered,
@@ -283,7 +282,6 @@ mod concurrent_deque_tests {
     #[test]
     fn range_selects_key_subset() {
         let deque = ConcurrentDeque::new();
-        // Keys assigned: push_back starts at 1, 2, 3, ...
         for value in 0..5i64 {
             deque.push_back(value); // value v -> key (v + 1)
         }

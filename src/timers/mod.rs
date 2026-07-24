@@ -170,12 +170,8 @@ mod tests {
 
     #[tokio::test]
     async fn skips_first_ticks() {
-        // With skip_first_tick set, the callback fires immediately on the first
-        // poll cycle (the initial interval delay is skipped) and then again on
-        // each subsequent immediate first tick, so at least one callback has run
-        // by the time we stop. We assert a lower bound rather than an exact
-        // count because the number of fires around the interval boundary is
-        // inherently timing sensitive.
+        // With skip_first_tick set the callback fires immediately; assert a lower
+        // bound since exact counts around the interval boundary are timing sensitive.
         let counter: Arc<AtomicUsize> = Arc::default();
         let counter_clone = counter.clone();
         let timer = Timer::new(100, move || {
@@ -192,9 +188,6 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         timer.stop();
         assert!(!timer.is_running());
-        // The exact number of fires around the interval boundary is timing
-        // sensitive; only assert that the immediate first tick fired at least
-        // once so this cannot drift-fail on a loaded runner.
         assert!(
             counter.load(std::sync::atomic::Ordering::Acquire) >= 1,
             "skipping the first tick must fire the callback at least once"
@@ -223,8 +216,7 @@ mod tests {
         timer.resume();
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(timer.is_running());
-        // Exact fire counts across the pause/resume boundaries are timing
-        // sensitive; assert a lower bound so this cannot drift-fail under load.
+        // Fire counts across pause/resume are timing sensitive; assert a lower bound.
         assert!(
             counter.load(std::sync::atomic::Ordering::Acquire) >= 2,
             "callbacks must have fired both before pausing and after resuming"
@@ -243,11 +235,9 @@ mod tests {
         assert!(timer.state.load().is_stopped());
     }
 
-    // Additional robustness tests. `Timer` builds on `tokio::time::interval`,
-    // so we use short real sleeps with generous margins and assert on
-    // invariants/bounds rather than exact fire counts (which are inherently
-    // timing sensitive). Every wait that could block on a broken timer is
-    // bounded by `tokio::time::timeout`.
+    // `Timer` builds on `tokio::time::interval`, so these use short real sleeps
+    // and assert on bounds/invariants rather than exact (timing-sensitive) fire
+    // counts. Waits that could block on a broken timer are bounded by `timeout`.
     use std::sync::atomic::Ordering;
     use tokio::time::timeout;
 
@@ -291,10 +281,9 @@ mod tests {
 
     #[tokio::test]
     async fn should_skip_first_tick_sets_the_flag_as_a_side_effect() {
-        // Regardless of the (buggy) return value, calling the method must latch
-        // the `skip_first_tick` flag on, which is the behaviour production relies
-        // on. See `should_skip_first_tick_should_return_true_on_first_call` for
-        // the documented-return-value contract that is currently violated.
+        // Regardless of the (buggy) return value, the call must latch the flag on,
+        // which is what production relies on. See the sibling _returns_true test
+        // for the documented return-value contract that is currently violated.
         let timer = Timer::new(100, || async {});
         let _ = timer.should_skip_first_tick();
         assert!(
@@ -305,16 +294,12 @@ mod tests {
         assert!(timer.skip_first_tick.load(), "the flag must remain set");
     }
 
-    // SUSPECTED PRODUCTION BUG (not fixed here per instructions): the doc comment
-    // on `should_skip_first_tick` states it "Returns `true` the first time it is
-    // called, then `false` for all subsequent calls". The implementation is
-    // `compare_exchange(false, true).unwrap_or_default()`. crossbeam's
-    // `compare_exchange` returns `Ok(previous)` on success, so the first call
-    // yields `Ok(false)` -> `false`, and later calls yield `Err(true)` ->
-    // `unwrap_or_default()` -> `false`. It therefore returns `false` every time,
-    // contradicting the documented contract. The correct implementation is
-    // likely `.is_ok()`. The return value is not consumed anywhere in
-    // production, so this is currently latent. Marked #[ignore] until fixed.
+    // SUSPECTED PRODUCTION BUG (not fixed here): `should_skip_first_tick` is
+    // documented to return `true` on the first call, but
+    // `compare_exchange(false, true).unwrap_or_default()` returns `Ok(false)` on
+    // success and `Err(true) -> false` afterwards, so it returns `false` every
+    // time. Correct impl is likely `.is_ok()`. The return value is unused in
+    // production, so this is latent. Marked #[ignore] until fixed.
     #[tokio::test]
     #[ignore = "known bug: should_skip_first_tick always returns false; doc promises true on first call"]
     async fn should_skip_first_tick_should_return_true_on_first_call() {
@@ -335,7 +320,6 @@ mod tests {
         // Latch skip_first_tick so the callback fires promptly on the first poll.
         let _ = timer.should_skip_first_tick();
         let _ = timer.run();
-        // Let a few callbacks fire.
         timeout(Duration::from_secs(2), async {
             while counter.load(Ordering::Acquire) == 0 {
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -361,7 +345,6 @@ mod tests {
         // Latch skip_first_tick so the callback fires promptly on the first poll.
         let _ = timer.should_skip_first_tick();
         let _ = timer.run();
-        // Wait until at least one callback has fired.
         timeout(Duration::from_secs(2), async {
             while counter.load(Ordering::Acquire) == 0 {
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -383,7 +366,6 @@ mod tests {
         );
 
         timer.resume();
-        // After resuming, callbacks must start incrementing again.
         timeout(Duration::from_secs(2), async {
             while counter.load(Ordering::Acquire) <= during_pause {
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -400,7 +382,6 @@ mod tests {
         let (timer, _counter) = counting_timer(100);
         let _ = timer.run();
         assert!(timer.is_running());
-        // Resuming a running timer must not change its state.
         timer.resume();
         assert!(
             timer.is_running(),
@@ -425,10 +406,9 @@ mod tests {
 
     #[tokio::test]
     async fn very_large_delay_fires_once_immediately_then_waits() {
-        // `tokio::time::interval`'s first tick completes immediately, so even a
-        // one-hour timer fires its callback once on the first poll cycle. After
-        // that single fire the next tick is an hour away, so the counter must
-        // stay put within our short observation window (no runaway firing).
+        // `tokio::time::interval`'s first tick completes immediately, so even an
+        // hour-long timer fires once on the first poll; the next tick is an hour
+        // away, so the counter must not move again within the observation window.
         let (timer, counter) = counting_timer(60 * 60 * 1000); // one hour
         let _ = timer.run();
         assert!(timer.is_running());
@@ -449,11 +429,9 @@ mod tests {
 
     #[tokio::test]
     async fn zero_delay_run_panics_because_interval_period_must_be_non_zero() {
-        // Documents a robustness gap: `Timer::new(0, ..)` does not validate the
-        // delay, and `run()` calls `tokio::time::interval(Duration::ZERO)`
-        // *synchronously* (before spawning), which panics with "interval period
-        // must be non-zero". The panic therefore surfaces in the caller of
-        // `run()`, so it must be caught with `catch_unwind`.
+        // `Timer::new(0, ..)` is not validated, and `run()` calls
+        // `tokio::time::interval(Duration::ZERO)` synchronously (before spawning),
+        // which panics in the caller of `run()`, so it must be caught here.
         let timer = Timer::new(0, || async {});
         // Silence the default panic hook so the expected panic is not noisy.
         let previous_hook = std::panic::take_hook();

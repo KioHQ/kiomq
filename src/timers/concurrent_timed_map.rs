@@ -230,11 +230,10 @@ mod tests {
         assert_eq!(map.len_expired(), 0);
     }
 
-    // NOTE: `TimedMap` measures expiry with `std::time::Instant`, which is NOT
-    // driven by Tokio's virtual clock. `tokio::time::pause`/`advance` therefore
-    // cannot be used to make these deterministic; instead we use small real
-    // sleeps with generous margins, and bound every awaited join with
-    // `tokio::time::timeout` so a broken map can never hang the suite.
+    // `TimedMap` measures expiry with `std::time::Instant`, which is NOT driven
+    // by Tokio's virtual clock, so `tokio::time::pause`/`advance` cannot make
+    // these deterministic. Instead use small real sleeps and bound every awaited
+    // join with `tokio::time::timeout` so a broken map cannot hang the suite.
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::time::timeout;
 
@@ -252,7 +251,6 @@ mod tests {
     async fn constant_entries_never_expire() {
         let map: TimedMap<u64, u64> = TimedMap::new();
         map.insert_constant(1, 100);
-        // Even after a wait far longer than any TTL, a constant entry survives.
         sleep(Duration::from_millis(20)).await;
         let value = map.get(&1).expect("constant entry must remain present");
         assert_eq!(*value.lock(), 100);
@@ -285,16 +283,14 @@ mod tests {
         let map: TimedMap<u64, u64> = TimedMap::new();
         map.insert_expirable(1, 42, Duration::from_millis(5));
         sleep(Duration::from_millis(25)).await;
-        // Reads must not surface an expired value...
         assert!(map.get(&1).is_none(), "expired entry must not be returned");
-        // ...and the read itself must have evicted the underlying node.
+        // The read itself must evict the underlying node.
         assert!(!map.inner.contains_key(&1), "expired entry must be evicted");
     }
 
     #[tokio::test]
     async fn very_large_ttl_entry_remains_live() {
         let map: TimedMap<u64, u64> = TimedMap::new();
-        // A large-but-non-overflowing TTL must not be considered expired.
         map.insert_expirable(1, 99, Duration::from_hours(8760)); // one year
         sleep(Duration::from_millis(20)).await;
         let value = map.get(&1).expect("long-TTL entry must remain live");
@@ -369,11 +365,10 @@ mod tests {
     #[tokio::test]
     async fn purge_on_empty_map_is_a_harmless_no_op() {
         let map: TimedMap<u64, u64> = TimedMap::new();
-        // Draining an empty timer must neither panic nor create entries.
         map.purge_expired();
         assert!(map.is_empty());
         assert_eq!(map.len_expired(), 0);
-        // Repeated drains remain safe.
+        // Repeated drains must stay safe.
         map.purge_expired();
         map.clear();
         assert!(map.is_empty());
@@ -450,10 +445,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_inserts_and_removes_leave_a_consistent_map() {
-        // Many tasks race to insert then remove disjoint key ranges. Because the
-        // ranges are disjoint, every key each task removed must be gone, and no
-        // key it did not touch may appear. This guards against lost or
-        // duplicated entries under contention.
+        // Tasks race to insert then remove disjoint key ranges; every removed key
+        // must be gone and every untouched key must survive. Guards against lost
+        // or duplicated entries under contention.
         let map: Arc<TimedMap<u64, u64>> = Arc::new(TimedMap::new());
         let tasks = 16u64;
         let per_task = 100u64;
@@ -465,7 +459,6 @@ mod tests {
                 for k in base..base + per_task {
                     m.insert_constant(k, k);
                 }
-                // Remove every other key this task inserted.
                 for k in (base..base + per_task).step_by(2) {
                     m.remove(&k);
                 }
@@ -494,8 +487,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_reinsertion_of_a_shared_key_never_loses_the_key() {
-        // Many tasks hammer the same key. Regardless of interleaving exactly one
-        // entry must exist and it must hold one of the written values.
+        // Tasks hammer the same key; whatever the interleaving, exactly one entry
+        // must remain holding one of the written values.
         let map: Arc<TimedMap<u64, u64>> = Arc::new(TimedMap::new());
         let writes = Arc::new(AtomicUsize::new(0));
         let mut handles = Vec::new();
@@ -521,8 +514,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_purge_and_insert_never_panics_or_hangs() {
-        // A purger races against inserters mixing expirable and constant entries.
-        // Constants must never be lost; the whole interaction must terminate.
+        // A purger races inserters mixing expirable and constant entries;
+        // constants must never be lost and the interaction must terminate.
         let map: Arc<TimedMap<u64, u64>> = Arc::new(TimedMap::new());
         let mut handles = Vec::new();
         for t in 0..8u64 {

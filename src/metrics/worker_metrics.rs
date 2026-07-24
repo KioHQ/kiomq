@@ -440,9 +440,7 @@ mod tests {
     #[test]
     fn deref_exposes_the_underlying_histogram_directly() {
         let mut wrapper = HistogramWrapper(fresh_histogram());
-        // DerefMut allows recording straight through the wrapper.
         wrapper.record(500).expect("record through DerefMut");
-        // Deref allows reading straight through the wrapper.
         assert_eq!(wrapper.len(), 1);
     }
 

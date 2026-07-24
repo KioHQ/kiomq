@@ -445,20 +445,17 @@ where
 
 #[cfg(test)]
 mod timer_type_tests {
-    //! Robustness tests for [`TimerType`], the only piece of
-    //! `delay_queue_timer` that can be exercised without constructing a full
-    //! `Queue`/`Store`/`JobMap` harness. These focus on the scheduling
-    //! contract exposed through `next_duration` plus the `Display`/`Debug`
-    //! representations, across zero, tiny and very large delays.
+    //! Robustness tests for [`TimerType`] — the only part of `delay_queue_timer`
+    //! exercisable without a full `Queue`/`Store`/`JobMap` harness. Cover
+    //! `next_duration` plus the `Display`/`Debug` representations.
     use super::{EVICTION_INTERVAL_MS, TimerType, WORKER_STATE_TTL};
     use std::time::Duration;
     use uuid::Uuid;
 
     #[test]
     fn next_duration_echoes_the_configured_interval_for_polling_timers() {
-        // StalledCheck, ExtendLock and CollectMetrics must return exactly the
-        // duration they were built with so the timer reschedules at the same
-        // cadence.
+        // These variants must echo their configured duration so the timer
+        // reschedules at the same cadence.
         let cases = [
             Duration::from_millis(250),
             Duration::from_secs(30),
@@ -485,14 +482,12 @@ mod timer_type_tests {
 
     #[test]
     fn next_duration_handles_zero_and_very_large_intervals_without_panicking() {
-        // A zero interval is a legitimate (if aggressive) request and must be
-        // returned verbatim rather than clamped.
+        // A zero interval must round-trip verbatim rather than being clamped.
         assert_eq!(
             TimerType::StalledCheck(Duration::ZERO).next_duration(),
             Duration::ZERO,
             "a zero interval must round-trip unchanged"
         );
-        // A very large but non-overflowing interval must also round-trip.
         let very_large = Duration::from_hours(8760); // one year
         assert_eq!(
             TimerType::ExtendLock(very_large).next_duration(),
@@ -503,8 +498,8 @@ mod timer_type_tests {
 
     #[test]
     fn promoted_delayed_always_uses_the_fixed_eviction_interval() {
-        // PromotedDelayed ignores any per-instance data and always fires again
-        // after the fixed eviction interval, regardless of job id or queue id.
+        // PromotedDelayed ignores its job/queue id and always reschedules after
+        // the fixed eviction interval.
         let expected = Duration::from_millis(EVICTION_INTERVAL_MS);
         for job_id in [0_u64, 1, u64::MAX] {
             let timer = TimerType::PromotedDelayed(job_id, Uuid::new_v4());
@@ -518,10 +513,10 @@ mod timer_type_tests {
 
     #[test]
     fn reregister_worker_uses_the_worker_state_ttl() {
-        // ReregisterWorker reschedules after the worker-state TTL so heartbeats
-        // are refreshed before the registry entry expires.
+        // Reschedules after the worker-state TTL so heartbeats refresh before the
+        // registry entry expires.
         let ttl_ms = u64::try_from(WORKER_STATE_TTL).expect("worker-state TTL must fit in u64");
-        // The TTL must be strictly positive, otherwise the timer would busy-loop.
+        // Must be strictly positive, else the timer would busy-loop.
         assert!(
             ttl_ms > 0,
             "worker-state TTL must be positive to avoid a tight reschedule loop"
@@ -535,8 +530,7 @@ mod timer_type_tests {
 
     #[test]
     fn timer_type_is_copy_so_rescheduling_never_moves_the_original() {
-        // `next_timer.replace(key)` relies on `TimerType: Copy`; confirm the
-        // original remains usable after being copied.
+        // `next_timer.replace(key)` in production relies on `TimerType: Copy`.
         let original = TimerType::StalledCheck(Duration::from_millis(10));
         let copied = original;
         assert_eq!(original.next_duration(), copied.next_duration());

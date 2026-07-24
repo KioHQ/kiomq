@@ -26,7 +26,7 @@ macro_rules! worker_store_suite {
             use crossbeam::queue::ArrayQueue;
             use kiomq::{
                 EventParameters, JobOptions, KioError, KioResult, Queue, QueueEventMode, QueueOpts,
-                Store, Worker, WorkerOpts,CollectionSuffix,
+                Store, Worker, WorkerOpts, WorkerState, CollectionSuffix,
             };
             use std::collections::VecDeque;
             use std::sync::Arc;
@@ -524,6 +524,137 @@ macro_rules! worker_store_suite {
                     tokio::task::yield_now().await;
                 }
                 worker.close();
+                Ok(())
+            }
+
+            #[tokio::test(flavor = "multi_thread")]
+            async fn empty_queue_worker_keeps_running_without_spinning_out() -> KioResult<()> {
+                let store = make_store().await?;
+                let queue = Queue::<D, R, P, _>::new(store, None).await?;
+                let processor =
+                    move |_conn, job: kiomq::Job<D, R, P>| async move { Ok::<R, KioError>(job.data.unwrap()) };
+                let worker = Worker::new_async(&queue, processor, None)?;
+                worker.run()?;
+
+                // An idle worker parks in WorkerState::Idle; it must not close itself.
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                assert!(!worker.closed(), "an idle worker must not close itself");
+                assert_ne!(worker.state.load(), WorkerState::Closed);
+
+                queue.add_job("job", 21, None).await?;
+                while !queue.current_metrics.all_jobs_completed() {
+                    tokio::task::yield_now().await;
+                }
+                worker.close();
+                queue.obliterate().await?;
+                Ok(())
+            }
+
+            #[tokio::test(flavor = "multi_thread")]
+            async fn concurrency_of_one_still_completes_every_job() -> KioResult<()> {
+                let store = make_store().await?;
+                let queue = Queue::<D, R, P, _>::new(store, None).await?;
+                let opts = WorkerOpts { concurrency: 1, ..Default::default() };
+                let processor =
+                    move |_conn, job: kiomq::Job<D, R, P>| async move { Ok::<R, KioError>(job.data.unwrap()) };
+                let worker = Worker::new_async(&queue, processor, Some(opts))?;
+                worker.run()?;
+
+                let count = 6;
+                queue.bulk_add((0..count).map(|i| (i.to_string(), None, i))).await?;
+                while !queue.current_metrics.all_jobs_completed() {
+                    tokio::task::yield_now().await;
+                }
+                worker.close();
+                assert_eq!(queue.get_metrics().await?.completed.load(), count as u64);
+                queue.obliterate().await?;
+                Ok(())
+            }
+
+            #[tokio::test(flavor = "multi_thread")]
+            async fn high_concurrency_completes_every_job() -> KioResult<()> {
+                let store = make_store().await?;
+                let queue = Queue::<D, R, P, _>::new(store, None).await?;
+                let opts = WorkerOpts { concurrency: 64, ..Default::default() };
+                let processor =
+                    move |_conn, job: kiomq::Job<D, R, P>| async move { Ok::<R, KioError>(job.data.unwrap()) };
+                let worker = Worker::new_async(&queue, processor, Some(opts))?;
+                worker.run()?;
+
+                let count = 100;
+                queue.bulk_add((0..count).map(|i| (i.to_string(), None, i))).await?;
+                while !queue.current_metrics.all_jobs_completed() {
+                    tokio::task::yield_now().await;
+                }
+                worker.close();
+                let metrics = queue.get_metrics().await?;
+                assert_eq!(metrics.completed.load(), count as u64, "no job may be lost or double-counted");
+                assert_eq!(metrics.waiting.load(), 0);
+                queue.obliterate().await?;
+                Ok(())
+            }
+
+            #[tokio::test(flavor = "multi_thread")]
+            async fn concurrency_of_zero_processes_no_jobs() -> KioResult<()> {
+                // Concurrency 0 yields a semaphore with no permits: the worker stalls. No
+                // validation guards against this, so this pins the stalling behaviour.
+                let store = make_store().await?;
+                let queue = Queue::<D, R, P, _>::new(store, None).await?;
+                let opts = WorkerOpts { concurrency: 0, ..Default::default() };
+                let processor =
+                    move |_conn, job: kiomq::Job<D, R, P>| async move { Ok::<R, KioError>(job.data.unwrap()) };
+                let worker = Worker::new_async(&queue, processor, Some(opts))?;
+                worker.run()?;
+
+                queue.add_job("stalled", 1, None).await?;
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                assert!(!queue.current_metrics.all_jobs_completed());
+                let metrics = queue.get_metrics().await?;
+                assert_eq!(metrics.completed.load(), 0);
+                assert_eq!(metrics.waiting.load(), 1);
+
+                worker.close();
+                queue.obliterate().await?;
+                Ok(())
+            }
+
+            #[tokio::test(flavor = "multi_thread")]
+            async fn worker_keeps_processing_after_a_handler_panics() -> KioResult<()> {
+                let store = make_store().await?;
+                let queue = Queue::<D, R, P, _>::new(store, None).await?;
+
+                let count = 5;
+                let terminal: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(count as usize));
+                let terminal_sink = terminal.clone();
+                queue.on_all_events(move |state: EventParameters<D, R>| {
+                    let terminal = terminal_sink.clone();
+                    async move {
+                        if let EventParameters::Completed { job_id, .. }
+                        | EventParameters::Failed { job_id, .. } = state
+                        {
+                            let _ = terminal.push(job_id);
+                        }
+                    }
+                });
+
+                let processor = move |_conn, job: kiomq::Job<D, R, P>| async move {
+                    assert!(job.data.unwrap_or_default() != 0, "first job panics");
+                    Ok::<R, KioError>(job.data.unwrap())
+                };
+                let worker = Worker::new_async(&queue, processor, None)?;
+                worker.run()?;
+
+                queue.bulk_add((0..count).map(|i| (i.to_string(), None, i))).await?;
+                while terminal.len() < count as usize {
+                    tokio::task::yield_now().await;
+                }
+                worker.close();
+
+                let metrics = queue.get_metrics().await?;
+                assert_eq!(metrics.waiting.load(), 0);
+                assert_eq!(metrics.failed.load(), 1);
+                assert_eq!(metrics.completed.load(), (count - 1) as u64);
+                queue.obliterate().await?;
                 Ok(())
             }
         }

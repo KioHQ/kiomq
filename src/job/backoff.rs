@@ -217,11 +217,8 @@ mod tests {
     }
     #[test]
     fn test_exponential_backoff_high_attempt_does_not_overflow() {
-        // A repeat-with-exponential-backoff job increments `attempts` on every
-        // run and is never capped, so the attempt count eventually reaches the
-        // point where `2^attempt * delay` overflows i64. The delay function
-        // must saturate rather than panic (debug) / wrap to a negative delay
-        // (release).
+        // A never-capped repeat job drives `attempts` up until `2^attempt * delay`
+        // overflows i64; the delay must saturate, not panic (debug) / wrap (release).
         let backoff = BackOff::new();
         let strategy = backoff
             .lookup_strategy(
@@ -415,7 +412,6 @@ mod tests {
     #[test]
     fn test_lookup_returns_none_without_builtin_or_custom() {
         let backoff = BackOff::new();
-        // No `type_` at all.
         assert!(
             backoff
                 .lookup_strategy(
@@ -427,7 +423,6 @@ mod tests {
                 )
                 .is_none()
         );
-        // Known `type_` but missing delay and no custom fallback.
         assert!(
             backoff
                 .lookup_strategy(
@@ -439,7 +434,6 @@ mod tests {
                 )
                 .is_none()
         );
-        // Unknown `type_` and no custom fallback.
         assert!(
             backoff
                 .lookup_strategy(
