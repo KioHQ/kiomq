@@ -168,7 +168,6 @@ macro_rules! worker_store_suite {
                     };
 
                     let worker_opts = WorkerOpts {
-                        metrics_update_interval: 23,
                         ..Default::default()
                     };
                     let worker = Worker::new_async(&queue, processor, Some(worker_opts))?;
