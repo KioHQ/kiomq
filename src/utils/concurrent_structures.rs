@@ -1,5 +1,5 @@
 use crossbeam::atomic::AtomicCell;
-
+use crossbeam::utils::Backoff;
 use crossbeam_skiplist::SkipMap;
 use std::ops::RangeBounds;
 
@@ -15,6 +15,7 @@ impl<T: Send + 'static> Default for ConcurrentDeque<T> {
         Self::new()
     }
 }
+
 impl<T: Send + 'static> ConcurrentDeque<T> {
     pub fn new() -> Self {
         Self {
@@ -34,6 +35,7 @@ impl<T: Send + 'static> ConcurrentDeque<T> {
         let idx = self.tail_idx.fetch_add(1);
         self.data.insert(idx, value);
     }
+
     pub fn clear(&self) {
         self.data.clear();
         self.head_idx.store(0);
@@ -44,38 +46,80 @@ impl<T: Send + 'static> ConcurrentDeque<T> {
     where
         T: Clone,
     {
-        // front() gets the entry with the smallest key
-        let entry = self.data.front()?;
-        let key = *entry.key();
-
-        if let Some(entry) = self.data.remove(&key) {
-            return Some(entry.value().clone());
+        let backoff = Backoff::new();
+        loop {
+            let current_head = self.head_idx.load();
+            let current_tail = self.tail_idx.load();
+            // If head has caught up to tail (accounting for initial 0 and 1 offsets),
+            // the deque is logically empty.
+            if current_head >= current_tail - 1 {
+                return None;
+            }
+            // The next logical item to be popped from the front is at (current_head + 1)
+            let target_key = current_head + 1;
+            // Atomically reserve this specific key slot
+            if self
+                .head_idx
+                .compare_exchange(current_head, target_key)
+                .is_ok()
+            {
+                // Reservation successful! We now exclusively own the right to extract this key.
+                // If it isn't in the map yet, the pushing thread is still working on `.insert()`.
+                let inner_backoff = Backoff::new();
+                loop {
+                    if let Some(entry) = self.data.remove(&target_key) {
+                        return Some(entry.value().clone());
+                    }
+                    inner_backoff.snooze();
+                }
+            }
+            // Back off slightly if we failed the reservation due to another concurrent pop
+            backoff.spin();
         }
-        None
     }
 
     pub fn pop_back(&self) -> Option<T>
     where
         T: Clone,
     {
-        // back() gets the entry with the largest key
-        let entry = self.data.back()?;
-        let key = *entry.key();
+        let backoff = Backoff::new();
+        loop {
+            let current_head = self.head_idx.load();
+            let current_tail = self.tail_idx.load();
 
-        if let Some(entry) = self.data.remove(&key) {
-            return Some(entry.value().clone());
+            if current_head >= current_tail - 1 {
+                return None;
+            }
+            // The next logical item to be popped from the back is at (current_tail - 1)
+            let target_key = current_tail - 1;
+            // Atomically reserve this specific key slot
+            if self
+                .tail_idx
+                .compare_exchange(current_tail, target_key)
+                .is_ok()
+            {
+                let inner_backoff = Backoff::new();
+                loop {
+                    if let Some(entry) = self.data.remove(&target_key) {
+                        return Some(entry.value().clone());
+                    }
+                    inner_backoff.snooze();
+                }
+            }
+
+            backoff.spin();
         }
-        None
     }
 
     pub fn len(&self) -> usize {
-        // remove the actual number of item available instead of an appromixation by self.data.len
+        // Keeps the precise element counting indeed instead of Approximation from using self.data.len()
         self.iter().count()
     }
 
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
+
     pub fn contains_value(&self, value: &T) -> bool
     where
         T: PartialEq,
@@ -375,24 +419,6 @@ mod concurrent_deque_tests {
         assert_eq!(values.len(), expected, "no value may be lost or duplicated");
     }
 
-    // NOTE ON THE TWO IGNORED CONCURRENT-CONSUMER TESTS BELOW.
-    //
-    // `pop_front`/`pop_back` are a check-then-act: `front()`/`back()` reads the
-    // extremal key, then `data.remove(&key)` deletes it and returns the value
-    // only when *this* call performed the removal. That correctness argument
-    // assumes `SkipMap::remove` hands `Some` to at most one concurrent remover
-    // of a given key. It does not: with crossbeam-skiplist 0.1.3 several threads
-    // racing to remove the same key can each receive `Some`, so the same element
-    // is cloned and popped more than once. A focused probe removing keys
-    // `0..8_000` from a raw `SkipMap` across 8 threads returned `Some` ~15_000
-    // times instead of 8_000.
-    //
-    // Consequently, under concurrent consumers `ConcurrentDeque` double-delivers
-    // elements (observed: ~11_991 pops for 8_000 pushed items). These two tests
-    // encode the intended "each item popped exactly once" invariant and fail
-    // today; they are `#[ignore]`d pending a fix in the production code (e.g.
-    // gating the value hand-off on the caller that actually unlinked the node).
-    #[ignore = "real bug: concurrent pop double-delivers; SkipMap::remove is not exactly-once under contention"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn concurrent_drain_pops_each_item_exactly_once() {
         let deque = Arc::new(ConcurrentDeque::<i64>::new());
@@ -444,7 +470,6 @@ mod concurrent_deque_tests {
         assert!(deque.is_empty(), "deque must be empty once fully drained");
     }
 
-    #[ignore = "real bug: concurrent pop double-delivers; SkipMap::remove is not exactly-once under contention"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn concurrent_producers_and_consumers_conserve_every_item() {
         let deque = Arc::new(ConcurrentDeque::<i64>::new());
