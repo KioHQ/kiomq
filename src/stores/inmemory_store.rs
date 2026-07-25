@@ -941,32 +941,9 @@ where
 
     async fn remove_item(&self, col: CollectionSuffix, item: u64) -> KioResult<()> {
         match col {
-            CollectionSuffix::Active => {
-                self.active
-                    .iter()
-                    .filter(|entry| *entry.value() == item)
-                    .for_each(|entry| {
-                        entry.remove();
-                    });
-            }
-
-            CollectionSuffix::Wait => {
-                self.waiting
-                    .iter()
-                    .filter(|entry| *entry.value() == item)
-                    .for_each(|entry| {
-                        entry.remove();
-                    });
-            }
-
-            CollectionSuffix::Paused => {
-                self.paused
-                    .iter()
-                    .filter(|entry| *entry.value() == item)
-                    .for_each(|entry| {
-                        entry.remove();
-                    });
-            }
+            CollectionSuffix::Active => self.active.remove_value(&item),
+            CollectionSuffix::Wait => self.waiting.remove_value(&item),
+            CollectionSuffix::Paused => self.paused.remove_value(&item),
             CollectionSuffix::Completed => {
                 if self.completed.contains_key(&item) {
                     let _ = self.completed.remove(&item);
