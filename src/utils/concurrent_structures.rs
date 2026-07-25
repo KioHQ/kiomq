@@ -1,81 +1,99 @@
 use crossbeam::atomic::AtomicCell;
-
 use crossbeam_skiplist::SkipMap;
 use std::ops::RangeBounds;
 
 #[derive(Debug)]
 pub struct ConcurrentDeque<T> {
     data: SkipMap<i64, T>,
+    // Push-only key allocators, so keys are never reused.
     head_idx: AtomicCell<i64>,
     tail_idx: AtomicCell<i64>,
+    // Bumped after insert, claimed before removal.
+    len: AtomicCell<usize>,
 }
 
 impl<T: Send + 'static> Default for ConcurrentDeque<T> {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
+
 impl<T: Send + 'static> ConcurrentDeque<T> {
+    #[inline]
     pub fn new() -> Self {
         Self {
             data: SkipMap::new(),
             // Using 0 and 1 to distinguish the initial push directions
             head_idx: AtomicCell::new(0),
             tail_idx: AtomicCell::new(1),
+            len: AtomicCell::new(0),
         }
     }
 
+    #[inline]
     pub fn push_front(&self, value: T) {
         let idx = self.head_idx.fetch_sub(1);
         self.data.insert(idx, value);
+        self.len.fetch_add(1);
     }
 
+    #[inline]
     pub fn push_back(&self, value: T) {
         let idx = self.tail_idx.fetch_add(1);
         self.data.insert(idx, value);
-    }
-    pub fn clear(&self) {
-        self.data.clear();
-        self.head_idx.store(0);
-        self.tail_idx.store(1);
+        self.len.fetch_add(1);
     }
 
+    /// Indices are not reset, so an in-flight push can't reuse a key.
+    pub fn clear(&self) {
+        for _ in 0..self.len.swap(0) {
+            self.data
+                .pop_front()
+                .expect("a claimed element must be present");
+        }
+    }
+
+    /// Claims through `len` before removing, so `len`, `is_empty` and pops always agree.
+    #[inline]
     pub fn pop_front(&self) -> Option<T>
     where
         T: Clone,
     {
-        // front() gets the entry with the smallest key
-        let entry = self.data.front()?;
-        let key = *entry.key();
-
-        if let Some(entry) = self.data.remove(&key) {
-            return Some(entry.value().clone());
-        }
-        None
+        self.len.fetch_update(|n| n.checked_sub(1)).ok()?;
+        let entry = self
+            .data
+            .pop_front()
+            .expect("a claimed element must be present");
+        Some(entry.value().clone())
     }
 
+    /// See [`Self::pop_front`].
+    #[inline]
     pub fn pop_back(&self) -> Option<T>
     where
         T: Clone,
     {
-        // back() gets the entry with the largest key
-        let entry = self.data.back()?;
-        let key = *entry.key();
-
-        if let Some(entry) = self.data.remove(&key) {
-            return Some(entry.value().clone());
-        }
-        None
+        self.len.fetch_update(|n| n.checked_sub(1)).ok()?;
+        let entry = self
+            .data
+            .pop_back()
+            .expect("a claimed element must be present");
+        Some(entry.value().clone())
     }
 
+    /// Exact, O(1).
+    #[inline]
     pub fn len(&self) -> usize {
-        // remove the actual number of item available instead of an appromixation by self.data.len
-        self.iter().count()
+        self.len.load()
     }
 
+    #[inline]
     pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.len() == 0
     }
+
+    #[inline]
     pub fn contains_value(&self, value: &T) -> bool
     where
         T: PartialEq,
@@ -83,11 +101,27 @@ impl<T: Send + 'static> ConcurrentDeque<T> {
         self.data.iter().any(|entry| entry.value() == value)
     }
 
+    /// Removes every element equal to `value`, claiming each through `len` first.
+    pub fn remove_value(&self, value: &T)
+    where
+        T: PartialEq,
+    {
+        for entry in self.data.iter().filter(|entry| entry.value() == value) {
+            if self.len.fetch_update(|n| n.checked_sub(1)).is_ok() && !entry.remove() {
+                // Lost the entry to a concurrent pop; release the claim.
+                self.len.fetch_add(1);
+            }
+        }
+    }
+
+    /// Don't call `remove` on yielded entries; use [`Self::remove_value`].
+    #[inline]
     pub fn iter(&self) -> crossbeam_skiplist::map::Iter<'_, i64, T> {
         self.data.iter()
     }
 
     /// Returns an iterator over a subset of the deque based on index keys.
+    #[inline]
     pub fn range<R>(&self, range: R) -> crossbeam_skiplist::map::Range<'_, i64, R, i64, T>
     where
         R: RangeBounds<i64>,
@@ -105,23 +139,9 @@ mod concurrent_deque_tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    /// Drains the deque one item at a time, tolerating the spurious `None` that
-    /// `pop_front` may return under contention (two poppers can observe the same
-    /// front key before one of them wins the `remove`).  Only stops once the
-    /// underlying map is genuinely empty.
+    /// Drains the deque front to back.
     fn drain_all<T: Clone + Send + 'static>(deque: &ConcurrentDeque<T>) -> Vec<T> {
-        let mut drained = Vec::new();
-        loop {
-            match deque.pop_front() {
-                Some(value) => drained.push(value),
-                None => {
-                    if deque.is_empty() {
-                        break;
-                    }
-                }
-            }
-        }
-        drained
+        std::iter::from_fn(|| deque.pop_front()).collect()
     }
 
     #[test]
@@ -232,7 +252,7 @@ mod concurrent_deque_tests {
     }
 
     #[test]
-    fn clear_resets_indices_and_ordering() {
+    fn clear_empties_and_preserves_ordering() {
         let deque = ConcurrentDeque::new();
         for value in 0..10i64 {
             deque.push_back(value);
@@ -242,12 +262,11 @@ mod concurrent_deque_tests {
         assert_eq!(deque.len(), 0);
         assert_eq!(deque.pop_front(), None);
 
-        // After clear the head/tail indices must be reset so a fresh sequence
-        // orders exactly as it would on a brand-new deque.
+        // Indices are not reset, but ordering must match a fresh deque.
         deque.push_back(100);
         deque.push_front(50);
         let ordered: Vec<i64> = deque.iter().map(|e| *e.value()).collect();
-        assert_eq!(ordered, vec![50, 100], "indices must be reset after clear");
+        assert_eq!(ordered, vec![50, 100], "ordering must survive a clear");
     }
 
     #[test]
@@ -272,6 +291,19 @@ mod concurrent_deque_tests {
             !deque.contains_value(&3),
             "popped value must no longer be present"
         );
+    }
+
+    #[test]
+    fn remove_value_keeps_len_exact() {
+        let deque = ConcurrentDeque::new();
+        for value in [1i64, 2, 1, 3] {
+            deque.push_back(value);
+        }
+        deque.remove_value(&1);
+        assert_eq!(deque.len(), 2);
+        assert_eq!(drain_all(&deque), vec![2, 3]);
+        deque.clear();
+        assert_eq!(deque.len(), 0);
     }
 
     #[test]
@@ -375,24 +407,6 @@ mod concurrent_deque_tests {
         assert_eq!(values.len(), expected, "no value may be lost or duplicated");
     }
 
-    // NOTE ON THE TWO IGNORED CONCURRENT-CONSUMER TESTS BELOW.
-    //
-    // `pop_front`/`pop_back` are a check-then-act: `front()`/`back()` reads the
-    // extremal key, then `data.remove(&key)` deletes it and returns the value
-    // only when *this* call performed the removal. That correctness argument
-    // assumes `SkipMap::remove` hands `Some` to at most one concurrent remover
-    // of a given key. It does not: with crossbeam-skiplist 0.1.3 several threads
-    // racing to remove the same key can each receive `Some`, so the same element
-    // is cloned and popped more than once. A focused probe removing keys
-    // `0..8_000` from a raw `SkipMap` across 8 threads returned `Some` ~15_000
-    // times instead of 8_000.
-    //
-    // Consequently, under concurrent consumers `ConcurrentDeque` double-delivers
-    // elements (observed: ~11_991 pops for 8_000 pushed items). These two tests
-    // encode the intended "each item popped exactly once" invariant and fail
-    // today; they are `#[ignore]`d pending a fix in the production code (e.g.
-    // gating the value hand-off on the caller that actually unlinked the node).
-    #[ignore = "real bug: concurrent pop double-delivers; SkipMap::remove is not exactly-once under contention"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn concurrent_drain_pops_each_item_exactly_once() {
         let deque = Arc::new(ConcurrentDeque::<i64>::new());
@@ -408,20 +422,7 @@ mod concurrent_deque_tests {
             let d = Arc::clone(&deque);
             let sink = Arc::clone(&collected);
             handles.push(tokio::spawn(async move {
-                let mut local = Vec::new();
-                loop {
-                    match d.pop_front() {
-                        Some(value) => local.push(value),
-                        None => {
-                            // A None under contention may be spurious; only stop
-                            // once the deque is genuinely drained.
-                            if d.is_empty() {
-                                break;
-                            }
-                            tokio::task::yield_now().await;
-                        }
-                    }
-                }
+                let local: Vec<i64> = std::iter::from_fn(|| d.pop_front()).collect();
                 sink.lock().extend(local);
             }));
         }
@@ -444,15 +445,12 @@ mod concurrent_deque_tests {
         assert!(deque.is_empty(), "deque must be empty once fully drained");
     }
 
-    #[ignore = "real bug: concurrent pop double-delivers; SkipMap::remove is not exactly-once under contention"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn concurrent_producers_and_consumers_conserve_every_item() {
         let deque = Arc::new(ConcurrentDeque::<i64>::new());
         let done = Arc::new(AtomicBool::new(false));
         let consumed = Arc::new(AtomicUsize::new(0));
-        // High producer/consumer counts and item volume so the check-then-act
-        // remove race is exercised hard enough to reproduce the double-delivery
-        // reliably when run with `--ignored`.
+        // High volume so pops race pushes hard.
         let producers = 8i64;
         let per_producer = 8_000i64;
         let consumers = 8;
@@ -500,5 +498,164 @@ mod concurrent_deque_tests {
             "concurrent producers and consumers must conserve every item"
         );
         assert!(deque.is_empty(), "no item may be left behind");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn opposite_end_pops_never_share_an_item() {
+        // A lone item is both the front and the back; exactly one popper may win.
+        for round in 0..2_000i64 {
+            let deque = Arc::new(ConcurrentDeque::<i64>::new());
+            deque.push_back(round);
+            let front = {
+                let d = Arc::clone(&deque);
+                tokio::spawn(async move { d.pop_front() })
+            };
+            let back = {
+                let d = Arc::clone(&deque);
+                tokio::spawn(async move { d.pop_back() })
+            };
+            let front = front.await.expect("front popper must not panic");
+            let back = back.await.expect("back popper must not panic");
+            assert_eq!(
+                usize::from(front.is_some()) + usize::from(back.is_some()),
+                1,
+                "round {round}: the single item must be delivered exactly once"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn mixed_ends_push_and_pop_conserve_every_item() {
+        // Pushes and pops interleave at both ends.
+        let deque = Arc::new(ConcurrentDeque::<i64>::new());
+        let workers = 8i64;
+        let per_worker = 4_000i64;
+        let popped = Arc::new(parking_lot::Mutex::new(Vec::<i64>::new()));
+        let mut handles = Vec::new();
+        for w in 0..workers {
+            let d = Arc::clone(&deque);
+            let sink = Arc::clone(&popped);
+            handles.push(tokio::spawn(async move {
+                let mut local = Vec::new();
+                for j in 0..per_worker {
+                    let value = w * per_worker + j;
+                    if value % 2 == 0 {
+                        d.push_front(value);
+                        local.extend(d.pop_back());
+                    } else {
+                        d.push_back(value);
+                        local.extend(d.pop_front());
+                    }
+                }
+                sink.lock().extend(local);
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("worker task must not panic");
+        }
+
+        let mut seen = popped.lock().clone();
+        seen.extend(drain_all(&deque));
+        let expected = (workers * per_worker) as usize;
+        let unique: HashSet<i64> = seen.iter().copied().collect();
+        assert_eq!(seen.len(), expected, "no item may be lost or duplicated");
+        assert_eq!(unique.len(), expected, "every item must be distinct");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn len_stays_exact_under_contention() {
+        // Each worker pushes then pops, so `len` must stay in [base, base + workers].
+        let base = 64usize;
+        let workers = 6usize;
+        let deque = Arc::new(ConcurrentDeque::<i64>::new());
+        for value in 0..base as i64 {
+            deque.push_back(value);
+        }
+        let done = Arc::new(AtomicBool::new(false));
+
+        let observer = {
+            let d = Arc::clone(&deque);
+            let done = Arc::clone(&done);
+            tokio::spawn(async move {
+                while !done.load(Ordering::Acquire) {
+                    let len = d.len();
+                    assert!(
+                        (base..=base + workers).contains(&len),
+                        "len {len} escaped [{base}, {}]",
+                        base + workers
+                    );
+                    assert!(!d.is_empty(), "is_empty must agree with len");
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+
+        let mut handles = Vec::new();
+        for w in 0..workers {
+            let d = Arc::clone(&deque);
+            handles.push(tokio::spawn(async move {
+                for j in 0..20_000i64 {
+                    if (w as i64 + j) % 2 == 0 {
+                        d.push_back(j);
+                        assert!(d.pop_front().is_some(), "pop must never miss");
+                    } else {
+                        d.push_front(j);
+                        assert!(d.pop_back().is_some(), "pop must never miss");
+                    }
+                }
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("worker task must not panic");
+        }
+        done.store(true, Ordering::Release);
+        observer.await.expect("observer task must not panic");
+
+        assert_eq!(deque.len(), base, "len must settle on the base count");
+        assert_eq!(deque.iter().count(), base, "len must match the entries");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn clear_during_pushes_never_overwrites_or_hangs() {
+        let deque = Arc::new(ConcurrentDeque::<i64>::new());
+        let pushed = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for p in 0..4i64 {
+            let d = Arc::clone(&deque);
+            let pushed = Arc::clone(&pushed);
+            handles.push(tokio::spawn(async move {
+                for j in 0..5_000i64 {
+                    d.push_back(p * 5_000 + j);
+                    pushed.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
+        }
+        let clearer = {
+            let d = Arc::clone(&deque);
+            tokio::spawn(async move {
+                for _ in 0..100 {
+                    d.clear();
+                    let _ = d.pop_front();
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+        for handle in handles {
+            handle.await.expect("producer task must not panic");
+        }
+        clearer.await.expect("clearer task must not panic");
+        assert_eq!(
+            deque.len(),
+            deque.iter().count(),
+            "len must match the surviving entries"
+        );
+
+        // Pushes after the last clear must all be retrievable and distinct.
+        deque.clear();
+        for value in 0..1_000i64 {
+            deque.push_back(value);
+        }
+        assert_eq!(drain_all(&deque), (0..1_000).collect::<Vec<_>>());
+        assert_eq!(pushed.load(Ordering::Relaxed), 20_000);
     }
 }
