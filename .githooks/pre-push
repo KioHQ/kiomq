@@ -1,0 +1,13 @@
+#!/bin/sh
+# Pre-push checks: format, lint, test, docs
+set -e
+
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets --features tracing,redis-store -- -D warnings
+if command -v cargo-nextest >/dev/null 2>&1; then
+	cargo nextest run --locked --features tracing,redis-store
+	cargo test --locked --doc --features tracing,redis-store  # nextest skips doctests
+else
+	cargo test --locked --features tracing,redis-store
+fi
+cargo doc --locked --workspace --no-deps --features tracing,redis-store

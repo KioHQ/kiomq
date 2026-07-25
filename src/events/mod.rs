@@ -215,7 +215,6 @@ mod events_tests {
     // hang the suite (TigerStyle: never block unboundedly).
     const AWAIT_BOUND: Duration = Duration::from_secs(5);
 
-    /// Convenience: a `QueueStreamEvent` seeded with a concrete `JobState` and id.
     fn event_with(state: JobState, job_id: u64) -> QueueStreamEvent<u64, u64> {
         QueueStreamEvent {
             event: state,
@@ -276,12 +275,10 @@ mod events_tests {
                 status: JobState::Active,
             },
         ];
-        // Every variant is distinct and matchable; assert we covered all 11.
         assert_eq!(variants.len(), 11, "expected one of every variant");
 
         for variant in &variants {
-            // Each variant must be exhaustively matchable (compile-time guarantee)
-            // and produce a non-empty Debug rendering.
+            // Exhaustive match (no wildcard) forces every variant to be covered.
             let rendered = format!("{variant:?}");
             assert!(!rendered.is_empty(), "Debug output must not be empty");
             match variant {
@@ -319,8 +316,6 @@ mod events_tests {
             result: 1234,
         };
         let cloned = original.clone();
-        // Both the original and the clone must remain independently usable and
-        // carry identical payloads.
         match (&original, &cloned) {
             (
                 EventParameters::Completed {
@@ -813,7 +808,6 @@ mod events_tests {
     #[tokio::test]
     async fn emit_with_no_listeners_is_a_harmless_noop() {
         let emitter = new_emitter();
-        // No subscribers registered: emit must complete without error or hang.
         tokio::time::timeout(
             AWAIT_BOUND,
             emitter.emit(JobState::Wait, EventParameters::Void),

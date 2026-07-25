@@ -92,7 +92,7 @@ async fn main() -> kiomq::KioResult<()> {
     let worker = Worker::new_async(&queue, processor, Some(WorkerOpts::default()))?;
     worker.run()?;
 
-    queue.bulk_add_only((0..10u64).map(|i| (format_compact!("job-{i}"), None, i))).await?;
+    queue.bulk_add_only((0..10u64).map(|i| (format!("job-{i}"), None, i))).await?;
 
     let updating_metrics = queue.current_metrics.clone();
     // wait for all jobs to complete
@@ -205,7 +205,7 @@ use kiomq::{BackOffJobOptions, BackOffOptions, KeepJobs, QueueEventMode, QueueOp
 let queue_opts = QueueOpts {
     attempts: 2,
     default_backoff: Some(BackOffJobOptions::Opts(BackOffOptions {
-        type_: Some("exponential".to_owned()),
+        type_: Some("exponential".into()),
         delay: Some(200),
     })),
     remove_on_fail: Some(RemoveOnCompletionOrFailure::Opts(KeepJobs {
@@ -406,6 +406,13 @@ cargo nextest run
 > local development should too. The [`.config/nextest.toml`](.config/nextest.toml)
 > profile also terminates any hung test so a stall fails fast instead of wedging
 > the run.
+### Contributing
+
+Enable the repo's git hooks (runs fmt, clippy, tests, and docs on push):
+
+```bash
+git config core.hooksPath .githooks
+```
 
 ### License
 

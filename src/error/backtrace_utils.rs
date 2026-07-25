@@ -139,7 +139,6 @@ mod tests {
         assert!(matches!(result, Err(CaughtError::Panic(_))));
         if let Err(CaughtError::Panic(info)) = result {
             assert!(info.payload.contains("Test panic"));
-            // The captured payload is formatted as `Panic:{payload} :\n {location}`.
             assert!(info.payload.contains("Panic:"));
             // A framed capture should have recorded a backtrace.
             assert!(info.backtrace.is_some());
@@ -196,7 +195,6 @@ mod tests {
         // With no framed frame on the stack the capture path yields None.
         let backtrace: Backtrace = async_backtrace::backtrace();
         assert!(backtrace.is_none());
-        // Even an empty backtrace formats to a well-defined, non-empty string.
         assert_eq!(format_compact!("{backtrace:?}"), "None");
     }
 

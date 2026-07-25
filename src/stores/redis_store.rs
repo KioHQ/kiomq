@@ -44,7 +44,7 @@ use uuid::Uuid;
 ///     let mut cfg = Config::from_url("redis://127.0.0.1/");
 ///     let  mut redis_conn  =  SharedRedis::create(&cfg)?;
 ///     let store = RedisStore::new(None, "my-queue", &redis_conn).await?;
-///     let queue: Queue<CompactString, CompactString, (), _> =
+///     let queue: Queue<String, String, (), _> =
 ///         Queue::new(store, Some(QueueOpts::default())).await?;
 ///     Ok(())
 /// }

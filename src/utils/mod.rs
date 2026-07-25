@@ -45,12 +45,14 @@ use std::sync::Arc;
 #[cfg(feature = "redis-store")]
 /// Reads the Redis password from the `REDIS_PASSWORD` environment variable.
 ///
-/// Loads a `.env` file via `dotenv` if one is present before reading the
+/// Loads a `.env` file via `dotenvy` if one is present before reading the
 /// variable.  Returns `None` when the variable is unset.
 #[must_use]
 pub fn fetch_redis_pass() -> Option<String> {
-    if let Err(_err) = dotenv::dotenv() {
-        // dothing; continue
+    // A missing `.env` is expected (env vars may be set directly), so ignore
+    // that specific error rather than propagate it.
+    if let Err(_err) = dotenvy::dotenv() {
+        // no-op: continue with the process environment
     }
     std::env::var("REDIS_PASSWORD").ok()
 }
@@ -1166,7 +1168,6 @@ mod update_job_opts_tests {
 
     #[test]
     fn attempts_takes_the_maximum_never_lowering_the_job_value() {
-        // Job asks for more attempts than the queue default: keep the higher one.
         let queue_opts = QueueOpts {
             attempts: 3,
             ..Default::default()
@@ -1181,7 +1182,6 @@ mod update_job_opts_tests {
             "a higher job-level attempts must not be lowered"
         );
 
-        // Job asks for fewer: raise it to the queue default.
         let mut opts = JobOptions {
             attempts: 1,
             ..Default::default()
@@ -1192,7 +1192,6 @@ mod update_job_opts_tests {
             "a lower job-level attempts must rise to the default"
         );
 
-        // Equal: unchanged.
         let mut opts = JobOptions {
             attempts: 3,
             ..Default::default()
