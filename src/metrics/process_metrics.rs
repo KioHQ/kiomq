@@ -683,9 +683,8 @@ mod tests {
         original_state.store(WorkerState::Active);
         collector.register_worker(id, first);
 
-        // A second registration for the same id is a no-op: it must not panic and
-        // must NOT replace the existing entry with the new tuple. The second tuple
-        // carries a different state so a replace-on-reregister would be observable.
+        // A second registration for the same id must be a no-op, not a replace.
+        // The second tuple carries a different state so a replace would be observable.
         let second = worker_state_tuple();
         second.0.store(WorkerState::Idle);
         collector.register_worker(id, second);
@@ -709,7 +708,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn timer_exists_is_false_for_an_unknown_queue() {
         let collector = &*P_METRICS_COLLECTOR;
-        // Querying a timer that was never registered must safely return false.
         let unknown_queue = Uuid::new_v4();
         let timer = TimerType::StalledCheck(Duration::from_secs(30));
         assert!(

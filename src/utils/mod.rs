@@ -1168,7 +1168,6 @@ mod update_job_opts_tests {
 
     #[test]
     fn attempts_takes_the_maximum_never_lowering_the_job_value() {
-        // Job asks for more attempts than the queue default: keep the higher one.
         let queue_opts = QueueOpts {
             attempts: 3,
             ..Default::default()
@@ -1183,7 +1182,6 @@ mod update_job_opts_tests {
             "a higher job-level attempts must not be lowered"
         );
 
-        // Job asks for fewer: raise it to the queue default.
         let mut opts = JobOptions {
             attempts: 1,
             ..Default::default()
@@ -1194,7 +1192,6 @@ mod update_job_opts_tests {
             "a lower job-level attempts must rise to the default"
         );
 
-        // Equal: unchanged.
         let mut opts = JobOptions {
             attempts: 3,
             ..Default::default()
