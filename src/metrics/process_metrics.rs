@@ -528,7 +528,7 @@ mod tests {
             max_busy_duration: Duration::from_micros(999),
             min_busy_duration: Duration::from_nanos(7),
             global_queue_depth: 3,
-            elapsed: Duration::from_secs(60),
+            elapsed: Duration::from_mins(1),
         };
         let mut json = simd_json::to_string(&original)
             .expect("RawRuntimeMetrics must serialise")

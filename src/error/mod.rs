@@ -203,7 +203,7 @@ mod error_tests {
     #[test]
     fn system_time_error_converts_and_renders() {
         let now = std::time::SystemTime::now();
-        let later = now + std::time::Duration::from_secs(60);
+        let later = now + std::time::Duration::from_mins(1);
         let source = now
             .duration_since(later)
             .expect_err("earlier.duration_since(later) must error");
