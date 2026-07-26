@@ -35,7 +35,6 @@ type SharedEmitter<R, P> = ArcSwapOption<Emitter<R, P>>;
 ///
 /// You typically do not implement this trait yourself; use one of the provided
 /// implementations: [`InMemoryStore`], `RedisStore`, or `RocksDbStore`.
-#[allow(clippy::too_many_arguments)]
 #[async_trait::async_trait]
 pub trait Store<D, R, P> {
     /// Returns the name of the queue this store was created for.

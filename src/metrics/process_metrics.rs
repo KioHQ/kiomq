@@ -200,7 +200,6 @@ impl ProcessMetricsCollector {
         if workers.contains_key(&worker_id) {
             return;
         }
-        #[allow(clippy::cast_possible_truncation)]
         let timeout = Duration::from_secs(WORKER_STATE_TTL as u64);
         workers.insert_expirable(worker_id, state, timeout);
     }
@@ -231,7 +230,6 @@ impl ProcessMetricsCollector {
     ) -> tokio::task::JoinHandle<()> {
         let processor = self.clone();
         let token = processor.cancel_token.clone();
-        #[allow(clippy::cast_possible_truncation)]
         let interval = Duration::from_millis(PROCESS_METRIC_UPDATE_INTERVAL as u64);
 
         tokio::spawn(async move {

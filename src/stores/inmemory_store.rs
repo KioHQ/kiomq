@@ -685,7 +685,6 @@ where
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn get_job_ids_in_state(
         &self,
         state: JobState,
@@ -1097,8 +1096,6 @@ where
 #[cfg(test)]
 #[allow(
     clippy::float_cmp,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
     clippy::items_after_statements,
     clippy::doc_markdown
 )]

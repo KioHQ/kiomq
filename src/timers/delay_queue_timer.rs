@@ -48,7 +48,6 @@ pub enum TimerType {
 }
 impl TimerType {
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
     pub const fn next_duration(&self) -> Duration {
         match self {
             Self::StalledCheck(duration)
@@ -128,7 +127,6 @@ impl<
     S: Clone + Store<D, R, P> + Send + 'static + Sync,
 > DelayQueueTimer<D, R, P, S>
 {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         jobs: JobMap<D, R, P>,
         queue: Queue<D, R, P, S>,
@@ -226,7 +224,6 @@ impl<
                          if let Some(metrics) = process_metrics {
                           #[cfg(feature = "tracing")]
                            info!("Collecting Process Metrics");
-                             #[allow(clippy::cast_possible_truncation)]
                              queue
                                  .store
                                  .store_process_metrics(metrics, interval as u64)
@@ -302,12 +299,11 @@ type WorkerMap = SkipMap<
 >;
 
 //#[cfg_attr(feature="tracing", instrument(skip(queue, jobs,sender)))]
-#[allow(clippy::too_many_lines)]
 async fn process_timer<D, R, P, S>(
     key: TimerType,
     queue: &Queue<D, R, P, S>,
     jobs: &JobMap<D, R, P>,
-    #[allow(clippy::type_complexity)] workers: &WorkerMap,
+    workers: &WorkerMap,
     sender: &TimerSender,
 ) -> KioResult<()>
 where

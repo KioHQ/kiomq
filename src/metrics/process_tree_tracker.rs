@@ -28,7 +28,6 @@ pub struct ProcessTreeTracker {
 
 #[cfg(target_os = "linux")]
 impl ProcessTreeTracker {
-    #[allow(clippy::cast_precision_loss)]
     pub fn new() -> Self {
         let me = procfs::process::Process::myself().expect("Failed to access /proc/self");
         let ticks_per_second = procfs::ticks_per_second() as f32;
@@ -49,7 +48,6 @@ impl ProcessTreeTracker {
         tracker
     }
 
-    #[allow(clippy::cast_precision_loss)]
     fn sample_tree_metrics(&self) -> (f32, u64, u64) {
         let mut total_ticks = 0.0;
         let mut total_rss_pages = 0;
@@ -89,7 +87,6 @@ impl ProcessTreeTracker {
         )
     }
 
-    #[allow(clippy::cast_precision_loss)]
     pub fn sample(&mut self) -> ProcessTreeStats {
         let now = Instant::now();
         let elapsed_secs = now.duration_since(self.prev_time).as_secs_f32();
@@ -142,7 +139,7 @@ impl ProcessTreeTracker {
             child_processes,
         }
     }
-    #[allow(clippy::cast_precision_loss)]
+
     pub fn sample(&mut self) -> ProcessTreeStats {
         let mut processes: Vec<_> = self.child_processes.iter().copied().collect();
         processes.push(self.pid);

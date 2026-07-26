@@ -73,7 +73,6 @@ where
 
 #[cfg(test)]
 mod callback_conversion_tests {
-    #![allow(clippy::cast_possible_truncation)]
     use super::{AsyncFn, Callback, SharedStore, SyncFn};
     use crate::{Job, JobError, KioError};
     use std::sync::Arc;

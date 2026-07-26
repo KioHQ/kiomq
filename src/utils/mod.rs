@@ -134,7 +134,6 @@ pub async fn get_queue_metrics<C: redis::aio::ConnectionLike>(
     pipeline.hget(meta_key.as_str(), "processing");
     pipeline.hget(meta_key.as_str(), "event_mode");
     pipeline.hexists(meta_key.as_str(), JobState::Paused);
-    #[allow(clippy::type_complexity)]
     let (
         completed,
         failed,
@@ -180,8 +179,6 @@ pub async fn get_queue_metrics<C: redis::aio::ConnectionLike>(
 }
 
 // ---- UTIL FUNCTIONS for the worker
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_lines)]
 pub async fn process_job<D, R, P, S>(
     job: Job<D, R, P>,
     token: JobToken,
@@ -626,7 +623,6 @@ where
     Ok(())
 }
 #[cfg(feature = "redis-store")]
-#[allow(clippy::too_many_arguments)]
 /// Utilily function for pipelining
 pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
     queue_name: &str,
@@ -741,7 +737,6 @@ pub type ReadStreamArgs<'a, R, P> = (
     Arc<QueueMetrics>,
 );
 // Helper function to process events from our queue-redis-stream
-#[allow(clippy::future_not_send)]
 pub async fn process_queue_events<D, R, P, S: Store<D, R, P> + Send>(
     (event_mode, block_interval, emitter, metrics): ReadStreamArgs<'_, R, P>,
     store: &S,
@@ -760,7 +755,6 @@ where
         )
         .await
 }
-#[allow(clippy::future_not_send)]
 pub async fn process_each_event<D, R, P>(
     event: QueueStreamEvent<R, P>,
     emitter: &EventEmitter<R, P>,
@@ -813,7 +807,6 @@ fn split_pipeline(mut p: Pipeline, chunk_size: usize) -> Vec<Pipeline> {
         .collect()
 }
 #[cfg(feature = "redis-store")]
-#[allow(clippy::future_not_send)]
 pub async fn query_all_batched<C: ConnectionLike + Clone>(
     conn: &C,
     p: Pipeline,

@@ -99,12 +99,7 @@ impl<T: Send + 'static> ConcurrentDeque<T> {
 #[cfg(test)]
 mod concurrent_deque_tests {
     // Pedantic/nursery lints that are noise in test scaffolding.
-    #![allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::significant_drop_tightening,
-        clippy::single_match_else
-    )]
+    #![allow(clippy::significant_drop_tightening, clippy::single_match_else)]
     use super::ConcurrentDeque;
     use std::collections::HashSet;
     use std::sync::Arc;
