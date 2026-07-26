@@ -127,6 +127,7 @@ pub struct Worker<D, R, P, S> {
     active_job_count: Arc<AtomicCell<usize>>,
     continue_notifier: Arc<Notify>,
     main_task: SharedTaskHandle,
+    main_tracker: TaskTracker,
 }
 use crate::utils::processor_types;
 use processor_types::Callback;
@@ -303,6 +304,7 @@ impl<
             processor: callback,
             cancellation_token,
             active_job_count: Arc::default(),
+            main_tracker: TaskTracker::new(),
         };
         if worker.opts.autorun {
             worker.run()?;
@@ -312,9 +314,15 @@ impl<
     }
 
     /// Returns `true` if the worker is actively processing jobs.
+    ///
+    /// A worker counts as running once [`run`](Worker::run) has spawned its main
+    /// loop and until cancellation, so this is `false` both before `run` and
+    /// after [`close`](Worker::close) — which also makes a second `close()` a
+    /// cheap no-op.
     #[must_use]
     pub fn is_running(&self) -> bool {
-        self.state.load().is_active() && !self.cancellation_token.is_cancelled()
+        self.main_task.load().as_ref().is_some()
+            && (self.state.load().is_active() || !self.cancellation_token.is_cancelled())
     }
     /// Returns `true` if the worker is idle (started but waiting for work).
     #[must_use]
@@ -401,7 +409,7 @@ impl<
         let main = main_loop(params).instrument(self.resource_span.clone());
         #[cfg(not(feature = "tracing"))]
         let main = main_loop(params);
-        let main_task = tokio::spawn(main.boxed());
+        let main_task = self.main_tracker.spawn(main.boxed());
         self.main_task.swap(Some(main_task.into()));
         Ok(())
     }
@@ -412,17 +420,15 @@ impl<
     }
 
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
-    /// Stops the worker's processing loop.
+    /// Stops the worker, blocking until every in-flight job has drained.
     ///
-    /// Signals the internal cancellation token and waits for the main loop
-    /// task to finish.  Already-running jobs are allowed to complete.
+    /// Cancels the main loop and waits for it to reach [`WorkerState::Closed`]
+    /// before deregistering, so draining jobs keep having their locks extended
+    /// and cannot be re-claimed as stalled by another worker. Requires Tokio's
+    /// multi-threaded runtime.
     ///
-    /// Calling `close` on a worker that is not running is a no-op (idempotent).
-    ///
-    /// # Note
-    ///
-    /// After calling `close` the worker **cannot** be restarted.  Create a new
-    /// worker if you need to resume processing.
+    /// Repeated and concurrent calls are safe — every caller waits for the same
+    /// drain. A closed worker **cannot** be restarted; create a new one.
     pub fn close(&self) {
         if !self.is_running() {
             return;
@@ -438,16 +444,23 @@ impl<
         self.queue.worker_notifier.notify_waiters();
         self.queue.pause_workers.store(false);
         self.cancellation_token.cancel();
-        let mut main_task = self.main_task.load_full();
-        if let Some(handle) = main_task.take() {
-            // wait for handle to finishd
+        // `wait()` only resolves on a closed tracker.
+        self.main_tracker.close();
+
+        // Started-marker only; the handle is shared, so the tracker is what we wait on.
+        if let Some(_main) = self.main_task.load_full() {
             #[cfg(feature = "tracing")]
-            {
-                let running_tasks = self.processing.len();
-                warn!("waiting for all {running_tasks} tasks to complete or abort");
+            warn!(
+                "waiting for {} in-flight task(s) to drain",
+                self.processing.len()
+            );
+            let drained = self.main_tracker.wait();
+            match tokio::runtime::Handle::try_current() {
+                Ok(rt) => tokio::task::block_in_place(|| rt.block_on(drained)),
+                // Plain sync code: the runtime lives on other threads, so a local
+                // executor is enough to park until the drain signals us.
+                Err(_) => futures::executor::block_on(drained),
             }
-            // wait for the main loop to close
-            while !handle.is_finished() {}
         }
         self.queue.remove_worker(self.id);
     }
