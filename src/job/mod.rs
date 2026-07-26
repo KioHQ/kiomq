@@ -396,7 +396,6 @@ impl<D, R, P> Job<D, R, P> {
     /// # Errors
     ///
     /// Returns [`KioError`](crate::KioError) if the store update fails.
-    #[allow(clippy::future_not_send)]
     pub async fn update_progress<C>(&mut self, value: P, store: &C) -> Result<(), KioError>
     where
         P: Serialize + Clone,

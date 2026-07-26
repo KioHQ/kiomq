@@ -17,7 +17,6 @@ use crossbeam_skiplist::{SkipMap, SkipSet};
 use derive_more::Debug;
 use futures::{FutureExt, Stream, StreamExt};
 use heapster::{Heapster, Stats};
-use num_traits::AsPrimitive;
 use parking_lot::RwLock;
 #[cfg(feature = "redis-store")]
 use redis::{self, FromRedisValue, ParsingError};
@@ -201,7 +200,7 @@ impl ProcessMetricsCollector {
         if workers.contains_key(&worker_id) {
             return;
         }
-        let timeout = Duration::from_secs(WORKER_STATE_TTL.as_());
+        let timeout = Duration::from_secs(WORKER_STATE_TTL as u64);
         workers.insert_expirable(worker_id, state, timeout);
     }
 
@@ -231,7 +230,7 @@ impl ProcessMetricsCollector {
     ) -> tokio::task::JoinHandle<()> {
         let processor = self.clone();
         let token = processor.cancel_token.clone();
-        let interval = Duration::from_millis(PROCESS_METRIC_UPDATE_INTERVAL.as_());
+        let interval = Duration::from_millis(PROCESS_METRIC_UPDATE_INTERVAL as u64);
 
         tokio::spawn(async move {
             let  mut metrics_stream = processor.create_process_metrics_stream(interval, token.clone()).boxed();

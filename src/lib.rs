@@ -5,6 +5,19 @@
     clippy::pedantic,
     clippy::nursery
 )]
+// Deliberate crate-wide exemptions from `pedantic`/`nursery`:
+// - millisecond/byte counters are cast between integer widths on purpose
+// - futures hold `!Send` guards by design (the runtime drives them locally)
+// - store/worker constructors legitimately take many arguments and lines
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::future_not_send,
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::type_complexity
+)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 mod error;
 mod events;

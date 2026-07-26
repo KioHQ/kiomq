@@ -13,7 +13,6 @@ use crossbeam_skiplist::SkipMap;
 use derive_more::{Debug, Display};
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt};
-use num_traits::AsPrimitive;
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -49,7 +48,6 @@ pub enum TimerType {
 }
 impl TimerType {
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
     pub const fn next_duration(&self) -> Duration {
         match self {
             Self::StalledCheck(duration)
@@ -129,7 +127,6 @@ impl<
     S: Clone + Store<D, R, P> + Send + 'static + Sync,
 > DelayQueueTimer<D, R, P, S>
 {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         jobs: JobMap<D, R, P>,
         queue: Queue<D, R, P, S>,
@@ -229,7 +226,7 @@ impl<
                            info!("Collecting Process Metrics");
                              queue
                                  .store
-                                 .store_process_metrics(metrics, interval.as_())
+                                 .store_process_metrics(metrics, interval as u64)
                                  .await?;
                          }
 
@@ -302,12 +299,11 @@ type WorkerMap = SkipMap<
 >;
 
 //#[cfg_attr(feature="tracing", instrument(skip(queue, jobs,sender)))]
-#[allow(clippy::too_many_lines)]
 async fn process_timer<D, R, P, S>(
     key: TimerType,
     queue: &Queue<D, R, P, S>,
     jobs: &JobMap<D, R, P>,
-    #[allow(clippy::type_complexity)] workers: &WorkerMap,
+    workers: &WorkerMap,
     sender: &TimerSender,
 ) -> KioResult<()>
 where

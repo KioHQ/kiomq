@@ -413,7 +413,6 @@ impl QueueMetrics {
         let last_id = self.last_id.load();
         last_id > 0 && self.completed.load() == last_id && self.active.load() == 0 && self.is_idle()
     }
-    #[allow(clippy::too_many_arguments)]
     /// Constructs a `QueueMetrics` from raw counter values read from the store.
     #[must_use]
     pub fn new(
