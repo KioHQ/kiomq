@@ -127,6 +127,7 @@ pub struct Worker<D, R, P, S> {
     active_job_count: Arc<AtomicCell<usize>>,
     continue_notifier: Arc<Notify>,
     main_task: SharedTaskHandle,
+    main_tracker: TaskTracker,
 }
 use crate::utils::processor_types;
 use processor_types::Callback;
@@ -303,6 +304,7 @@ impl<
             processor: callback,
             cancellation_token,
             active_job_count: Arc::default(),
+            main_tracker: TaskTracker::new(),
         };
         if worker.opts.autorun {
             worker.run()?;
@@ -313,11 +315,10 @@ impl<
 
     /// Returns `true` if the worker is actively processing jobs.
     ///
-    /// A worker counts as running while its main-loop task is still live and it
-    /// has not been fully shut down — i.e. it is either actively processing or
-    /// has not yet been cancelled. Once [`close`](Worker::close) has taken the
-    /// main-loop handle, this returns `false`, which also makes a second
-    /// `close()` a cheap no-op.
+    /// A worker counts as running once [`run`](Worker::run) has spawned its main
+    /// loop and until cancellation, so this is `false` both before `run` and
+    /// after [`close`](Worker::close) — which also makes a second `close()` a
+    /// cheap no-op.
     #[must_use]
     pub fn is_running(&self) -> bool {
         self.main_task.load().as_ref().is_some()
@@ -408,7 +409,7 @@ impl<
         let main = main_loop(params).instrument(self.resource_span.clone());
         #[cfg(not(feature = "tracing"))]
         let main = main_loop(params);
-        let main_task = tokio::spawn(main.boxed());
+        let main_task = self.main_tracker.spawn(main.boxed());
         self.main_task.swap(Some(main_task.into()));
         Ok(())
     }
@@ -419,32 +420,15 @@ impl<
     }
 
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
-    /// Stops the worker's processing loop.
+    /// Stops the worker, blocking until every in-flight job has drained.
     ///
-    /// This is a **synchronous, blocking** call: it signals cancellation and
-    /// then blocks the caller until the main loop has observed it, drained every
-    /// in-flight job (`processing.wait().await`) and transitioned to
-    /// [`WorkerState::Closed`]. When `close` returns, the worker is fully
-    /// stopped and deregistered from the queue. Because the worker stays
-    /// registered until the drain completes, in-flight jobs keep having their
-    /// locks extended and cannot be re-claimed as stalled by another worker
-    /// while they finish.
+    /// Cancels the main loop and waits for it to reach [`WorkerState::Closed`]
+    /// before deregistering, so draining jobs keep having their locks extended
+    /// and cannot be re-claimed as stalled by another worker. Requires Tokio's
+    /// multi-threaded runtime.
     ///
-    /// Workers require a multi-threaded Tokio runtime. `close` may be called
-    /// either from ordinary synchronous code (its intended use for long-lived
-    /// singleton workers) or from within the runtime — in the latter case it
-    /// hands the worker thread back to the scheduler via
-    /// [`block_in_place`](tokio::task::block_in_place) so the main loop can be
-    /// polled to completion while the caller blocks.
-    ///
-    /// Calling `close` on a worker that is not running is a no-op (idempotent),
-    /// as is a second concurrent call once the first has taken the main-loop
-    /// handle.
-    ///
-    /// # Note
-    ///
-    /// After calling `close` the worker **cannot** be restarted.  Create a new
-    /// worker if you need to resume processing.
+    /// Repeated and concurrent calls are safe — every caller waits for the same
+    /// drain. A closed worker **cannot** be restarted; create a new one.
     pub fn close(&self) {
         if !self.is_running() {
             return;
@@ -460,46 +444,22 @@ impl<
         self.queue.worker_notifier.notify_waiters();
         self.queue.pause_workers.store(false);
         self.cancellation_token.cancel();
+        // `wait()` only resolves on a closed tracker.
+        self.main_tracker.close();
 
-        // Take the main-loop handle out of the shared slot. A second (or
-        // concurrent) `close()` then observes `None` here and skips straight to
-        // deregistration instead of blocking on an already-finishing shutdown.
-        if let Some(handle) = self.main_task.swap(None) {
+        // Started-marker only; the handle is shared, so the tracker is what we wait on.
+        if let Some(_main) = self.main_task.load_full() {
             #[cfg(feature = "tracing")]
-            {
-                let running_tasks = self.processing.len();
-                warn!("waiting for {running_tasks} in-flight task(s) to drain");
-            }
-            // On cancellation the main loop drains its in-flight jobs and sets
-            // `Closed` before returning, so blocking on its handle turns
-            // `close()` into a "stopped and drained" barrier.
-            match Arc::try_unwrap(handle) {
-                // Sole owner: await the handle. Awaiting parks the caller rather
-                // than busy-spinning a CPU core while the jobs finish.
-                Ok(task) => {
-                    let wait = async {
-                        let _ = task.await;
-                    };
-                    if tokio::runtime::Handle::try_current().is_ok() {
-                        // Inside the (multi-threaded) runtime: give the worker
-                        // thread back so the main loop can be polled elsewhere.
-                        tokio::task::block_in_place(|| {
-                            tokio::runtime::Handle::current().block_on(wait);
-                        });
-                    } else {
-                        // Plain sync code: drive the handle on a local executor.
-                        futures::executor::block_on(wait);
-                    }
-                }
-                // A concurrent reader momentarily holds the handle too, so we
-                // cannot take ownership to `await` it. Fall back to cooperatively
-                // waiting for it to finish.
-                Err(shared) => {
-                    let backoff = crossbeam::utils::Backoff::new();
-                    while !shared.is_finished() {
-                        backoff.snooze();
-                    }
-                }
+            warn!(
+                "waiting for {} in-flight task(s) to drain",
+                self.processing.len()
+            );
+            let drained = self.main_tracker.wait();
+            match tokio::runtime::Handle::try_current() {
+                Ok(rt) => tokio::task::block_in_place(|| rt.block_on(drained)),
+                // Plain sync code: the runtime lives on other threads, so a local
+                // executor is enough to park until the drain signals us.
+                Err(_) => futures::executor::block_on(drained),
             }
         }
         self.queue.remove_worker(self.id);
