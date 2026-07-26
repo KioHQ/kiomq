@@ -274,6 +274,18 @@ impl RedisStore {
         Ok(())
     }
 }
+
+/// Classifies the outcome of a blocking `XREADGROUP`.
+fn stream_read_or_idle(
+    read: redis::RedisResult<StreamReadReply>,
+) -> KioResult<Option<StreamReadReply>> {
+    match read {
+        Ok(reply) => Ok(Some(reply)),
+        Err(err) if err.is_timeout() => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
 #[async_trait::async_trait]
 impl<
     D: Clone + Serialize + DeserializeOwned + Send + 'static,
@@ -476,6 +488,7 @@ where
             .await
             .ok()
     }
+
     async fn listen_to_events(
         &self,
         event_mode: QueueEventMode,
@@ -506,9 +519,12 @@ where
                 if let Some(b_internal) = block_interval {
                     options = options.block(usize::try_from(b_internal).unwrap_or(usize::MAX));
                 }
-                let reply: StreamReadReply = connection
+                let read = connection
                     .xread_options(&[self.stream_key.as_str()], &[">"], &options)
-                    .await?;
+                    .await;
+                let Some(reply) = stream_read_or_idle(read)? else {
+                    return Ok(());
+                };
 
                 let events =
                     QueueStreamEvent::<R, P>::from_stream_read_reply(&self.stream_key, reply);
@@ -1079,5 +1095,43 @@ impl MetricsType {
             Self::Process(_) => CollectionSuffix::ProcessMetrics,
             Self::Worker(_) => CollectionSuffix::WorkerMetrics,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{StreamReadReply, stream_read_or_idle};
+    use std::io;
+
+    #[test]
+    fn timeout_is_an_idle_window() {
+        for kind in [io::ErrorKind::TimedOut, io::ErrorKind::WouldBlock] {
+            let err = redis::RedisError::from(io::Error::new(kind, "blocking read expired"));
+            assert!(err.is_timeout(), "{kind:?} should classify as a timeout");
+            assert!(
+                stream_read_or_idle(Err(err))
+                    .expect("timeout must not error")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn other_errors_still_propagate() {
+        let err = redis::RedisError::from(io::Error::new(
+            io::ErrorKind::ConnectionReset,
+            "connection reset",
+        ));
+        assert!(!err.is_timeout());
+        assert!(stream_read_or_idle(Err(err)).is_err());
+    }
+
+    #[test]
+    fn successful_read_is_returned() {
+        assert!(
+            stream_read_or_idle(Ok(StreamReadReply::default()))
+                .expect("ok must not error")
+                .is_some()
+        );
     }
 }
