@@ -1,8 +1,8 @@
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use tokio::runtime::Runtime;
 
 use kiomq::{InMemoryStore, Job, JobState, KioError, Queue, Worker, WorkerOpts};

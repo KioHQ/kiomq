@@ -2,7 +2,7 @@
 use crate::error::{JobError, KioError};
 use crate::events::QueueStreamEvent;
 use crate::job::{Job, JobState};
-use crate::metrics::{TimerCommand, WorkerMetrics, P_METRICS_COLLECTOR};
+use crate::metrics::{P_METRICS_COLLECTOR, TimerCommand, WorkerMetrics};
 use crate::timers::{DelayQueueTimer, TimerSender};
 use crate::utils::{promote_jobs, resume_helper};
 use crate::worker::{JobMap, ProcessingQueue, WorkerOpts, WorkerState};
@@ -15,16 +15,16 @@ use compact_str::ToCompactString;
 use crossbeam::atomic::AtomicCell;
 use crossbeam_skiplist::SkipMap;
 use futures::future::Future;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::{BTreeMap, VecDeque};
 use std::marker::PhantomData;
 use std::sync::Arc;
-use tokio::sync::broadcast::{self, Sender};
 use tokio::sync::Notify;
+use tokio::sync::broadcast::{self, Sender};
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
-use tracing::{debug_span, info, instrument, Instrument, Span};
+use tracing::{Instrument, Span, debug_span, info, instrument};
 use uuid::Uuid;
 mod options;
 use crate::stores::Store;
@@ -70,7 +70,7 @@ pub type WorkerMetaData = Arc<
 /// # async fn main() -> kiomq::KioResult<()> {
 /// use kiomq::{InMemoryStore, Queue};
 ///
-/// let store: InMemoryStore<CompactString, CompactString, ()> = InMemoryStore::new(None, "my-queue");
+/// let store: InMemoryStore<String, String, ()> = InMemoryStore::new(None, "my-queue");
 /// let queue = Queue::new(store, None).await?;
 /// # Ok(())
 /// # }
@@ -107,11 +107,11 @@ pub struct Queue<D, R, P, S> {
 }
 
 impl<
-        D: Clone + Serialize + DeserializeOwned + Send + 'static + Sync,
-        R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
-        S: Clone + Store<D, R, P> + Send + 'static + Sync,
-        P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
-    > Queue<D, R, P, S>
+    D: Clone + Serialize + DeserializeOwned + Send + 'static + Sync,
+    R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
+    S: Clone + Store<D, R, P> + Send + 'static + Sync,
+    P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
+> Queue<D, R, P, S>
 {
     /// add a worker and  its usual metadata in the queue
     pub(crate) fn add_worker(
@@ -191,11 +191,12 @@ impl<
 
         let events_mode_exits: bool = store.metadata_field_exists("event_mode").await?;
         let event_mode = metrics.event_mode.clone();
-        if let Some(passed_mode) = opts.event_mode {
-            if !events_mode_exits && passed_mode != event_mode.load() {
-                store.set_event_mode(passed_mode).await?;
-                event_mode.swap(passed_mode);
-            }
+        if let Some(passed_mode) = opts.event_mode
+            && !events_mode_exits
+            && passed_mode != event_mode.load()
+        {
+            store.set_event_mode(passed_mode).await?;
+            event_mode.swap(passed_mode);
         }
         let _queue_name = store.queue_name();
         #[cfg(feature = "tracing")]
@@ -280,7 +281,6 @@ impl<
     /// # Errors
     ///
     /// Returns [`KioError`] if the underlying store fails.
-    #[allow(clippy::future_not_send)]
     pub async fn bulk_add<I: Iterator<Item = (String, Option<JobOptions>, D)> + Send + 'static>(
         &self,
         iter: I,
@@ -310,11 +310,10 @@ impl<
     /// let store: InMemoryStore<u64, u64, ()> = InMemoryStore::new(None, "bulk-demo");
     /// let queue = Queue::new(store, None).await?;
     ///
-    /// queue.bulk_add_only((0..5u64).map(|i| (format_compact!("job-{i}"), None, i))).await?;
+    /// queue.bulk_add_only((0..5u64).map(|i| (format!("job-{i}"), None, i))).await?;
     /// # Ok(())
     /// # }
     /// ```
-    #[allow(clippy::future_not_send)]
     pub async fn bulk_add_only<
         I: Iterator<Item = (String, Option<JobOptions>, D)> + Send + 'static,
     >(
@@ -359,7 +358,6 @@ impl<
     /// # Panics
     ///
     /// Panics if the store returns an empty job list (should never happen in practice).
-    #[allow(clippy::future_not_send)]
     pub async fn add_job(
         &self,
         name: &str,
@@ -402,7 +400,6 @@ impl<
     /// # Ok(())
     /// # }
     /// ```
-    #[allow(clippy::future_not_send)]
     pub async fn get_job(&self, id: u64) -> Option<Job<D, R, P>> {
         self.store.get_job(id).await
     }
@@ -418,7 +415,6 @@ impl<
     ///
     /// Returns [`KioError`] if the job no longer exists or the store fails.
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
-    #[allow(clippy::future_not_send)]
     pub(crate) async fn move_job_to_state(
         &self,
         job_id: u64,
@@ -504,7 +500,6 @@ impl<
     ///
     /// Returns [`KioError`] if the underlying store operation fails.
     /// pauses the queue if not resumed and vice-versa
-    #[allow(clippy::future_not_send)]
     pub async fn pause_or_resume(&self) -> Result<(), KioError> {
         // if its paused
         let metrics = self.get_metrics().await?;
@@ -538,7 +533,6 @@ impl<
     /// * `lock_duration` – the new lock lifetime in **milliseconds**.
     /// * `token` – the [`JobToken`] originally granted to this worker.
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
-    #[allow(clippy::future_not_send)]
     pub(crate) async fn extend_lock(
         &self,
         job_id: u64,
@@ -546,16 +540,16 @@ impl<
         token: JobToken,
     ) -> KioResult<bool> {
         let previous: Option<JobToken> = self.store.get_token(job_id).await;
-        if let Some(prev_token) = previous {
-            if prev_token == token {
-                self.store
-                    .set_lock(CollectionSuffix::Lock(job_id), Some(token), lock_duration)
-                    .await?;
-                self.store
-                    .remove_item(CollectionSuffix::Stalled, job_id)
-                    .await?;
-                return Ok(true);
-            }
+        if let Some(prev_token) = previous
+            && prev_token == token
+        {
+            self.store
+                .set_lock(CollectionSuffix::Lock(job_id), Some(token), lock_duration)
+                .await?;
+            self.store
+                .remove_item(CollectionSuffix::Stalled, job_id)
+                .await?;
+            return Ok(true);
         }
         Ok(false)
     }
@@ -573,7 +567,6 @@ impl<
     ///
     /// Returns [`KioError`] if the store cannot be queried.
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
-    #[allow(clippy::future_not_send)]
     pub(crate) async fn make_stalled_jobs_wait(
         &self,
         opts: &WorkerOpts,
@@ -676,7 +669,6 @@ impl<
     ///
     /// Returns [`KioError`] if the store operation fails.
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
-    #[allow(clippy::future_not_send)]
     pub(crate) async fn move_to_active(
         &self,
         token: JobToken,
@@ -727,7 +719,6 @@ impl<
     /// Returns [`KioError`] if the job no longer exists or the lock cannot be
     /// set.
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
-    #[allow(clippy::future_not_send)]
     pub(crate) async fn prepare_job_for_processing(
         &self,
         token: JobToken,
@@ -758,7 +749,6 @@ impl<
     }
 
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self, _token)))]
-    #[allow(clippy::future_not_send)]
     pub(crate) async fn move_job_to_finished_or_failed(
         &self,
         job_id: u64,
@@ -788,7 +778,6 @@ impl<
         Ok(job)
     }
     /// Emits an event with the given state and parameters to all registered listeners.
-    #[allow(clippy::future_not_send)]
     pub async fn emit(&self, event: JobState, data: EventParameters<R, P>) {
         self.emitter.emit(event, data).await;
     }
@@ -848,7 +837,6 @@ impl<
     /// # Errors
     ///
     /// Returns [`KioError`] if the store fails to clear collections.
-    #[allow(clippy::future_not_send)]
     pub async fn obliterate(&self) -> KioResult<()> {
         self.delete_all_jobs().await?;
         // delete all other grouped collections;
@@ -870,7 +858,6 @@ impl<
         P_METRICS_COLLECTOR.unregister_queue(self.id);
         Ok(())
     }
-    #[allow(clippy::future_not_send)]
     async fn delete_all_jobs(&self) -> KioResult<()> {
         let last_id = self.current_metrics.last_id.load();
         self.store.clear_jobs(last_id).await
@@ -912,7 +899,6 @@ impl<
     /// Depending on the policy the job record may be deleted immediately, kept
     /// for a limited age, or pruned once a count threshold is exceeded.
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
-    #[allow(clippy::future_not_send)]
     pub(crate) async fn clean_up_job(
         &self,
         job_id: u64,
@@ -939,12 +925,11 @@ impl<
                             .expire(CollectionSuffix::Job(job_id), expire_in_secs)
                             .await?;
                     }
-                    if let Some(max_to_keep) = count {
-                        if max_to_keep.is_positive()
-                            && i64::try_from(id).unwrap_or(i64::MAX) > max_to_keep
-                        {
-                            self.store.remove(CollectionSuffix::Job(job_id)).await?;
-                        }
+                    if let Some(max_to_keep) = count
+                        && max_to_keep.is_positive()
+                        && i64::try_from(id).unwrap_or(i64::MAX) > max_to_keep
+                    {
+                        self.store.remove(CollectionSuffix::Job(job_id)).await?;
                     }
                 }
             }
@@ -1044,7 +1029,6 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     /// [`Repeat`] (for repeat-scheduling).  The job is moved to the delayed or
     /// wait state as appropriate.
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self, opts)))]
-    #[allow(clippy::future_not_send)]
     pub(crate) async fn retry_job<'a, T: Into<RetryOptions<'a>>>(
         &self,
         job_id: u64,
@@ -1083,7 +1067,6 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
         }
     }
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
-    #[allow(clippy::future_not_send)]
     async fn retry_failed(
         &self,
         job_id: u64,
@@ -1153,7 +1136,6 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     ///
     /// For a cheap in-memory read (no store round-trip), read `queue.current_metrics`
     /// directly.  Keep in mind it may be slightly stale between `get_metrics` calls.
-    #[allow(clippy::future_not_send)]
     pub async fn get_metrics(&self) -> KioResult<QueueMetrics> {
         let updated = self.store.get_metrics().await?;
         self.current_metrics.update(&updated);
@@ -1166,7 +1148,6 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     /// # Errors
     ///
     /// Returns [`KioError`] if the store lookup fails.
-    #[allow(clippy::future_not_send)]
     pub async fn fetch_worker_metrics(&self) -> KioResult<BTreeMap<uuid::Uuid, WorkerMetrics>> {
         self.store.fetch_worker_metrics().await
     }
@@ -1177,7 +1158,6 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     /// # Errors
     ///
     /// Returns [`KioError`] if the store lookup fails.
-    #[allow(clippy::future_not_send)]
     pub async fn fetch_proess_metrics(&self) -> KioResult<BTreeMap<u32, ProcessMetrics>> {
         self.store.fetch_process_metrics().await
     }
@@ -1190,7 +1170,6 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     /// # Errors
     ///
     /// Returns [`KioError`] if the store write fails.
-    #[allow(clippy::future_not_send)]
     pub async fn store_worker_metrics(&self, metrics: WorkerMetrics, ttl_ms: u64) -> KioResult<()> {
         self.store.store_worker_metrics(metrics, ttl_ms).await
     }
@@ -1199,7 +1178,6 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     /// # Errors
     ///
     /// Returns [`KioError`] if the store write fails.
-    #[allow(clippy::future_not_send)]
     pub async fn store_process_metrics(
         &self,
         metrics: ProcessMetrics,
@@ -1213,7 +1191,6 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     ///
     /// Returns the updated counter value.
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
-    #[allow(clippy::future_not_send)]
     pub(crate) async fn update_processing_count(
         &self,
         increment: bool,
@@ -1241,5 +1218,296 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
             .await
             .unwrap_or_default();
         Ok(current)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::QueueError;
+    use crate::worker::MIN_DELAY_MS_LIMIT;
+    use crate::{BackOffJobOptions, BackOffOptions, InMemoryStore, JobOptions};
+    use std::sync::Arc;
+
+    type D = i32;
+    type R = i32;
+    type P = i32;
+    type TestQueue = Queue<D, R, P, InMemoryStore<D, R, P>>;
+
+    async fn make_queue(opts: Option<QueueOpts>) -> KioResult<TestQueue> {
+        let name = Uuid::new_v4().to_string();
+        let store = InMemoryStore::<D, R, P>::new(None, &name);
+        Queue::new(store, opts).await
+    }
+
+    async fn make_queue_with_prefix(prefix: &str, name: &str) -> KioResult<TestQueue> {
+        let store = InMemoryStore::<D, R, P>::new(Some(prefix), name);
+        Queue::new(store, None).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_with_none_opts_applies_defaults() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        assert_eq!(queue.opts.attempts, 1);
+        assert_eq!(queue.opts.event_mode, Some(QueueEventMode::Stream));
+        assert!(!queue.is_paused());
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_honours_custom_attempts_and_event_mode() -> KioResult<()> {
+        let opts = QueueOpts {
+            attempts: 9,
+            event_mode: Some(QueueEventMode::PubSub),
+            ..Default::default()
+        };
+        let queue = make_queue(Some(opts)).await?;
+        assert_eq!(queue.opts.attempts, 9);
+        assert_eq!(queue.event_mode.load(), QueueEventMode::PubSub);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn name_and_prefix_accessors_reflect_store() -> KioResult<()> {
+        let queue = make_queue_with_prefix("myprefix", "orders").await?;
+        assert_eq!(queue.name(), "orders");
+        assert_eq!(queue.prefix(), "myprefix");
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn default_prefix_is_kio() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        assert_eq!(queue.prefix(), "kio");
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_job_returns_none_for_unknown_id() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        assert!(queue.get_job(999_999).await.is_none());
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fetch_jobs_ignores_missing_ids() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let job = queue.add_job("real", 1, None).await?;
+        let id = job.id.expect("id present");
+        let fetched = queue.fetch_jobs(&[id, 424_242, 999_999]).await?;
+        assert_eq!(fetched.len(), 1);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn delay_just_below_limit_is_rejected() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let below = MIN_DELAY_MS_LIMIT.saturating_sub(1);
+        let opts = JobOptions {
+            delay: below.cast_signed().into(),
+            ..Default::default()
+        };
+        let err = queue
+            .add_job("too-soon", 1, Some(opts))
+            .await
+            .expect_err("sub-limit delay must be rejected");
+        assert!(
+            matches!(
+                err,
+                KioError::QueueError(QueueError::DelayBelowAllowedLimit { limit_ms, current_ms })
+                    if limit_ms == MIN_DELAY_MS_LIMIT && current_ms == below
+            ),
+            "unexpected error variant: {err:?}"
+        );
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn delay_exactly_at_limit_is_accepted() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let opts = JobOptions {
+            delay: MIN_DELAY_MS_LIMIT.cast_signed().into(),
+            ..Default::default()
+        };
+        queue.add_job("boundary", 1, Some(opts)).await?;
+        let metrics = queue.get_metrics().await?;
+        assert_eq!(metrics.delayed.load(), 1);
+        assert!(metrics.has_delayed());
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[ignore = "SUSPECTED BUG: QueueMetrics::update never swaps the `is_paused` \
+                flag, so the in-memory `queue.is_paused()` value is never refreshed \
+                by get_metrics(), contradicting the is_paused() docs which say to \
+                call get_metrics() first for a fresh value."]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn is_paused_flag_is_refreshed_by_get_metrics() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        queue.add_job("p", 1, None).await?;
+        queue.pause_or_resume().await?;
+        let refreshed = queue.get_metrics().await?;
+        assert!(refreshed.is_paused.load(), "store reports paused");
+        assert!(
+            queue.is_paused(),
+            "in-memory is_paused() should reflect the store after get_metrics()"
+        );
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn calculate_next_delay_ms_zero_number_yields_none() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        assert_eq!(
+            queue.calculate_next_delay_ms(&BackOffJobOptions::Number(0), 3),
+            None
+        );
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn calculate_next_delay_ms_fixed_is_constant() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let opts = BackOffJobOptions::Number(120);
+        assert_eq!(queue.calculate_next_delay_ms(&opts, 1), Some(120));
+        assert_eq!(queue.calculate_next_delay_ms(&opts, 9), Some(120));
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn calculate_next_delay_ms_exponential_grows() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let opts = BackOffJobOptions::Opts(BackOffOptions {
+            type_: Some("exponential".into()),
+            delay: Some(100),
+        });
+        // 2^attempt * delay: 2^2 * 100 = 400, 2^3 * 100 = 800.
+        let attempt_2 = queue.calculate_next_delay_ms(&opts, 2);
+        let attempt_3 = queue.calculate_next_delay_ms(&opts, 3);
+        assert_eq!(attempt_2, Some(400));
+        assert_eq!(attempt_3, Some(800));
+        assert!(attempt_3 > attempt_2);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn calculate_next_delay_ms_unknown_strategy_yields_none() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let opts = BackOffJobOptions::Opts(BackOffOptions {
+            type_: Some("does-not-exist".into()),
+            delay: Some(100),
+        });
+        assert_eq!(queue.calculate_next_delay_ms(&opts, 2), None);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn register_backoff_strategy_adds_a_new_named_strategy() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        queue.register_backoff_strategy("triple", |delay| {
+            Arc::new(move |attempts: i64| attempts.saturating_mul(delay))
+        });
+        let opts = BackOffJobOptions::Opts(BackOffOptions {
+            type_: Some("triple".into()),
+            delay: Some(10),
+        });
+        assert_eq!(queue.calculate_next_delay_ms(&opts, 4), Some(40));
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn register_backoff_strategy_does_not_replace_builtin() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        queue.register_backoff_strategy("exponential", |_delay| Arc::new(|_attempts: i64| 999));
+        let opts = BackOffJobOptions::Opts(BackOffOptions {
+            type_: Some("exponential".into()),
+            delay: Some(100),
+        });
+        // The built-in exponential (2^2 * 100 = 400) must survive the shadowing attempt.
+        assert_eq!(queue.calculate_next_delay_ms(&opts, 2), Some(400));
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn event_listener_can_be_registered_then_removed_once() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let id = queue.on(JobState::Completed, |_evt| async move {});
+        assert_eq!(queue.remove_event_listener(id), Some(id));
+        assert_eq!(queue.remove_event_listener(id), None);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn removing_unknown_listener_returns_none() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        assert_eq!(queue.remove_event_listener(Uuid::new_v4()), None);
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn on_all_events_returns_a_handle() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        // The emitter allows only one catch-all listener, so prove the handle is
+        // meaningful by showing the listener fires rather than by comparing ids.
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hits_in_cb = std::sync::Arc::clone(&hits);
+        let id = queue.on_all_events(move |_evt: EventParameters<R, P>| {
+            let hits = std::sync::Arc::clone(&hits_in_cb);
+            async move {
+                hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        assert!(!id.is_nil());
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            queue
+                .emitter
+                .emit(JobState::Completed, EventParameters::Void),
+        )
+        .await
+        .expect("emit must not hang");
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[ignore = "SUSPECTED BUG: on_all_events() docs promise the returned Uuid \
+                'can later be passed to remove_event_listener', but removal of a \
+                catch-all listener returns None (per-event listeners remove fine)."]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn on_all_events_listener_is_removable() -> KioResult<()> {
+        let queue = make_queue(None).await?;
+        let id = queue.on_all_events(|_evt| async move {});
+        assert_eq!(queue.remove_event_listener(id), Some(id));
+        queue.obliterate().await?;
+        Ok(())
+    }
+
+    #[test]
+    fn move_to_active_result_debug_renders_simple_variants() {
+        let paused: MoveToActiveResult<D, R, P> = MoveToActiveResult::Paused;
+        let rate: MoveToActiveResult<D, R, P> = MoveToActiveResult::RateLimit(250);
+        let delay: MoveToActiveResult<D, R, P> = MoveToActiveResult::DelayUntil(1_000);
+        assert!(format!("{paused:?}").contains("Paused"));
+        assert!(format!("{rate:?}").contains("250"));
+        assert!(format!("{delay:?}").contains("1000"));
     }
 }

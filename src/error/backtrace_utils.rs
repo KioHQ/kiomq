@@ -1,5 +1,5 @@
 use async_backtrace::Location as LocationTrace;
-use compact_str::{format_compact, CompactString, ToCompactString};
+use compact_str::{CompactString, ToCompactString, format_compact};
 use futures::future::{Future, FutureExt};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{LazyLock, Mutex};
@@ -126,7 +126,10 @@ mod tests {
     use std::io::Error as IoError;
 
     #[tokio::test]
-    #[ignore = "this is  flaky tests but function"]
+    #[ignore = "flaky under parallel execution: `catch` mutates the process-global \
+                panic hook (set_hook/take_hook) and a shared static, so a concurrent \
+                `catch` in another test can corrupt the save/restore and clobber the \
+                captured panic info"]
     async fn test_catch_panic() {
         async fn panicking_function() -> Result<(), IoError> {
             panic!("Test panic");
@@ -136,32 +139,125 @@ mod tests {
         assert!(matches!(result, Err(CaughtError::Panic(_))));
         if let Err(CaughtError::Panic(info)) = result {
             assert!(info.payload.contains("Test panic"));
-            assert!(info.payload.contains("Backtrace:"));
+            assert!(info.payload.contains("Panic:"));
+            // A framed capture should have recorded a backtrace.
+            assert!(info.backtrace.is_some());
         }
     }
-    #[tokio::test]
-    async fn test_catch_error() {
-        async fn erroring_function() -> Result<(), IoError> {
-            Err(IoError::other("Test error"))
-        }
 
-        let result = BacktraceCatcher::catch(erroring_function()).await;
-        assert!(matches!(result, Err(CaughtError::Error(_, _))));
-        if let Err(CaughtError::Error(err, backtrace)) = result {
-            assert_eq!(err.to_compact_string(), "Test error");
+    const AWAIT_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
+
+    #[test]
+    fn caught_panic_info_default_has_fallback_payload_and_no_backtrace() {
+        let info = CaughtPanicInfo::default();
+        assert!(!info.payload.is_empty());
+        assert!(
+            info.payload.contains("failed to capture backtrace"),
+            "default payload should explain the missing backtrace: {}",
+            info.payload
+        );
+        assert!(
+            info.backtrace.is_none(),
+            "the default has no captured backtrace"
+        );
+    }
+
+    #[tokio::test]
+    async fn join_error_converts_into_caught_error() {
+        let join_error = tokio::spawn(async { panic!("boom in task") })
+            .await
+            .expect_err("a panicking task must yield a JoinError");
+        let caught: CaughtError = join_error.into();
+        assert!(matches!(caught, CaughtError::JoinError(_)));
+        // Debug rendering of every CaughtError arm must be populated.
+        assert!(!format!("{caught:?}").is_empty());
+    }
+
+    #[test]
+    fn panic_location_from_std_location_formats_file_line_col() {
+        let std_location = std::panic::Location::caller();
+        let location: PanicLocation = std_location.into();
+        let rendered = location.to_compact_string();
+        // Display format is "{file} at {line}:{col}".
+        assert!(rendered.contains(" at "));
+        assert!(rendered.contains(std_location.file()));
+        assert!(rendered.contains(&std_location.line().to_string()));
+    }
+
+    #[test]
+    fn panic_location_default_renders_empty_file_and_zeroes() {
+        let location = PanicLocation::default();
+        assert_eq!(location.to_compact_string(), " at 0:0");
+    }
+
+    #[tokio::test]
+    async fn backtrace_is_absent_outside_a_framed_context() {
+        // With no framed frame on the stack the capture path yields None.
+        let backtrace: Backtrace = async_backtrace::backtrace();
+        assert!(backtrace.is_none());
+        assert_eq!(format_compact!("{backtrace:?}"), "None");
+    }
+
+    #[tokio::test]
+    async fn backtrace_is_present_within_a_framed_context() {
+        #[async_backtrace::framed]
+        async fn capture() -> Backtrace {
+            async_backtrace::backtrace()
+        }
+        let backtrace = capture().await;
+        assert!(
+            backtrace.is_some(),
+            "a framed future must yield a captured backtrace"
+        );
+        let frames = backtrace.expect("checked is_some above");
+        assert!(!frames.is_empty(), "captured backtrace must contain frames");
+        assert!(!format_compact!("{frames:?}").is_empty());
+    }
+
+    #[tokio::test]
+    async fn catch_returns_non_copy_ok_value_unchanged() {
+        async fn produces_string() -> Result<String, IoError> {
+            Ok("payload".to_string())
+        }
+        let result = tokio::time::timeout(AWAIT_BOUND, BacktraceCatcher::catch(produces_string()))
+            .await
+            .expect("catch must not hang");
+        assert_eq!(result.expect("expected Ok"), "payload");
+    }
+
+    #[tokio::test]
+    async fn catch_error_arm_preserves_the_original_error_and_debug() {
+        async fn erroring() -> Result<(), IoError> {
+            Err(IoError::other("specific failure"))
+        }
+        let result = tokio::time::timeout(AWAIT_BOUND, BacktraceCatcher::catch(erroring()))
+            .await
+            .expect("catch must not hang");
+        let err = result.expect_err("expected an error");
+        assert!(matches!(err, CaughtError::Error(_, _)));
+        if let CaughtError::Error(inner, backtrace) = err {
+            assert_eq!(inner.to_compact_string(), "specific failure");
+            // Backtrace may be empty or populated, but must always format.
             assert!(!format_compact!("{backtrace:?}").is_empty());
-        } else {
-            panic!("Expected CaughtError::Error, got something else");
         }
     }
+
     #[tokio::test]
-    async fn test_no_error() {
-        async fn normal_function() -> Result<i32, IoError> {
-            Ok(42)
+    async fn sequential_catches_each_report_their_own_error() {
+        async fn erroring(msg: &'static str) -> Result<(), IoError> {
+            Err(IoError::other(msg))
         }
 
-        let result = BacktraceCatcher::catch(normal_function()).await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 42);
+        let first = BacktraceCatcher::catch(erroring("first")).await;
+        let second = BacktraceCatcher::catch(erroring("second")).await;
+
+        for (result, expected) in [(first, "first"), (second, "second")] {
+            match result.expect_err("expected an error") {
+                CaughtError::Error(inner, _) => {
+                    assert_eq!(inner.to_compact_string(), expected);
+                }
+                other => panic!("expected CaughtError::Error, got {other:?}"),
+            }
+        }
     }
 }

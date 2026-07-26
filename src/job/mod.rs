@@ -13,7 +13,7 @@ use std::str::FromStr;
 mod backoff;
 mod delay;
 mod repeat;
-use crate::{job::delay::JobDelay, KioError};
+use crate::{KioError, job::delay::JobDelay};
 pub use backoff::{BackOff, BackOffJobOptions, BackOffOptions, StoredFn};
 pub use repeat::Repeat;
 use std::time::Duration;
@@ -396,7 +396,6 @@ impl<D, R, P> Job<D, R, P> {
     /// # Errors
     ///
     /// Returns [`KioError`](crate::KioError) if the store update fails.
-    #[allow(clippy::future_not_send)]
     pub async fn update_progress<C>(&mut self, value: P, store: &C) -> Result<(), KioError>
     where
         P: Serialize + Clone,
@@ -477,5 +476,201 @@ where
             }
         }
         Ok(job)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeDelta;
+
+    type TestJob = Job<i32, i32, i32>;
+
+    #[test]
+    fn test_job_new_sets_expected_defaults() {
+        let job: TestJob = Job::new("send-email", Some(7), Some(99), Some("emails"));
+        assert_eq!(job.name, "send-email");
+        assert_eq!(job.id, Some(99));
+        assert_eq!(job.data, Some(7));
+        assert_eq!(job.queue_name.as_deref(), Some("emails"));
+        assert_eq!(job.state, JobState::Wait);
+        assert_eq!(job.attempts_made, 0);
+        assert_eq!(job.delay, 0);
+        assert_eq!(job.priority, 0);
+        assert_eq!(job.stalled_counter, 0);
+        assert!(job.progress.is_none());
+        assert!(job.returned_value.is_none());
+        assert!(job.token.is_none());
+        assert!(job.stack_trace.is_empty());
+        assert!(job.logs.is_empty());
+    }
+
+    #[test]
+    fn test_boxed_preserves_all_fields() {
+        let job: TestJob = Job::new("j", None, Some(1), None);
+        let boxed = job.clone().boxed();
+        assert_eq!(*boxed, job);
+    }
+
+    #[test]
+    fn test_get_metrics_unprocessed_job_is_all_zero() {
+        // With no processed/finished timestamps every duration collapses to
+        // zero, and the negative `processed_on - ts` interval must not underflow.
+        let job: TestJob = Job::new("j", None, None, None);
+        let metrics = job.get_metrics().expect("metrics are always produced");
+        assert_eq!(metrics.ran_for, Duration::ZERO);
+        assert_eq!(metrics.delayed_for, Duration::ZERO);
+        assert_eq!(metrics.attempt, 0);
+        assert_eq!(metrics.delay, 0);
+        assert_eq!(metrics.id, 0);
+    }
+
+    #[test]
+    fn test_get_metrics_computes_ran_and_delayed_durations() {
+        let mut job: TestJob = Job::new("j", None, Some(42), None);
+        let base = Utc::now();
+        job.ts = base;
+        job.processed_on = Some(base + TimeDelta::seconds(2));
+        job.finished_on = Some(base + TimeDelta::seconds(7));
+        job.attempts_made = 3;
+        let metrics = job.get_metrics().expect("metrics");
+        assert_eq!(metrics.ran_for, Duration::from_secs(5));
+        assert_eq!(metrics.delayed_for, Duration::from_secs(2));
+        assert_eq!(metrics.attempt, 3);
+        assert_eq!(metrics.id, 42);
+    }
+
+    #[test]
+    fn test_add_opts_applies_priority_and_delay() {
+        let mut job: TestJob = Job::new("j", None, None, None);
+        let opts = JobOptions {
+            priority: 7,
+            delay: JobDelay::TimeMilis(5_000),
+            ..Default::default()
+        };
+        job.add_opts(opts.clone());
+        assert_eq!(job.priority, 7);
+        assert_eq!(job.delay, 5_000);
+        assert_eq!(job.opts, opts);
+    }
+
+    #[test]
+    fn test_add_opts_negative_delay_wraps_to_u64_max() {
+        // `delay` is unsigned: a negative millisecond diff is cast, so -1 becomes
+        // `u64::MAX` rather than clamping to zero.
+        let mut job: TestJob = Job::new("j", None, None, None);
+        let opts = JobOptions {
+            delay: JobDelay::TimeMilis(-1),
+            ..Default::default()
+        };
+        job.add_opts(opts);
+        assert_eq!(job.delay, u64::MAX);
+    }
+
+    #[test]
+    fn test_jobstate_default_is_wait() {
+        assert_eq!(JobState::default(), JobState::Wait);
+    }
+
+    #[test]
+    fn test_jobstate_display_fromstr_roundtrip_all_variants() {
+        use std::str::FromStr;
+        let states = [
+            JobState::Wait,
+            JobState::Prioritized,
+            JobState::Stalled,
+            JobState::Active,
+            JobState::Paused,
+            JobState::Resumed,
+            JobState::Completed,
+            JobState::Failed,
+            JobState::Delayed,
+            JobState::Progress,
+            JobState::Obliterated,
+            JobState::Processing,
+        ];
+        for state in states {
+            let rendered = state.to_string();
+            let parsed = JobState::from_str(&rendered)
+                .expect("Display output should parse back via FromStr");
+            assert_eq!(parsed, state, "round trip failed for {rendered}");
+        }
+    }
+
+    #[test]
+    fn test_jobstate_ordering_follows_declaration_order() {
+        assert!(JobState::Wait < JobState::Prioritized);
+        assert!(JobState::Prioritized < JobState::Active);
+        assert!(JobState::Active < JobState::Completed);
+        assert!(JobState::Completed < JobState::Processing);
+    }
+
+    #[test]
+    fn test_jobtoken_display_format() {
+        let a = Uuid::nil();
+        let b = Uuid::nil();
+        let token = JobToken(a, b, 5);
+        assert_eq!(token.to_string(), format!("{a}-{b}-5"));
+    }
+
+    #[test]
+    fn test_jobtoken_default_is_random_and_distinct() {
+        let first = JobToken::default();
+        let second = JobToken::default();
+        assert_ne!(first, second, "default tokens must use fresh random UUIDs");
+        assert_eq!(first.2, 0, "the counter component defaults to zero");
+    }
+
+    #[test]
+    fn test_remove_on_completion_default_is_bool_false() {
+        assert_eq!(
+            RemoveOnCompletionOrFailure::default(),
+            RemoveOnCompletionOrFailure::Bool(false)
+        );
+    }
+
+    #[test]
+    fn test_keep_jobs_default_is_none() {
+        let keep = KeepJobs::default();
+        assert!(keep.age.is_none());
+        assert!(keep.count.is_none());
+    }
+
+    #[test]
+    fn test_job_clone_is_equal() {
+        let job: TestJob = Job::new("j", Some(3), Some(1), Some("q"));
+        assert_eq!(job.clone(), job);
+    }
+
+    #[cfg(feature = "redis-store")]
+    #[test]
+    fn test_jobstate_serde_is_camel_case() {
+        let mut bytes = simd_json::to_string(&JobState::Prioritized)
+            .expect("serialise")
+            .into_bytes();
+        assert_eq!(
+            String::from_utf8(bytes.clone()).expect("utf8"),
+            "\"prioritized\""
+        );
+        let back: JobState = simd_json::from_slice(&mut bytes).expect("deserialise");
+        assert_eq!(back, JobState::Prioritized);
+    }
+
+    #[cfg(feature = "redis-store")]
+    #[test]
+    fn test_job_options_serde_roundtrip() {
+        let opts = JobOptions {
+            priority: 5,
+            delay: JobDelay::TimeMilis(2_000),
+            id: Some(11),
+            attempts: 3,
+            remove_on_complete: Some(RemoveOnCompletionOrFailure::Int(10)),
+            remove_on_fail: Some(RemoveOnCompletionOrFailure::Bool(true)),
+            backoff: Some(BackOffJobOptions::Number(500)),
+            repeat: Some(Repeat::Immediately(2)),
+        };
+        let mut bytes = simd_json::to_string(&opts).expect("serialise").into_bytes();
+        let back: JobOptions = simd_json::from_slice(&mut bytes).expect("deserialise");
+        assert_eq!(back, opts);
     }
 }

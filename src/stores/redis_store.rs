@@ -3,27 +3,27 @@ use super::{
     KioResult, ProcessedResult, QueueEventMode, QueueMetrics, QueueOpts, QueueStreamEvent, Store,
     Trace, VecDeque, WorkerMetrics,
 };
+use crate::ProcessMetrics;
 use crate::utils::{
     create_listener_handle, prepare_for_insert, process_each_event, query_all_batched,
     update_job_opts,
 };
-use crate::ProcessMetrics;
 use chrono::Utc;
-use compact_str::{format_compact, CompactString, ToCompactString};
+use compact_str::{CompactString, ToCompactString, format_compact};
 use crossbeam::atomic::AtomicCell;
 use deadpool_redis::{Config, Pool, Runtime};
 use derive_more::Debug;
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt};
-use redis::aio::{transaction_async, PubSubSink, PubSubStream};
+use redis::aio::{PubSubSink, PubSubStream, transaction_async};
 use redis::streams::{StreamReadOptions, StreamReadReply};
 use redis::{
     AsyncCommands, FieldExistenceCheck, HashFieldExpirationOptions, LposOptions, SetExpiry,
 };
-use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use serde::de::DeserializeOwned;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 /// A [`Store`] implementation backed by Redis.
@@ -44,7 +44,7 @@ use uuid::Uuid;
 ///     let mut cfg = Config::from_url("redis://127.0.0.1/");
 ///     let  mut redis_conn  =  SharedRedis::create(&cfg)?;
 ///     let store = RedisStore::new(None, "my-queue", &redis_conn).await?;
-///     let queue: Queue<CompactString, CompactString, (), _> =
+///     let queue: Queue<String, String, (), _> =
 ///         Queue::new(store, Some(QueueOpts::default())).await?;
 ///     Ok(())
 /// }
@@ -276,10 +276,10 @@ impl RedisStore {
 }
 #[async_trait::async_trait]
 impl<
-        D: Clone + Serialize + DeserializeOwned + Send + 'static,
-        R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
-        P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
-    > Store<D, R, P> for RedisStore
+    D: Clone + Serialize + DeserializeOwned + Send + 'static,
+    R: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
+    P: Clone + DeserializeOwned + Serialize + Send + 'static + Sync,
+> Store<D, R, P> for RedisStore
 where
     Self: Send,
 {
@@ -764,8 +764,8 @@ where
             .await
             .expect("failed to get connection");
         let job_key = CollectionSuffix::Job(id).to_collection_name(&self.prefix, &self.name);
-        let result = conn.exists(job_key.as_str()).await.unwrap_or_default();
-        result
+
+        conn.exists(job_key.as_str()).await.unwrap_or_default()
     }
 
     async fn clear_collections(&self) -> KioResult<()> {

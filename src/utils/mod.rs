@@ -1,11 +1,11 @@
+use crate::Counter;
 use crate::error::{BacktraceCatcher, CaughtError, CaughtPanicInfo, JobError, QueueError};
 use crate::events::QueueStreamEvent;
 use crate::stores::Store;
 use crate::timers::{TimerSender, TimerType};
 use crate::worker::{
-    JobMap, ProcessingQueue, TaskHandle, WorkerCallback, WorkerState, MIN_DELAY_MS_LIMIT,
+    JobMap, MIN_DELAY_MS_LIMIT, ProcessingQueue, TaskHandle, WorkerCallback, WorkerState,
 };
-use crate::Counter;
 use crate::{
     EventEmitter, EventParameters, FailedDetails, JobOptions, JobState, JobToken, KioError,
     QueueEventMode, QueueOpts, Trace, WorkerOpts,
@@ -13,18 +13,17 @@ use crate::{
 use chrono::Utc;
 use compact_str::ToCompactString;
 #[cfg(feature = "redis-store")]
-use compact_str::{format_compact, CompactString};
+use compact_str::{CompactString, format_compact};
 use crossbeam::atomic::AtomicCell;
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
-use num_traits::AsPrimitive;
 use parking_lot::Mutex;
 #[cfg(feature = "redis-store")]
-use redis::aio::ConnectionLike;
-#[cfg(feature = "redis-store")]
 use redis::ParsingError;
-use serde::{de::DeserializeOwned, Serialize};
+#[cfg(feature = "redis-store")]
+use redis::aio::ConnectionLike;
+use serde::{Serialize, de::DeserializeOwned};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio_metrics::TaskMonitor;
 use tokio_util::sync::CancellationToken;
@@ -45,12 +44,14 @@ use std::sync::Arc;
 #[cfg(feature = "redis-store")]
 /// Reads the Redis password from the `REDIS_PASSWORD` environment variable.
 ///
-/// Loads a `.env` file via `dotenv` if one is present before reading the
+/// Loads a `.env` file via `dotenvy` if one is present before reading the
 /// variable.  Returns `None` when the variable is unset.
 #[must_use]
 pub fn fetch_redis_pass() -> Option<String> {
-    if let Err(_err) = dotenv::dotenv() {
-        // dothing; continue
+    // A missing `.env` is expected (env vars may be set directly), so ignore
+    // that specific error rather than propagate it.
+    if let Err(_err) = dotenvy::dotenv() {
+        // no-op: continue with the process environment
     }
     std::env::var("REDIS_PASSWORD").ok()
 }
@@ -70,7 +71,10 @@ pub fn serialize_into_pairs<V: Serialize>(item: &V) -> Vec<(String, String)> {
     vec![]
 }
 pub const fn calculate_next_priority_score(priority: u64, prio_counter: u64) -> u64 {
-    (priority << 32) + (prio_counter & 0xffff_ffff_ffff)
+    // Priority occupies the high 32 bits; the FIFO tie-break counter the low 32.
+    // The mask must stay within 32 bits or the counter bleeds into the priority
+    // band and corrupts ordering.
+    (priority << 32) + (prio_counter & 0xffff_ffff)
 }
 
 use crate::{CollectionSuffix, QueueMetrics};
@@ -90,21 +94,32 @@ pub async fn get_queue_metrics<C: redis::aio::ConnectionLike>(
     name: &str,
     conn: &mut C,
 ) -> KioResult<QueueMetrics> {
-    let [job_id_key, stalled_key, active_key, completed_key, meta_key, delayed_key, _priority_counter_key, waiting_key, paused_key, prioritized_key, failed_key] =
-        [
-            CollectionSuffix::Id,
-            CollectionSuffix::Stalled,
-            CollectionSuffix::Active,
-            CollectionSuffix::Completed,
-            CollectionSuffix::Meta,
-            CollectionSuffix::Delayed,
-            CollectionSuffix::PriorityCounter,
-            CollectionSuffix::Wait,
-            CollectionSuffix::Paused,
-            CollectionSuffix::Prioritized,
-            CollectionSuffix::Failed,
-        ]
-        .map(|key| key.to_collection_name(prefix, name));
+    let [
+        job_id_key,
+        stalled_key,
+        active_key,
+        completed_key,
+        meta_key,
+        delayed_key,
+        _priority_counter_key,
+        waiting_key,
+        paused_key,
+        prioritized_key,
+        failed_key,
+    ] = [
+        CollectionSuffix::Id,
+        CollectionSuffix::Stalled,
+        CollectionSuffix::Active,
+        CollectionSuffix::Completed,
+        CollectionSuffix::Meta,
+        CollectionSuffix::Delayed,
+        CollectionSuffix::PriorityCounter,
+        CollectionSuffix::Wait,
+        CollectionSuffix::Paused,
+        CollectionSuffix::Prioritized,
+        CollectionSuffix::Failed,
+    ]
+    .map(|key| key.to_collection_name(prefix, name));
     let mut pipeline = redis::pipe();
     pipeline.atomic();
     pipeline.zcard(completed_key.as_str());
@@ -119,7 +134,6 @@ pub async fn get_queue_metrics<C: redis::aio::ConnectionLike>(
     pipeline.hget(meta_key.as_str(), "processing");
     pipeline.hget(meta_key.as_str(), "event_mode");
     pipeline.hexists(meta_key.as_str(), JobState::Paused);
-    #[allow(clippy::type_complexity)]
     let (
         completed,
         failed,
@@ -165,8 +179,6 @@ pub async fn get_queue_metrics<C: redis::aio::ConnectionLike>(
 }
 
 // ---- UTIL FUNCTIONS for the worker
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_lines)]
 pub async fn process_job<D, R, P, S>(
     job: Job<D, R, P>,
     token: JobToken,
@@ -183,8 +195,8 @@ where
     P: Clone + Serialize + DeserializeOwned + Send + 'static + Sync,
     S: Clone + Store<D, R, P> + Send + 'static + Sync,
 {
-    use crate::worker::WorkerCallback;
     use crate::JobState;
+    use crate::worker::WorkerCallback;
     let job_id = job.id.unwrap_or_default();
     let job_added_at = job.ts;
     let processed_on = job.processed_on;
@@ -295,12 +307,12 @@ where
             if let Some(entry) = jobs_in_progress.remove(&job_id) {
                 let (job, _, handle, _, _, _) = entry.value();
                 // retry failed jobs
-                if failed_job.attempts_made < job.opts.attempts {
-                    if let Some(backoff_job_opts) = job.opts.backoff.as_ref() {
-                        queue
-                            .retry_job(job_id, backoff_job_opts, failed_job.attempts_made - 1)
-                            .await?;
-                    }
+                if failed_job.attempts_made < job.opts.attempts
+                    && let Some(backoff_job_opts) = job.opts.backoff.as_ref()
+                {
+                    queue
+                        .retry_job(job_id, backoff_job_opts, failed_job.attempts_made - 1)
+                        .await?;
                 }
                 // clean up if the number of attempts is exhausted
                 if failed_job.attempts_made == job.opts.attempts {
@@ -471,7 +483,7 @@ where
 
         let token_prefix = active_job_count.load();
         let next_id = Uuid::new_v4();
-        let token = JobToken(id, next_id, token_prefix.as_());
+        let token = JobToken(id, next_id, token_prefix as u64);
         let worker_id = id;
         let block_delay = block_until.load();
 
@@ -611,7 +623,6 @@ where
     Ok(())
 }
 #[cfg(feature = "redis-store")]
-#[allow(clippy::too_many_arguments)]
 /// Utilily function for pipelining
 pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
     queue_name: &str,
@@ -726,7 +737,6 @@ pub type ReadStreamArgs<'a, R, P> = (
     Arc<QueueMetrics>,
 );
 // Helper function to process events from our queue-redis-stream
-#[allow(clippy::future_not_send)]
 pub async fn process_queue_events<D, R, P, S: Store<D, R, P> + Send>(
     (event_mode, block_interval, emitter, metrics): ReadStreamArgs<'_, R, P>,
     store: &S,
@@ -745,7 +755,6 @@ where
         )
         .await
 }
-#[allow(clippy::future_not_send)]
 pub async fn process_each_event<D, R, P>(
     event: QueueStreamEvent<R, P>,
     emitter: &EventEmitter<R, P>,
@@ -798,7 +807,6 @@ fn split_pipeline(mut p: Pipeline, chunk_size: usize) -> Vec<Pipeline> {
         .collect()
 }
 #[cfg(feature = "redis-store")]
-#[allow(clippy::future_not_send)]
 pub async fn query_all_batched<C: ConnectionLike + Clone>(
     conn: &C,
     p: Pipeline,
@@ -860,7 +868,7 @@ where
                 (event_mode, block_interval, &emitter, metrics.clone());
             #[cfg(feature = "tracing")]
             let event_processing_task = {
-                use tracing::{info_span, Instrument};
+                use tracing::{Instrument, info_span};
                 let queue_name = format!("{}:{}", store.queue_prefix(), store.queue_name());
                 let span = info_span!(
                     parent: None,
@@ -907,4 +915,485 @@ pub fn pause_or_resume_workers(
 #[allow(clippy::needless_pass_by_value)]
 pub fn to_redis_parsing_error(err: impl ToString) -> ParsingError {
     ParsingError::from(err.to_string())
+}
+
+#[cfg(test)]
+mod priority_score_tests {
+    use super::calculate_next_priority_score;
+
+    #[test]
+    fn tie_break_counter_never_bleeds_into_priority() {
+        // Priority packs into the high 32 bits, the FIFO tie-break counter into
+        // the low 32 bits. A job's tie-break counter must never change which
+        // priority band it lands in, otherwise a lower-priority job with a large
+        // counter can outrank a higher-priority job.
+        let high_priority = calculate_next_priority_score(2, 0);
+        // Counter just past the 32-bit boundary on the lower priority.
+        let low_priority_big_counter = calculate_next_priority_score(1, u64::from(u32::MAX) + 1);
+
+        assert!(
+            low_priority_big_counter < high_priority,
+            "priority 1 (counter {}) must always sort below priority 2, got {low_priority_big_counter} >= {high_priority}",
+            u64::from(u32::MAX) + 1,
+        );
+    }
+
+    #[test]
+    fn priority_occupies_the_high_thirty_two_bits() {
+        // With a zero counter the score is exactly `priority << 32`.
+        assert_eq!(calculate_next_priority_score(0, 0), 0);
+        assert_eq!(calculate_next_priority_score(1, 0), 1u64 << 32);
+        assert_eq!(calculate_next_priority_score(7, 0), 7u64 << 32);
+    }
+
+    #[test]
+    fn counter_occupies_the_low_thirty_two_bits() {
+        // With zero priority the score is exactly the masked counter.
+        assert_eq!(calculate_next_priority_score(0, 123), 123);
+        assert_eq!(
+            calculate_next_priority_score(0, u64::from(u32::MAX)),
+            u64::from(u32::MAX)
+        );
+    }
+
+    #[test]
+    fn counter_wraps_within_its_thirty_two_bit_band() {
+        // The counter is masked with 0xffff_ffff, so exactly 2^32 wraps to 0 and
+        // 2^32 + 1 wraps to 1 within the same priority band.
+        let base = calculate_next_priority_score(3, 0);
+        assert_eq!(
+            calculate_next_priority_score(3, u64::from(u32::MAX) + 1),
+            base,
+            "counter 2^32 must wrap to 0 within the priority band"
+        );
+        assert_eq!(
+            calculate_next_priority_score(3, u64::from(u32::MAX) + 2),
+            base + 1,
+            "counter 2^32 + 1 must wrap to 1 within the priority band"
+        );
+    }
+
+    #[test]
+    fn higher_priority_always_outranks_lower_regardless_of_counter() {
+        // Exhaustively assert the ordering invariant across a spread of
+        // priorities and counters, including counters that exceed 32 bits.
+        let counters = [
+            0u64,
+            1,
+            u64::from(u32::MAX) - 1,
+            u64::from(u32::MAX),
+            u64::from(u32::MAX) + 1,
+            u64::MAX,
+        ];
+        for priority in 0..8u64 {
+            let higher = calculate_next_priority_score(priority + 1, 0);
+            for &counter in &counters {
+                let lower = calculate_next_priority_score(priority, counter);
+                assert!(
+                    lower < higher,
+                    "priority {priority} (counter {counter}) must sort below priority {}",
+                    priority + 1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn within_a_priority_band_a_larger_counter_sorts_later() {
+        let earlier = calculate_next_priority_score(5, 10);
+        let later = calculate_next_priority_score(5, 11);
+        assert!(
+            earlier < later,
+            "within a band the FIFO counter must break ties in insertion order"
+        );
+    }
+}
+
+#[cfg(feature = "redis-store")]
+#[cfg(test)]
+mod serialize_into_pairs_tests {
+    use super::serialize_into_pairs;
+    use serde::Serialize;
+    use std::collections::BTreeMap;
+
+    #[derive(Serialize)]
+    struct Flat {
+        name: String,
+        count: u64,
+        enabled: bool,
+    }
+
+    #[test]
+    fn flat_struct_yields_one_pair_per_field() {
+        let item = Flat {
+            name: "widget".to_owned(),
+            count: 3,
+            enabled: true,
+        };
+        let mut pairs = serialize_into_pairs(&item);
+        pairs.sort();
+        assert_eq!(pairs.len(), 3, "each field must become exactly one pair");
+        let keys: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["count", "enabled", "name"]);
+        // Values are serialised as JSON, so the string field keeps its quotes.
+        let by_key: BTreeMap<_, _> = pairs.into_iter().collect();
+        assert_eq!(by_key["count"], "3");
+        assert_eq!(by_key["enabled"], "true");
+        assert_eq!(by_key["name"], "\"widget\"");
+    }
+
+    #[test]
+    fn empty_map_yields_no_pairs() {
+        let empty: BTreeMap<String, u64> = BTreeMap::new();
+        let pairs = serialize_into_pairs(&empty);
+        assert!(pairs.is_empty(), "an empty object must produce no pairs");
+    }
+
+    #[test]
+    fn non_object_scalar_yields_no_pairs() {
+        // A bare scalar is not a JSON object, so the helper must return nothing
+        // rather than panicking or inventing a key.
+        assert!(
+            serialize_into_pairs(&42u64).is_empty(),
+            "a scalar has no fields"
+        );
+        assert!(
+            serialize_into_pairs(&"lonely").is_empty(),
+            "a string has no fields"
+        );
+    }
+
+    #[test]
+    fn array_yields_no_pairs() {
+        let values = vec![1u64, 2, 3];
+        assert!(
+            serialize_into_pairs(&values).is_empty(),
+            "a top-level array is not an object and must yield no pairs"
+        );
+    }
+
+    #[test]
+    fn nested_object_values_are_serialised_as_json() {
+        #[derive(Serialize)]
+        struct Nested {
+            inner: Inner,
+        }
+        #[derive(Serialize)]
+        struct Inner {
+            a: u64,
+        }
+        let pairs = serialize_into_pairs(&Nested {
+            inner: Inner { a: 1 },
+        });
+        assert_eq!(pairs.len(), 1, "one top-level field");
+        let (key, value) = &pairs[0];
+        assert_eq!(key, "inner");
+        assert!(
+            value.contains("\"a\"") && value.contains('1'),
+            "nested object value must be JSON-encoded, got {value}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod update_job_opts_tests {
+    use super::update_job_opts;
+    use crate::{BackOffJobOptions, JobOptions, QueueOpts, RemoveOnCompletionOrFailure, Repeat};
+
+    #[test]
+    fn unset_job_fields_inherit_queue_defaults() {
+        let queue_opts = QueueOpts {
+            remove_on_fail: Some(RemoveOnCompletionOrFailure::Bool(true)),
+            remove_on_complete: Some(RemoveOnCompletionOrFailure::Int(5)),
+            attempts: 4,
+            default_backoff: Some(BackOffJobOptions::Number(1_000)),
+            repeat: Some(Repeat::Immediately(2)),
+            ..Default::default()
+        };
+        let mut opts = JobOptions::default();
+        update_job_opts(&queue_opts, &mut opts);
+
+        assert_eq!(opts.attempts, 4, "attempts must rise to the queue default");
+        assert_eq!(
+            opts.remove_on_complete,
+            Some(RemoveOnCompletionOrFailure::Int(5))
+        );
+        assert_eq!(
+            opts.remove_on_fail,
+            Some(RemoveOnCompletionOrFailure::Bool(true))
+        );
+        assert_eq!(opts.backoff, Some(BackOffJobOptions::Number(1_000)));
+        assert_eq!(opts.repeat, Some(Repeat::Immediately(2)));
+    }
+
+    #[test]
+    fn explicitly_set_job_fields_are_not_overridden() {
+        let queue_opts = QueueOpts {
+            remove_on_fail: Some(RemoveOnCompletionOrFailure::Bool(true)),
+            remove_on_complete: Some(RemoveOnCompletionOrFailure::Bool(true)),
+            default_backoff: Some(BackOffJobOptions::Number(1_000)),
+            repeat: Some(Repeat::Immediately(9)),
+            attempts: 2,
+            ..Default::default()
+        };
+        let mut opts = JobOptions {
+            remove_on_fail: Some(RemoveOnCompletionOrFailure::Bool(false)),
+            remove_on_complete: Some(RemoveOnCompletionOrFailure::Int(1)),
+            backoff: Some(BackOffJobOptions::Number(50)),
+            repeat: Some(Repeat::Immediately(1)),
+            ..Default::default()
+        };
+        update_job_opts(&queue_opts, &mut opts);
+
+        assert_eq!(
+            opts.remove_on_fail,
+            Some(RemoveOnCompletionOrFailure::Bool(false)),
+            "an explicit job-level policy must survive"
+        );
+        assert_eq!(
+            opts.remove_on_complete,
+            Some(RemoveOnCompletionOrFailure::Int(1))
+        );
+        assert_eq!(opts.backoff, Some(BackOffJobOptions::Number(50)));
+        assert_eq!(opts.repeat, Some(Repeat::Immediately(1)));
+    }
+
+    #[test]
+    fn attempts_takes_the_maximum_never_lowering_the_job_value() {
+        let queue_opts = QueueOpts {
+            attempts: 3,
+            ..Default::default()
+        };
+        let mut opts = JobOptions {
+            attempts: 10,
+            ..Default::default()
+        };
+        update_job_opts(&queue_opts, &mut opts);
+        assert_eq!(
+            opts.attempts, 10,
+            "a higher job-level attempts must not be lowered"
+        );
+
+        let mut opts = JobOptions {
+            attempts: 1,
+            ..Default::default()
+        };
+        update_job_opts(&queue_opts, &mut opts);
+        assert_eq!(
+            opts.attempts, 3,
+            "a lower job-level attempts must rise to the default"
+        );
+
+        let mut opts = JobOptions {
+            attempts: 3,
+            ..Default::default()
+        };
+        update_job_opts(&queue_opts, &mut opts);
+        assert_eq!(opts.attempts, 3, "equal attempts must be left untouched");
+    }
+}
+
+#[cfg(test)]
+mod pause_resume_tests {
+    use super::{pause_or_resume_workers, resume_helper};
+    use crate::QueueMetrics;
+    use crossbeam::atomic::AtomicCell;
+    use std::sync::Arc;
+    use tokio::sync::Notify;
+
+    /// Builds metrics with a single waiting job so the queue reports work.
+    fn metrics_with_waiting_work() -> QueueMetrics {
+        let metrics = QueueMetrics::default();
+        metrics.waiting.store(1);
+        debug_assert!(
+            metrics.queue_has_work(),
+            "test fixture must report queued work"
+        );
+        metrics
+    }
+
+    #[test]
+    fn resume_clears_pause_flag_when_paused_with_work() {
+        let metrics = metrics_with_waiting_work();
+        let pause = AtomicCell::new(true);
+        let notify = Notify::new();
+        resume_helper(&metrics, &pause, &notify);
+        assert!(
+            !pause.load(),
+            "a paused worker with pending work must be resumed"
+        );
+    }
+
+    #[test]
+    fn resume_is_a_noop_when_paused_without_work() {
+        let metrics = QueueMetrics::default();
+        debug_assert!(!metrics.queue_has_work(), "fixture must be idle");
+        let pause = AtomicCell::new(true);
+        let notify = Notify::new();
+        resume_helper(&metrics, &pause, &notify);
+        assert!(pause.load(), "with no work the pause flag must stay set");
+    }
+
+    #[test]
+    fn resume_is_a_noop_when_not_paused() {
+        use std::future::Future;
+        use std::pin::pin;
+        use std::task::{Context, Poll, Waker};
+
+        let metrics = metrics_with_waiting_work();
+        let pause = AtomicCell::new(false);
+        let notify = Notify::new();
+
+        // Register a waiter up front. `resume_helper` signals via
+        // `notify_waiters()`, which only wakes waiters registered before the
+        // call, so a genuine no-op must leave this future pending. Without this
+        // the test could not fail: `resume_helper` only ever clears the flag,
+        // so asserting `!pause.load()` alone holds regardless of behaviour.
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut notified = pin!(notify.notified());
+        assert!(
+            matches!(notified.as_mut().poll(&mut cx), Poll::Pending),
+            "the waiter must start pending before any resume signal"
+        );
+
+        resume_helper(&metrics, &pause, &notify);
+
+        assert!(
+            !pause.load(),
+            "an already-running worker must remain running"
+        );
+        assert!(
+            matches!(notified.as_mut().poll(&mut cx), Poll::Pending),
+            "a no-op resume must not wake any waiter"
+        );
+    }
+
+    #[test]
+    fn resume_triggers_on_any_kind_of_pending_work() {
+        // queue_has_work is true for waiting, delayed, stalled or prioritized;
+        // any single one must be enough to resume paused workers.
+        let builders: [fn() -> QueueMetrics; 4] = [
+            metrics_with_waiting_work,
+            || {
+                let m = QueueMetrics::default();
+                m.delayed.store(1);
+                m
+            },
+            || {
+                let m = QueueMetrics::default();
+                m.stalled.store(1);
+                m
+            },
+            || {
+                let m = QueueMetrics::default();
+                m.prioritized.store(1);
+                m
+            },
+        ];
+        for build in builders {
+            let metrics = build();
+            let pause = AtomicCell::new(true);
+            let notify = Notify::new();
+            resume_helper(&metrics, &pause, &notify);
+            assert!(
+                !pause.load(),
+                "any pending-work signal must resume the workers"
+            );
+        }
+    }
+
+    #[test]
+    fn first_call_is_skipped_by_the_initial_guard() {
+        // The very first invocation only flips the initial guard and must leave
+        // the pause flag untouched, even though an idle queue would otherwise
+        // trigger a pause.
+        let metrics = QueueMetrics::default();
+        let pause = AtomicCell::new(false);
+        let notify = Notify::new();
+        let is_initial = AtomicCell::new(true);
+        pause_or_resume_workers(&notify, &metrics, &pause, &is_initial);
+        assert!(!pause.load(), "the initial call must not pause");
+        assert!(!is_initial.load(), "the initial guard must be consumed");
+    }
+
+    #[test]
+    fn idle_queue_pauses_workers_after_the_initial_call() {
+        let metrics = QueueMetrics::default();
+        debug_assert!(metrics.is_idle(), "default metrics must be idle");
+        let pause = AtomicCell::new(false);
+        let notify = Notify::new();
+        let is_initial = AtomicCell::new(false);
+        pause_or_resume_workers(&notify, &metrics, &pause, &is_initial);
+        assert!(
+            pause.load(),
+            "an idle queue past the initial call must pause workers"
+        );
+    }
+
+    #[test]
+    fn queued_work_resumes_paused_workers_after_the_initial_call() {
+        let metrics = metrics_with_waiting_work();
+        let pause = AtomicCell::new(true);
+        let notify = Notify::new();
+        let is_initial = AtomicCell::new(false);
+        pause_or_resume_workers(&notify, &metrics, &pause, &is_initial);
+        assert!(!pause.load(), "pending work must resume a paused worker");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_resume_calls_settle_on_running() {
+        // Many threads racing to resume a paused-with-work queue must converge
+        // deterministically on the unpaused state, never leaving it paused.
+        let metrics = Arc::new(metrics_with_waiting_work());
+        let pause = Arc::new(AtomicCell::new(true));
+        let notify = Arc::new(Notify::new());
+
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let metrics = Arc::clone(&metrics);
+            let pause = Arc::clone(&pause);
+            let notify = Arc::clone(&notify);
+            handles.push(tokio::spawn(async move {
+                for _ in 0..1_000 {
+                    resume_helper(&metrics, &pause, &notify);
+                }
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("resume task must not panic");
+        }
+        assert!(
+            !pause.load(),
+            "concurrent resume calls must converge on the running state"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_idle_pause_calls_settle_on_paused() {
+        // pause_or_resume_workers uses compare_exchange(false -> true); under a
+        // stampede of concurrent idle calls the flag must converge on paused and
+        // stay there idempotently, regardless of interleaving.
+        let metrics = Arc::new(QueueMetrics::default());
+        let pause = Arc::new(AtomicCell::new(false));
+        let notify = Arc::new(Notify::new());
+
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let metrics = Arc::clone(&metrics);
+            let pause = Arc::clone(&pause);
+            let notify = Arc::clone(&notify);
+            handles.push(tokio::spawn(async move {
+                let is_initial = AtomicCell::new(false);
+                for _ in 0..1_000 {
+                    pause_or_resume_workers(&notify, &metrics, &pause, &is_initial);
+                    // Once idle-paused, repeated calls must not flip it back.
+                    assert!(pause.load(), "idle calls must never unpause the queue");
+                }
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("pause task must not panic");
+        }
+        assert!(pause.load(), "an idle queue must end up paused");
+    }
 }

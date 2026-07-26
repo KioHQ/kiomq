@@ -1,8 +1,8 @@
 use crate::metrics::{
-    TaskInfo, TimerCommand, WorkerMetrics, HISTOGRAM_MAX_NS, P_METRICS_COLLECTOR, WORKER_STATE_TTL,
+    HISTOGRAM_MAX_NS, P_METRICS_COLLECTOR, TaskInfo, TimerCommand, WORKER_STATE_TTL, WorkerMetrics,
 };
 use crate::utils::pause_or_resume_workers;
-use crate::worker::{ProcessingQueue, WorkerState, MIN_DELAY_MS_LIMIT as EVICTION_INTERVAL_MS};
+use crate::worker::{MIN_DELAY_MS_LIMIT as EVICTION_INTERVAL_MS, ProcessingQueue, WorkerState};
 
 use crate::Dt;
 use crate::{KioResult, ProcessMetrics, WorkerMetaData};
@@ -13,8 +13,7 @@ use crossbeam_skiplist::SkipMap;
 use derive_more::{Debug, Display};
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt};
-use num_traits::AsPrimitive;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,7 +24,7 @@ use tokio::task::JoinHandle;
 use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
-use tracing::{info, info_span, instrument, Span};
+use tracing::{Span, info, info_span, instrument};
 use uuid::Uuid;
 // model the timers (stall_check_lock,  extend_lock and job_promotion)
 #[derive(Debug, Clone, Copy, Display)]
@@ -49,7 +48,6 @@ pub enum TimerType {
 }
 impl TimerType {
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
     pub const fn next_duration(&self) -> Duration {
         match self {
             Self::StalledCheck(duration)
@@ -62,8 +60,8 @@ impl TimerType {
 }
 
 use crate::{
-    worker::{JobMap, Task},
     Queue, Store, WorkerOpts,
+    worker::{JobMap, Task},
 };
 #[derive(Debug)]
 struct SenderInner {
@@ -123,13 +121,12 @@ pub struct DelayQueueTimer<D, R, P, S> {
 }
 
 impl<
-        D: Clone + DeserializeOwned + 'static + Send + Serialize + Sync,
-        R: Clone + DeserializeOwned + 'static + Serialize + Send + Sync,
-        P: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
-        S: Clone + Store<D, R, P> + Send + 'static + Sync,
-    > DelayQueueTimer<D, R, P, S>
+    D: Clone + DeserializeOwned + 'static + Send + Serialize + Sync,
+    R: Clone + DeserializeOwned + 'static + Serialize + Send + Sync,
+    P: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
+    S: Clone + Store<D, R, P> + Send + 'static + Sync,
+> DelayQueueTimer<D, R, P, S>
 {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         jobs: JobMap<D, R, P>,
         queue: Queue<D, R, P, S>,
@@ -184,7 +181,7 @@ impl<
         &self,
         rx: Receiver<TimerCommand>,
         process_metrics_rx: watch::Receiver<Option<ProcessMetrics>>,
-    ) -> impl std::future::Future<Output = KioResult<()>> {
+    ) -> impl std::future::Future<Output = KioResult<()>> + use<D, R, P, S> {
         let queue = self.queue.clone();
         let (workers, jobs, token, sender, _) = (
             self.workers.clone(),
@@ -229,7 +226,7 @@ impl<
                            info!("Collecting Process Metrics");
                              queue
                                  .store
-                                 .store_process_metrics(metrics, interval.as_())
+                                 .store_process_metrics(metrics, interval as u64)
                                  .await?;
                          }
 
@@ -302,12 +299,11 @@ type WorkerMap = SkipMap<
 >;
 
 //#[cfg_attr(feature="tracing", instrument(skip(queue, jobs,sender)))]
-#[allow(clippy::too_many_lines)]
 async fn process_timer<D, R, P, S>(
     key: TimerType,
     queue: &Queue<D, R, P, S>,
     jobs: &JobMap<D, R, P>,
-    #[allow(clippy::type_complexity)] workers: &WorkerMap,
+    workers: &WorkerMap,
     sender: &TimerSender,
 ) -> KioResult<()>
 where
@@ -343,7 +339,7 @@ where
                 .collect();
             for pair in jobs
                 .iter()
-                .filter(|entry| workers.contains(&entry.value().1 .0))
+                .filter(|entry| workers.contains(&entry.value().1.0))
             {
                 let (job, token, _handle, _, _, opts) = pair.value();
 
@@ -441,4 +437,139 @@ where
         sender.send(timer).await;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod timer_type_tests {
+    //! Robustness tests for [`TimerType`] — the only part of `delay_queue_timer`
+    //! exercisable without a full `Queue`/`Store`/`JobMap` harness. Cover
+    //! `next_duration` plus the `Display`/`Debug` representations.
+    use super::{EVICTION_INTERVAL_MS, TimerType, WORKER_STATE_TTL};
+    use std::time::Duration;
+    use uuid::Uuid;
+
+    #[test]
+    fn next_duration_echoes_the_configured_interval_for_polling_timers() {
+        // These variants must echo their configured duration so the timer
+        // reschedules at the same cadence.
+        let cases = [
+            Duration::from_millis(250),
+            Duration::from_secs(30),
+            Duration::from_millis(1),
+        ];
+        for duration in cases {
+            assert_eq!(
+                TimerType::StalledCheck(duration).next_duration(),
+                duration,
+                "StalledCheck must echo its interval"
+            );
+            assert_eq!(
+                TimerType::ExtendLock(duration).next_duration(),
+                duration,
+                "ExtendLock must echo its interval"
+            );
+            assert_eq!(
+                TimerType::CollectMetrics(duration).next_duration(),
+                duration,
+                "CollectMetrics must echo its interval"
+            );
+        }
+    }
+
+    #[test]
+    fn next_duration_handles_zero_and_very_large_intervals_without_panicking() {
+        // A zero interval must round-trip verbatim rather than being clamped.
+        assert_eq!(
+            TimerType::StalledCheck(Duration::ZERO).next_duration(),
+            Duration::ZERO,
+            "a zero interval must round-trip unchanged"
+        );
+        let very_large = Duration::from_hours(8760); // one year
+        assert_eq!(
+            TimerType::ExtendLock(very_large).next_duration(),
+            very_large,
+            "a very large interval must round-trip unchanged"
+        );
+    }
+
+    #[test]
+    fn promoted_delayed_always_uses_the_fixed_eviction_interval() {
+        // PromotedDelayed ignores its job/queue id and always reschedules after
+        // the fixed eviction interval.
+        let expected = Duration::from_millis(EVICTION_INTERVAL_MS);
+        for job_id in [0_u64, 1, u64::MAX] {
+            let timer = TimerType::PromotedDelayed(job_id, Uuid::new_v4());
+            assert_eq!(
+                timer.next_duration(),
+                expected,
+                "PromotedDelayed must always reschedule after EVICTION_INTERVAL_MS"
+            );
+        }
+    }
+
+    #[test]
+    fn reregister_worker_uses_the_worker_state_ttl() {
+        // Reschedules after the worker-state TTL so heartbeats refresh before the
+        // registry entry expires.
+        let ttl_ms = u64::try_from(WORKER_STATE_TTL).expect("worker-state TTL must fit in u64");
+        // Must be strictly positive, else the timer would busy-loop.
+        assert!(
+            ttl_ms > 0,
+            "worker-state TTL must be positive to avoid a tight reschedule loop"
+        );
+        assert_eq!(
+            TimerType::ReregisterWorker.next_duration(),
+            Duration::from_millis(ttl_ms),
+            "ReregisterWorker must reschedule after WORKER_STATE_TTL"
+        );
+    }
+
+    #[test]
+    fn timer_type_is_copy_so_rescheduling_never_moves_the_original() {
+        // `next_timer.replace(key)` in production relies on `TimerType: Copy`.
+        let original = TimerType::StalledCheck(Duration::from_millis(10));
+        let copied = original;
+        assert_eq!(original.next_duration(), copied.next_duration());
+    }
+
+    #[test]
+    fn display_representation_includes_the_expected_context() {
+        let stalled = format!("{}", TimerType::StalledCheck(Duration::from_millis(5)));
+        assert!(
+            stalled.contains("StalledCheck") && stalled.contains("5ms"),
+            "unexpected StalledCheck Display: {stalled}"
+        );
+        let extend = format!("{}", TimerType::ExtendLock(Duration::from_millis(7)));
+        assert!(
+            extend.contains("ExtendLock") && extend.contains("7ms"),
+            "unexpected ExtendLock Display: {extend}"
+        );
+        let queue_id = Uuid::new_v4();
+        let promoted = format!("{}", TimerType::PromotedDelayed(42, queue_id));
+        assert!(
+            promoted.contains("42") && promoted.contains(&queue_id.to_string()),
+            "unexpected PromotedDelayed Display: {promoted}"
+        );
+        let collect = format!("{}", TimerType::CollectMetrics(Duration::from_millis(9)));
+        assert!(
+            collect.contains("9ms"),
+            "unexpected CollectMetrics Display: {collect}"
+        );
+    }
+
+    #[test]
+    fn debug_representation_uses_stable_short_labels() {
+        assert_eq!(
+            format!("{:?}", TimerType::StalledCheck(Duration::from_millis(1))),
+            "StalledCheck"
+        );
+        assert_eq!(
+            format!("{:?}", TimerType::ExtendLock(Duration::from_millis(1))),
+            "ExtendLock"
+        );
+        assert_eq!(
+            format!("{:?}", TimerType::PromotedDelayed(1, Uuid::nil())),
+            "PromoteJob"
+        );
+    }
 }

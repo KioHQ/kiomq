@@ -1,21 +1,21 @@
 use crate::{
-    stores::Store, utils::processor_types::SharedStore, worker::processor_types::SyncFn, Job,
-    JobState, JobToken, KioError, KioResult, Queue,
+    Job, JobState, JobToken, KioError, KioResult, Queue, stores::Store,
+    utils::processor_types::SharedStore, worker::processor_types::SyncFn,
 };
 
 use crate::utils::main_loop;
 use chrono::Utc;
 use derive_more::Debug;
 use futures::future::{Future, FutureExt};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::sync::Arc;
 use uuid::Uuid;
 mod worker_opts;
 use crate::Dt;
 
+use crate::Counter;
 use crate::error::WorkerError;
 use crate::events::EventParameters;
-use crate::Counter;
 use arc_swap::ArcSwapOption;
 use hdrhistogram::Histogram;
 use parking_lot::Mutex;
@@ -56,7 +56,7 @@ pub enum WorkerState {
 #[cfg(feature = "tracing")]
 use compact_str::ToCompactString;
 #[cfg(feature = "tracing")]
-use tracing::{debug, instrument, warn, Instrument, Span};
+use tracing::{Instrument, Span, debug, instrument, warn};
 
 pub use worker_opts::MIN_DELAY_MS_LIMIT;
 /// A job processor that consumes jobs from a [`Queue`].
@@ -127,6 +127,7 @@ pub struct Worker<D, R, P, S> {
     active_job_count: Arc<AtomicCell<usize>>,
     continue_notifier: Arc<Notify>,
     main_task: SharedTaskHandle,
+    main_tracker: TaskTracker,
 }
 use crate::utils::processor_types;
 use processor_types::Callback;
@@ -134,11 +135,11 @@ use processor_types::Callback;
 pub type WorkerCallback<D, R, P, S> = Callback<D, R, P, S>;
 
 impl<
-        D: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
-        R: Clone + DeserializeOwned + 'static + Serialize + Send + Sync,
-        P: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
-        S: Clone + Store<D, R, P> + Send + 'static + Sync,
-    > Worker<D, R, P, S>
+    D: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
+    R: Clone + DeserializeOwned + 'static + Serialize + Send + Sync,
+    P: Clone + DeserializeOwned + 'static + Send + Sync + Serialize,
+    S: Clone + Store<D, R, P> + Send + 'static + Sync,
+> Worker<D, R, P, S>
 {
     /// Creates a worker with a **sync** (blocking) processor function.
     ///
@@ -303,6 +304,7 @@ impl<
             processor: callback,
             cancellation_token,
             active_job_count: Arc::default(),
+            main_tracker: TaskTracker::new(),
         };
         if worker.opts.autorun {
             worker.run()?;
@@ -312,9 +314,15 @@ impl<
     }
 
     /// Returns `true` if the worker is actively processing jobs.
+    ///
+    /// A worker counts as running once [`run`](Worker::run) has spawned its main
+    /// loop and until cancellation, so this is `false` both before `run` and
+    /// after [`close`](Worker::close) — which also makes a second `close()` a
+    /// cheap no-op.
     #[must_use]
     pub fn is_running(&self) -> bool {
-        self.state.load().is_active() && !self.cancellation_token.is_cancelled()
+        self.main_task.load().as_ref().is_some()
+            && (self.state.load().is_active() || !self.cancellation_token.is_cancelled())
     }
     /// Returns `true` if the worker is idle (started but waiting for work).
     #[must_use]
@@ -401,7 +409,7 @@ impl<
         let main = main_loop(params).instrument(self.resource_span.clone());
         #[cfg(not(feature = "tracing"))]
         let main = main_loop(params);
-        let main_task = tokio::spawn(main.boxed());
+        let main_task = self.main_tracker.spawn(main.boxed());
         self.main_task.swap(Some(main_task.into()));
         Ok(())
     }
@@ -412,17 +420,15 @@ impl<
     }
 
     #[cfg_attr(feature="tracing", instrument(parent = &self.resource_span, skip(self)))]
-    /// Stops the worker's processing loop.
+    /// Stops the worker, blocking until every in-flight job has drained.
     ///
-    /// Signals the internal cancellation token and waits for the main loop
-    /// task to finish.  Already-running jobs are allowed to complete.
+    /// Cancels the main loop and waits for it to reach [`WorkerState::Closed`]
+    /// before deregistering, so draining jobs keep having their locks extended
+    /// and cannot be re-claimed as stalled by another worker. Requires Tokio's
+    /// multi-threaded runtime.
     ///
-    /// Calling `close` on a worker that is not running is a no-op (idempotent).
-    ///
-    /// # Note
-    ///
-    /// After calling `close` the worker **cannot** be restarted.  Create a new
-    /// worker if you need to resume processing.
+    /// Repeated and concurrent calls are safe — every caller waits for the same
+    /// drain. A closed worker **cannot** be restarted; create a new one.
     pub fn close(&self) {
         if !self.is_running() {
             return;
@@ -438,16 +444,23 @@ impl<
         self.queue.worker_notifier.notify_waiters();
         self.queue.pause_workers.store(false);
         self.cancellation_token.cancel();
-        let mut main_task = self.main_task.load_full();
-        if let Some(handle) = main_task.take() {
-            // wait for handle to finishd
+        // `wait()` only resolves on a closed tracker.
+        self.main_tracker.close();
+
+        // Started-marker only; the handle is shared, so the tracker is what we wait on.
+        if let Some(_main) = self.main_task.load_full() {
             #[cfg(feature = "tracing")]
-            {
-                let running_tasks = self.processing.len();
-                warn!("waiting for all {running_tasks} tasks to complete or abort");
+            warn!(
+                "waiting for {} in-flight task(s) to drain",
+                self.processing.len()
+            );
+            let drained = self.main_tracker.wait();
+            match tokio::runtime::Handle::try_current() {
+                Ok(rt) => tokio::task::block_in_place(|| rt.block_on(drained)),
+                // Plain sync code: the runtime lives on other threads, so a local
+                // executor is enough to park until the drain signals us.
+                Err(_) => futures::executor::block_on(drained),
             }
-            // wait for the main loop to close
-            while !handle.is_finished() {}
         }
         self.queue.remove_worker(self.id);
     }
@@ -479,5 +492,293 @@ impl<
     #[must_use]
     pub fn remove_event_listener(&self, id: Uuid) -> Option<Uuid> {
         self.queue.remove_event_listener(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{EventParameters, InMemoryStore, Job, JobState, KioError, Queue, WorkerError};
+    use crossbeam::queue::ArrayQueue;
+    use std::time::Duration;
+
+    type TestStore = InMemoryStore<i32, i32, i32>;
+    type TestQueue = Queue<i32, i32, i32, TestStore>;
+
+    async fn make_queue() -> KioResult<TestQueue> {
+        let name = Uuid::new_v4().to_string();
+        let store = InMemoryStore::<i32, i32, i32>::new(None, &name);
+        Queue::new(store, None).await
+    }
+
+    fn doubling_worker(
+        queue: &TestQueue,
+        opts: Option<WorkerOpts>,
+    ) -> KioResult<Worker<i32, i32, i32, TestStore>> {
+        Worker::new_async(
+            queue,
+            |_conn, job: Job<i32, i32, i32>| async move {
+                Ok::<i32, KioError>(job.data.unwrap_or_default() * 2)
+            },
+            opts,
+        )
+    }
+
+    async fn wait_until<F: Fn() -> bool + Send + Sync>(condition: F, label: &str) {
+        let outcome = tokio::time::timeout(Duration::from_secs(10), async {
+            while !condition() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(outcome.is_ok(), "timed out waiting for: {label}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_worker_starts_idle_and_not_running() -> KioResult<()> {
+        let queue = make_queue().await?;
+        let worker = doubling_worker(&queue, None)?;
+
+        assert!(worker.is_idle());
+        assert!(!worker.is_running());
+        assert!(!worker.closed());
+        assert_eq!(worker.state.load(), WorkerState::Idle);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_transitions_worker_to_running() -> KioResult<()> {
+        let queue = make_queue().await?;
+        let worker = doubling_worker(&queue, None)?;
+
+        worker.run()?;
+        assert!(worker.is_running());
+        assert!(!worker.is_idle());
+        assert!(!worker.closed());
+
+        worker.close();
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn double_run_returns_already_running_error() -> KioResult<()> {
+        let queue = make_queue().await?;
+        let worker = doubling_worker(&queue, None)?;
+        let id = worker.id;
+
+        worker.run()?;
+        let second = worker.run();
+        match second {
+            Err(KioError::WorkerError(WorkerError::WorkerAlreadyRunningWithId(err_id))) => {
+                assert_eq!(err_id, id);
+            }
+            other => panic!("expected WorkerAlreadyRunningWithId, got {other:?}"),
+        }
+
+        worker.close();
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_after_close_returns_already_closed_error() -> KioResult<()> {
+        let queue = make_queue().await?;
+        let worker = doubling_worker(&queue, None)?;
+        let id = worker.id;
+
+        worker.run()?;
+        worker.close();
+        assert!(worker.closed());
+
+        match worker.run() {
+            Err(KioError::WorkerError(WorkerError::WorkerAlreadyClosed(err_id))) => {
+                assert_eq!(err_id, id);
+            }
+            other => panic!("expected WorkerAlreadyClosed, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn close_on_a_worker_that_never_ran_is_a_noop() -> KioResult<()> {
+        let queue = make_queue().await?;
+        let worker = doubling_worker(&queue, None)?;
+
+        worker.close();
+        assert!(
+            !worker.closed(),
+            "an unstarted worker stays open after close()"
+        );
+        assert!(worker.is_idle());
+        assert!(!worker.is_running());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn close_is_idempotent_after_running() -> KioResult<()> {
+        let queue = make_queue().await?;
+        let worker = doubling_worker(&queue, None)?;
+
+        worker.run()?;
+        worker.close();
+        assert!(worker.closed());
+        assert!(!worker.is_running());
+
+        worker.close();
+        assert!(worker.closed());
+        assert!(!worker.is_running());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn autorun_starts_the_worker_inside_the_constructor() -> KioResult<()> {
+        let queue = make_queue().await?;
+        let opts = WorkerOpts {
+            autorun: true,
+            ..Default::default()
+        };
+        let worker = doubling_worker(&queue, Some(opts))?;
+
+        assert!(
+            worker.is_running(),
+            "autorun=true must start the loop during construction"
+        );
+
+        worker.close();
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handler_error_moves_job_to_failed() -> KioResult<()> {
+        let queue = make_queue().await?;
+
+        let failed: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(4));
+        let failed_sink = failed.clone();
+        queue.on(JobState::Failed, move |state: EventParameters<i32, i32>| {
+            let failed = failed_sink.clone();
+            async move {
+                if let EventParameters::Failed { job_id, .. } = state {
+                    failed.push(job_id).expect("event sink capacity exceeded");
+                }
+            }
+        });
+
+        let worker = Worker::new_async(
+            &queue,
+            |_conn, _job: Job<i32, i32, i32>| async move {
+                Err::<i32, KioError>(std::io::Error::other("handler failed").into())
+            },
+            None,
+        )?;
+        worker.run()?;
+
+        queue.add_job("boom", 1, None).await?;
+        wait_until(|| !failed.is_empty(), "the failing job to be marked failed").await;
+
+        worker.close();
+        assert_eq!(failed.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handler_panic_moves_job_to_failed() -> KioResult<()> {
+        let queue = make_queue().await?;
+
+        let failed: Arc<ArrayQueue<u64>> = Arc::new(ArrayQueue::new(4));
+        let failed_sink = failed.clone();
+        queue.on(JobState::Failed, move |state: EventParameters<i32, i32>| {
+            let failed = failed_sink.clone();
+            async move {
+                if let EventParameters::Failed { job_id, .. } = state {
+                    failed.push(job_id).expect("event sink capacity exceeded");
+                }
+            }
+        });
+
+        let worker = Worker::new_async(
+            &queue,
+            |_conn, _job: Job<i32, i32, i32>| async move {
+                panic!("processor panicked");
+                #[allow(unreachable_code)]
+                Ok::<i32, KioError>(0)
+            },
+            None,
+        )?;
+        worker.run()?;
+
+        queue.add_job("panic", 1, None).await?;
+        wait_until(
+            || !failed.is_empty(),
+            "the panicking job to be caught and marked failed",
+        )
+        .await;
+
+        worker.close();
+        assert_eq!(
+            failed.len(),
+            1,
+            "a handler panic must not crash the worker; the job fails"
+        );
+        assert!(worker.closed());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn clone_shares_lifecycle_state_with_the_original() -> KioResult<()> {
+        let queue = make_queue().await?;
+        let worker = doubling_worker(&queue, None)?;
+        let clone = worker.clone();
+
+        assert_eq!(worker.id, clone.id);
+        assert!(!clone.is_running());
+
+        worker.run()?;
+        assert!(
+            clone.is_running(),
+            "clone observes the shared running state"
+        );
+
+        clone.close();
+        assert!(worker.closed(), "close through a clone closes the original");
+        assert!(!worker.is_running());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn state_and_running_flags_track_the_full_lifecycle() -> KioResult<()> {
+        let queue = make_queue().await?;
+        let worker = doubling_worker(&queue, None)?;
+
+        assert_eq!(worker.state.load(), WorkerState::Idle);
+        worker.run()?;
+        assert_eq!(worker.state.load(), WorkerState::Active);
+        worker.close();
+        wait_until(
+            || worker.state.load() == WorkerState::Closed,
+            "worker state to become Closed",
+        )
+        .await;
+        assert!(worker.closed());
+        assert!(!worker.is_running());
+        Ok(())
+    }
+
+    #[test]
+    fn worker_state_variants_and_default() {
+        assert_eq!(WorkerState::default(), WorkerState::Idle);
+        assert!(WorkerState::Active.is_active());
+        assert!(WorkerState::Idle.is_idle());
+        assert!(WorkerState::Closed.is_closed());
+        assert!(!WorkerState::Idle.is_active());
+    }
+
+    #[cfg(feature = "redis-store")]
+    #[test]
+    fn worker_state_serde_round_trip() {
+        for state in [WorkerState::Active, WorkerState::Idle, WorkerState::Closed] {
+            let mut bytes = simd_json::to_vec(&state).expect("state must serialise");
+            let restored: WorkerState =
+                simd_json::from_slice(&mut bytes).expect("state must deserialise");
+            assert_eq!(restored, state);
+        }
     }
 }
