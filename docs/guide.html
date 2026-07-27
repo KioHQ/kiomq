@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Documentation — KioMQ</title>
+<meta name="description" content="KioMQ documentation: queues, workers, scheduling, retries, events, progress, metrics, and the in-memory, Redis and RocksDB backends." />
+<link rel="icon" href="logo-mark.png" />
+<link rel="apple-touch-icon" href="logo-mark.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="container nav-inner">
+    <a class="brand logo" href="index.html">
+      <span class="logo-mark" aria-hidden="true">
+        <img src="logo-mark.png" alt="" width="26" height="26" />
+      </span>
+      <span class="logo-word">KioMQ</span>
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="index.html#features">Features</a>
+      <a href="index.html#how">How it works</a>
+      <a href="index.html#backends">Backends</a>
+      <a href="start.html">Get started</a>
+      <a href="guide.html" class="active">Docs</a>
+    </nav>
+    <div class="nav-cta">
+      <button class="btn btn-ghost btn-sm nav-toggle" type="button" aria-expanded="false" aria-label="Toggle menu">Menu</button>
+      <a class="btn btn-ghost btn-sm" href="https://docs.rs/kiomq">API reference</a>
+      <a class="btn btn-accent btn-sm" href="https://github.com/KioHQ/kiomq">GitHub</a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+<div class="container docs-wrap">
+  <div class="doc-hero">
+    <span class="sec-num">Documentation</span>
+    <h1 class="doc-title">KioMQ</h1>
+    <p class="doc-sub">
+      The building blocks for running background work inside a Tokio service: a queue to enqueue
+      jobs, workers to process them, and a pluggable store to keep the state everyone agrees on.
+    </p>
+    <div class="doc-meta">
+      <span>Version <b>0.2.1</b></span><span class="dot"></span>
+      <span>Runtime <b>Tokio 1.x</b></span><span class="dot"></span>
+      <span>Default features <b>redis-store</b></span><span class="dot"></span>
+      <span>Licence <b>MIT</b></span>
+    </div>
+  </div>
+
+  <div class="doc-layout">
+    <aside class="toc" aria-label="Contents">
+      <p class="toc-label">Contents</p>
+      <ol>
+        <li><a href="#overview">Overview</a></li>
+        <li><a href="#runtime">Tokio runtime</a></li>
+        <li><a href="#install">Installation</a></li>
+        <li><a href="#workers">Workers</a></li>
+        <li><a href="#failures">Panics &amp; errors</a></li>
+        <li><a href="#configuration">Configuration</a></li>
+        <li><a href="#events">Events</a></li>
+        <li><a href="#progress">Progress updates</a></li>
+        <li><a href="#metrics">Metrics</a></li>
+        <li><a href="#backends">Backends</a></li>
+        <li><a href="#benchmarks">Benchmarks &amp; testing</a></li>
+        <li><a href="#contributing">Contributing</a></li>
+      </ol>
+    </aside>
+
+    <article class="content">
+      <section id="overview">
+        <span class="sec-num">Section 01</span>
+        <h2>Overview</h2>
+        <p class="lede">KioMQ provides the core building blocks to run background work inside your Tokio services, inspired by <a href="https://docs.bullmq.io/">BullMQ</a>'s ergonomics and implemented as an embeddable Rust library.</p>
+        <ul>
+          <li>A <code>Queue</code> to enqueue tasks and jobs.</li>
+          <li>One or more <strong>workers</strong> to process jobs concurrently.</li>
+          <li>Pluggable <strong>stores</strong>: <code>InMemoryStore</code> (ephemeral), <code>RedisStore</code> (durable, distributed), and <code>RocksDbStore</code> (under construction).</li>
+          <li><strong>Scheduling</strong>: delays, cron expressions, repeat policies.</li>
+          <li><strong>Reliability</strong>: retries, backoff strategies, stalled-job detection.</li>
+          <li><strong>Observability</strong>: events, progress updates, per-worker and per-process metrics.</li>
+        </ul>
+        <h3>Key features</h3>
+        <ul>
+          <li><strong>Async and sync processors</strong>: async for I/O-bound work, sync via <code>spawn_blocking</code> for CPU-bound work.</li>
+          <li><strong>Configurable concurrency</strong>, defaulting to the CPU count.</li>
+          <li><strong>Event-driven idle workers</strong>, using lock-free atomics and <code>Notify</code> for near-zero CPU when empty.</li>
+          <li><strong>Bulk enqueue</strong> via <code>Queue::bulk_add</code> and <code>Queue::bulk_add_only</code>.</li>
+          <li><strong>Priority and delayed jobs</strong>, by score or after <em>N</em> milliseconds or a cron schedule.</li>
+          <li><strong>Repeat policies</strong>: cron, backoff-driven, fixed interval, immediate.</li>
+        </ul>
+        <div class="callout">
+          <span class="ico" aria-hidden="true">i</span>
+          <p><strong>New here?</strong>The <a href="start.html">getting started guide</a> walks through an empty project to a working queue in about ten minutes.</p>
+        </div>
+      </section>
+
+      <section id="runtime">
+        <span class="sec-num">Section 02</span>
+        <h2>Tokio runtime requirements</h2>
+        <p>A multi-thread runtime is recommended:</p>
+        <pre>tokio = { version = "1", features = ["rt-multi-thread", "macros"] }</pre>
+        <p>For tests:</p>
+        <pre>#[tokio::test(flavor = "multi_thread")]
+async fn my_test() { /* ... */ }</pre>
+      </section>
+
+      <section id="install">
+        <span class="sec-num">Section 03</span>
+        <h2>Installation</h2>
+        <pre>[dependencies]
+kiomq = "0.2.1"</pre>
+        <p>Cargo features: <code>redis-store</code> (default), <code>rocksdb-store</code>, <code>tracing</code>.</p>
+      </section>
+
+      <section id="workers">
+        <span class="sec-num">Section 04</span>
+        <h2>Workers</h2>
+        <p class="lede">A worker takes a processor closure and drives it against the queue. Nothing runs until <code>run()</code> is called; <code>close()</code> shuts it down.</p>
+
+        <h3>Async worker</h3>
+        <pre>use std::sync::Arc;
+use kiomq::{InMemoryStore, Job, KioError, Queue, Worker, WorkerOpts};
+
+#[tokio::main]
+async fn main() -> kiomq::KioResult&lt;()&gt; {
+    let store: InMemoryStore&lt;u64, u64, ()&gt; = InMemoryStore::new(None, "demo");
+    let queue = Queue::new(store, None).await?;
+
+    let processor = |_store: Arc&lt;_&gt;, job: Job&lt;u64, u64, ()&gt;| async move {
+        Ok::&lt;u64, KioError&gt;(job.data.unwrap_or_default() * 2)
+    };
+
+    let worker = Worker::new_async(&amp;queue, processor, Some(WorkerOpts::default()))?;
+    worker.run()?;
+
+    queue.bulk_add_only((0..10u64).map(|i| (format!("job-{i}"), None, i))).await?;
+
+    let updating_metrics = queue.current_metrics.clone();
+    // wait for all jobs to complete
+    while !updating_metrics.all_jobs_completed() {
+        tokio::task::yield_now().await;
+    }
+    worker.close();
+    Ok(())
+}</pre>
+
+        <h3>Sync worker</h3>
+        <p>Sync processors run on a blocking thread via <a href="https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html"><code>tokio::task::spawn_blocking</code></a>, which suits heavy computation, hashing, blocking FFI and similar work.</p>
+        <pre>use std::sync::Arc;
+use kiomq::{InMemoryStore, Job, KioError, Queue, Worker, WorkerOpts};
+
+#[tokio::main]
+async fn main() -> kiomq::KioResult&lt;()&gt; {
+    let store: InMemoryStore&lt;u64, u64, ()&gt; = InMemoryStore::new(None, "demo-sync");
+    let queue = Queue::new(store, None).await?;
+
+    let processor = |_store: Arc&lt;_&gt;, job: Job&lt;u64, u64, ()&gt;| {
+        Ok::&lt;u64, KioError&gt;(job.data.unwrap_or_default() * 2)
+    };
+
+    let worker = Worker::new_sync(&amp;queue, processor, Some(WorkerOpts::default()))?;
+    worker.run()?;
+
+    queue.add_job("compute", 42u64, None).await?;
+
+    let updating_metrics = queue.current_metrics.clone();
+    while !updating_metrics.all_jobs_completed() {
+        tokio::task::yield_now().await;
+    }
+    worker.close();
+    Ok(())
+}</pre>
+      </section>
+
+      <section id="failures">
+        <span class="sec-num">Section 05</span>
+        <h2>Panics &amp; errors in the processor</h2>
+        <p class="lede">A processor signals a job failure by returning <code>Err</code>. The worker catches the error, marks the job failed, and retries it with the configured backoff depending on the <code>attempts</code> configuration.</p>
+        <div class="callout warn">
+          <span class="ico" aria-hidden="true">!</span>
+          <p><strong>Panics are caught too</strong>A panic inside a processor is treated as a failure, so a rogue job cannot bring down the whole process.</p>
+        </div>
+
+        <h3>Async backtrace with <code>#[framed]</code></h3>
+        <p>Annotate a processor with <code>framed</code>, re-exported from <a href="https://docs.rs/async-backtrace">async-backtrace</a> as <code>kiomq::framed</code>, for richer async stack traces:</p>
+        <pre>use std::sync::Arc;
+use kiomq::{framed, InMemoryStore, Job, KioError, Queue, Store, Worker, WorkerOpts};
+
+#[framed]
+async fn my_processor&lt;S: Store&lt;u64, u64, ()&gt;&gt;(
+    _store: Arc&lt;S&gt;,
+    job: Job&lt;u64, u64, ()&gt;,
+) -> Result&lt;u64, KioError&gt; {
+    let data = job.data.unwrap_or_default();
+    if data == 0 {
+        // Returning Err marks the job as failed and triggers a retry
+        // (up to `attempts` times, as set in QueueOpts / JobOptions).
+        return Err(std::io::Error::new(std::io::ErrorKind::Other, "zero input").into());
+    }
+    Ok(data * 2)
+}</pre>
+      </section>
+
+      <section id="configuration">
+        <span class="sec-num">Section 06</span>
+        <h2>Configuration</h2>
+
+        <h3>Queue options</h3>
+        <pre>use kiomq::{BackOffJobOptions, BackOffOptions, KeepJobs, QueueEventMode, QueueOpts,
+            RemoveOnCompletionOrFailure};
+
+let queue_opts = QueueOpts {
+    attempts: 2,
+    default_backoff: Some(BackOffJobOptions::Opts(BackOffOptions {
+        type_: Some("exponential".into()),
+        delay: Some(200),
+    })),
+    remove_on_fail: Some(RemoveOnCompletionOrFailure::Opts(KeepJobs {
+        age: Some(3600), // keep for 1 hour
+        count: None,
+    })),
+    event_mode: Some(QueueEventMode::PubSub),
+    ..Default::default()
+};</pre>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Option</th><th>Purpose</th></tr></thead>
+            <tbody>
+              <tr><td><code>attempts</code></td><td>Default number of attempts before a job is marked failed.</td></tr>
+              <tr><td><code>default_backoff</code></td><td>Backoff strategy between attempts, for example exponential with a base delay in milliseconds.</td></tr>
+              <tr><td><code>remove_on_fail</code></td><td>Retention for failed jobs, by age in seconds or by count.</td></tr>
+              <tr><td><code>remove_on_complete</code></td><td>The same retention controls for completed jobs.</td></tr>
+              <tr><td><code>event_mode</code></td><td>How events are delivered, for example <code>QueueEventMode::PubSub</code>.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Per-job options</h3>
+        <pre>use kiomq::JobOptions;
+
+let opts = JobOptions { attempts: 5, ..Default::default() };</pre>
+
+        <h3>Worker options</h3>
+        <pre>use kiomq::WorkerOpts;
+
+let opts = WorkerOpts { concurrency: 8, ..Default::default() };</pre>
+        <p>Concurrency defaults to the CPU count when left at the default.</p>
+      </section>
+
+      <section id="events">
+        <span class="sec-num">Section 07</span>
+        <h2>Events &amp; observability</h2>
+        <p class="lede">Subscribe to job-state events on the queue. Listeners are identified by an id so they can be removed again.</p>
+        <pre>use kiomq::{EventParameters, InMemoryStore, JobState, Queue};
+
+// Subscribe to a specific state.
+let listener_id = queue.on(JobState::Completed, |evt| async move { let _ = evt; });
+
+// Subscribe to all events.
+let listener_id2 = queue.on_all_events(|evt: EventParameters&lt;u64, ()&gt;| async move { let _ = evt; });
+
+// Remove a listener when no longer needed.
+queue.remove_event_listener(listener_id);</pre>
+      </section>
+
+      <section id="progress">
+        <span class="sec-num">Section 08</span>
+        <h2>Progress updates</h2>
+        <p>Report progress from inside a processor with <code>Job::update_progress</code>. It persists to the store and emits a progress event.</p>
+        <pre>use std::sync::Arc;
+use kiomq::{Job, KioError, Store};
+
+async fn processor&lt;S: Store&lt;u64, u64, u8&gt;&gt;(
+    store: Arc&lt;S&gt;,
+    mut job: Job&lt;u64, u64, u8&gt;,
+) -> Result&lt;u64, KioError&gt; {
+    // update_progress persists to the store and emits a progress event.
+    job.update_progress(50u8, store.as_ref()).await?; // 50% done
+    // use job.update_progress_sync when using the Sync Worker
+    Ok(job.data.unwrap_or_default() * 2)
+}</pre>
+      </section>
+
+      <section id="metrics">
+        <span class="sec-num">Section 09</span>
+        <h2>Process &amp; worker metrics</h2>
+        <p class="lede">KioMQ collects two kinds of metrics in the background with no extra setup. Both are stored with a TTL and refreshed by the queue's timer subsystem.</p>
+
+        <h3>Process metrics</h3>
+        <p>A process-level snapshot refreshed at a regular interval (<code>PROCESS_METRIC_UPDATE_INTERVAL</code>) and stored with a TTL. Each snapshot captures:</p>
+        <ul>
+          <li><code>process_cpu_usage</code>: CPU usage of the process tree, as a percentage.</li>
+          <li><code>memory_usage</code>: RSS memory in bytes.</li>
+          <li><code>memory_stats</code>: heap allocator statistics via the built-in <code>Heapster</code> instrumented allocator.</li>
+          <li><code>rt_metrics</code>: Tokio runtime counters covering thread count, live tasks, park counts and busy durations.</li>
+          <li><code>workers</code>: a <code>Vec&lt;WorkerMeta&gt;</code> with the state, options and active-job count of every registered worker.</li>
+          <li><code>hostname</code> and <code>pid</code>: process identity.</li>
+        </ul>
+        <pre>// keyed by PID so multi-process deployments can be distinguished
+let snapshots: std::collections::BTreeMap&lt;u32, ProcessMetrics&gt; =
+    queue.fetch_proess_metrics().await?;
+
+if let Some(m) = snapshots.values().next() {
+    println!(
+        "cpu: {:.1}%  mem: {} MB  tokio workers: {}",
+        m.process_cpu_usage,
+        m.memory_usage / 1_024 / 1_024,
+        m.rt_metrics.workers_count,
+    );
+}</pre>
+
+        <h3>Worker metrics</h3>
+        <p>Fine-grained, per-worker timing data for every in-flight job, useful for latency profiling and capacity planning:</p>
+        <pre>let worker_metrics = queue.fetch_worker_metrics().await?;
+
+for (worker_id, wm) in &amp;worker_metrics {
+    for task in &amp;wm.tasks {
+        println!(
+            "worker {worker_id}  polls={}  idle={:?}",
+            task.metrics.total_poll_count,
+            task.metrics.total_idle_duration,
+        );
+    }
+}</pre>
+      </section>
+
+      <section id="backends">
+        <span class="sec-num">Section 10</span>
+        <h2>Backends</h2>
+
+        <h3>In-memory</h3>
+        <p><code>InMemoryStore</code> is ideal for tests, development and short-lived tasks. It has no external dependencies.</p>
+
+        <h3>Redis (default feature)</h3>
+        <p>For durable, distributed workloads. Requires a running Redis instance:</p>
+        <pre>docker run --rm -p 6379:6379 redis:latest</pre>
+        <pre>use kiomq::{Config, KioResult, Queue, RedisStore, SharedRedis};
+
+#[tokio::main]
+async fn main() -> KioResult&lt;()&gt; {
+    // `Config` can be imported from `kiomq` or from `deadpool_redis`
+    // (if you already use it in your app).
+    let config = Config::default();
+    let redis_conn = SharedRedis::create(&amp;config)?;
+    let store = RedisStore::new(None, "my-queue", &amp;redis_conn).await?;
+    let queue: Queue&lt;(), (), (), _&gt; = Queue::new(store, None).await?;
+    // ... worker logic below here
+    Ok(())
+}</pre>
+
+        <h3>RocksDB <span class="feat-soon">Under construction</span></h3>
+        <p>Embedded persistence, currently a work in progress.</p>
+        <pre>[dependencies]
+kiomq = { version = "0.1", default-features = false, features = ["rocksdb-store"] }</pre>
+        <pre>use kiomq::{temporary_rocks_db, RocksDbStore, KioResult, Queue};
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() -> KioResult&lt;()&gt; {
+    // replace `temporary_rocks_db` with a real database instantiation
+    // (check out the rocksdb crate)
+    let db = Arc::new(temporary_rocks_db());
+
+    let store = RocksDbStore::new(None, "test", db.clone())?;
+    let queue = Queue::new(store, None).await?;
+    // ... worker logic below here
+    Ok(())
+}</pre>
+      </section>
+
+      <section id="benchmarks">
+        <span class="sec-num">Section 11</span>
+        <h2>Benchmarks &amp; testing</h2>
+        <pre>cargo bench</pre>
+        <p>Run the test suite with <a href="https://nexte.st/">cargo nextest</a>:</p>
+        <pre>cargo nextest run</pre>
+        <div class="callout warn">
+          <span class="ico" aria-hidden="true">!</span>
+          <p><strong>Use nextest, not cargo test</strong>The integration tests share process-global state (the metrics collector), so each needs its own process, which nextest does by default. Under <code>cargo test</code>, which uses a single process, they interfere with one another and fail. CI runs nextest and local development should too. The <code>.config/nextest.toml</code> profile also terminates any hung test so a stall fails fast instead of wedging the run.</p>
+        </div>
+      </section>
+
+      <section id="contributing">
+        <span class="sec-num">Section 12</span>
+        <h2>Contributing</h2>
+        <p>Enable the repository's git hooks, which run fmt, clippy, tests and docs on push:</p>
+        <pre>git config core.hooksPath .githooks</pre>
+        <p>Issues and pull requests are welcome on <a href="https://github.com/KioHQ/kiomq">GitHub</a>. KioMQ is MIT licensed.</p>
+        <div class="hero-cta" style="justify-content:flex-start">
+          <a class="btn btn-lg btn-accent" href="https://github.com/KioHQ/kiomq">Open an issue</a>
+          <a class="btn btn-lg btn-outline" href="https://discord.gg/Y6Vy2k9Rf">Join the Discord</a>
+        </div>
+      </section>
+    </article>
+
+    <aside class="onpage" aria-label="Related">
+      <p class="onpage-label">Elsewhere</p>
+      <ul>
+        <li><a href="start.html">Getting started</a></li>
+        <li><a href="https://docs.rs/kiomq">API reference</a></li>
+        <li><a href="https://crates.io/crates/kiomq">crates.io</a></li>
+        <li><a href="https://github.com/KioHQ/kiomq/tree/main/examples">Examples</a></li>
+        <li><a href="https://github.com/KioHQ/kiomq/blob/main/CHANGELOG.md">Changelog</a></li>
+        <li><a href="https://discord.gg/Y6Vy2k9Rf">Discord</a></li>
+      </ul>
+    </aside>
+  </div>
+</div>
+</main>
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div>
+        <a class="brand logo" href="index.html">
+          <span class="logo-mark" aria-hidden="true">
+            <img src="logo-mark.png" alt="" width="26" height="26" />
+          </span>
+          <span class="logo-word">KioMQ</span>
+        </a>
+        <p class="fdesc">A task queue and orchestration library for Rust, built for Tokio. Scale up across cores, scale out across machines.</p>
+      </div>
+      <div class="fcol">
+        <h4>Docs</h4>
+        <a href="start.html">Getting started</a>
+        <a href="guide.html">Documentation</a>
+        <a href="guide.html#configuration">Configuration</a>
+        <a href="https://docs.rs/kiomq">API reference</a>
+      </div>
+      <div class="fcol">
+        <h4>Project</h4>
+        <a href="https://github.com/KioHQ/kiomq">GitHub</a>
+        <a href="https://crates.io/crates/kiomq">crates.io</a>
+        <a href="https://github.com/KioHQ/kiomq/blob/main/CHANGELOG.md">Changelog</a>
+        <a href="https://github.com/KioHQ/kiomq/issues">Issues</a>
+      </div>
+      <div class="fcol">
+        <h4>Community</h4>
+        <a href="https://discord.gg/Y6Vy2k9Rf">Discord</a>
+        <a href="https://github.com/KioHQ/kiomq/blob/main/LICENSE">Licence</a>
+        <a href="https://tokio.rs">Tokio</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>MIT licensed · © KioHQ</span>
+      <span>v0.2.1</span>
+    </div>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>
