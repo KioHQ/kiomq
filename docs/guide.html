@@ -25,10 +25,10 @@
     </a>
     <nav class="nav-links" aria-label="Primary">
       <a href="index.html#features">Features</a>
-      <a href="index.html#how">How it works</a>
       <a href="index.html#backends">Backends</a>
       <a href="start.html">Get started</a>
       <a href="guide.html" class="active">Docs</a>
+      <a href="stores.html">Custom stores</a>
     </nav>
     <div class="nav-cta">
       <button class="btn btn-ghost btn-sm nav-toggle" type="button" aria-expanded="false" aria-label="Toggle menu">Menu</button>
@@ -63,6 +63,9 @@
         <li><a href="#runtime">Tokio runtime</a></li>
         <li><a href="#install">Installation</a></li>
         <li><a href="#workers">Workers</a></li>
+        <li><a href="#queue-api">Queue API</a></li>
+        <li><a href="#scheduling">Scheduling &amp; repeats</a></li>
+        <li><a href="#states">Job states</a></li>
         <li><a href="#failures">Panics &amp; errors</a></li>
         <li><a href="#configuration">Configuration</a></li>
         <li><a href="#events">Events</a></li>
@@ -76,7 +79,7 @@
 
     <article class="content">
       <section id="overview">
-        <span class="sec-num">Section 01</span>
+        <span class="sec-num">Overview</span>
         <h2>Overview</h2>
         <p class="lede">KioMQ provides the core building blocks to run background work inside your Tokio services, inspired by <a href="https://docs.bullmq.io/">BullMQ</a>'s ergonomics and implemented as an embeddable Rust library.</p>
         <ul>
@@ -103,7 +106,7 @@
       </section>
 
       <section id="runtime">
-        <span class="sec-num">Section 02</span>
+        <span class="sec-num">Runtime</span>
         <h2>Tokio runtime requirements</h2>
         <p>A multi-thread runtime is recommended:</p>
         <pre>tokio = { version = "1", features = ["rt-multi-thread", "macros"] }</pre>
@@ -113,7 +116,7 @@ async fn my_test() { /* ... */ }</pre>
       </section>
 
       <section id="install">
-        <span class="sec-num">Section 03</span>
+        <span class="sec-num">Installation</span>
         <h2>Installation</h2>
         <pre>[dependencies]
 kiomq = "0.2.1"</pre>
@@ -121,7 +124,7 @@ kiomq = "0.2.1"</pre>
       </section>
 
       <section id="workers">
-        <span class="sec-num">Section 04</span>
+        <span class="sec-num">Workers</span>
         <h2>Workers</h2>
         <p class="lede">A worker takes a processor closure and drives it against the queue. Nothing runs until <code>run()</code> is called; <code>close()</code> shuts it down.</p>
 
@@ -180,8 +183,150 @@ async fn main() -> kiomq::KioResult&lt;()&gt; {
 }</pre>
       </section>
 
+      <section id="queue-api">
+        <span class="sec-num">Queue API</span>
+        <h2>Queue API</h2>
+        <p class="lede">Beyond enqueuing, a <code>Queue</code> handle lets you inspect what is in flight, pause the whole queue, and wipe it.</p>
+
+        <h3>Identity</h3>
+        <pre>queue.name();    // the queue name, e.g. "my-queue"
+queue.prefix();  // the key prefix used for this queue's collections</pre>
+
+        <h3>Inspecting jobs</h3>
+        <pre>// A single job by id.
+let job: Option&lt;Job&lt;D, R, P&gt;&gt; = queue.get_job(42).await;
+
+// Several at once.
+let jobs: VecDeque&lt;Job&lt;D, R, P&gt;&gt; = queue.fetch_jobs(&amp;[1, 2, 3]).await?;
+
+// Ids currently in a given state, with optional pagination.
+let waiting = queue.get_job_ids_in_state(JobState::Wait, None, None).await?;
+let first_ten = queue.get_job_ids_in_state(JobState::Failed, Some(0), Some(10)).await?;</pre>
+
+        <h3>Queue counters</h3>
+        <p><code>get_metrics</code> reads the counters from the store and refreshes the local snapshot on <code>queue.current_metrics</code>:</p>
+        <pre>let metrics = queue.get_metrics().await?;
+
+println!(
+    "waiting={} active={} completed={} failed={} delayed={} stalled={}",
+    metrics.waiting.load(),
+    metrics.active.load(),
+    metrics.completed.load(),
+    metrics.failed.load(),
+    metrics.delayed.load(),
+    metrics.stalled.load(),
+);</pre>
+        <p>The same struct also carries <code>processing</code>, <code>prioritized</code>, <code>paused</code>, <code>last_id</code>, <code>is_paused</code> and the current <code>event_mode</code>.</p>
+
+        <h3>Pausing and resuming</h3>
+        <p><code>pause_or_resume</code> toggles the queue: paused queues stop handing out work, and the change is persisted to the store so every process sharing the queue sees it.</p>
+        <pre>queue.pause_or_resume().await?;   // pause
+assert!(queue.is_paused());
+
+queue.pause_or_resume().await?;   // resume again</pre>
+        <p><code>pause_active_workers</code> is the local, in-process equivalent. It sets an atomic flag that workers poll, so jobs already being processed run to completion but no new ones are picked up.</p>
+        <pre>queue.pause_active_workers();</pre>
+
+        <h3>Obliterating a queue</h3>
+        <div class="callout warn">
+          <span class="ico" aria-hidden="true">!</span>
+          <p><strong>This deletes everything</strong><code>obliterate</code> removes every job and clears all collections belonging to the queue, then emits <code>JobState::Obliterated</code>. There is no undo.</p>
+        </div>
+        <pre>queue.obliterate().await?;</pre>
+
+        <h3>Custom backoff strategies</h3>
+        <p>Register a named strategy and refer to it by name from <code>BackOffOptions::type_</code>. The strategy takes the base delay and returns a function from attempt number to delay in milliseconds.</p>
+        <pre>queue.register_backoff_strategy("decorrelated", |base| {
+    Arc::new(move |attempt: i64| base * attempt * 2)
+});</pre>
+
+        <h3>Emitting your own events</h3>
+        <pre>queue.emit(JobState::Progress, event_parameters).await;</pre>
+      </section>
+
+      <section id="scheduling">
+        <span class="sec-num">Scheduling</span>
+        <h2>Scheduling &amp; repeats</h2>
+        <p class="lede">Jobs do not have to run now, once, or in arrival order. <code>JobOptions</code> carries the delay, priority and repeat policy for a single job.</p>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Field</th><th>Type</th><th>Purpose</th></tr></thead>
+            <tbody>
+              <tr><td><code>priority</code></td><td><code>u64</code></td><td>Ordering score. Prioritised jobs are taken before plain waiting ones.</td></tr>
+              <tr><td><code>delay</code></td><td><code>JobDelay</code></td><td>When the job becomes eligible to run.</td></tr>
+              <tr><td><code>id</code></td><td><code>Option&lt;u64&gt;</code></td><td>Explicit job id; generated when <code>None</code>.</td></tr>
+              <tr><td><code>attempts</code></td><td><code>u64</code></td><td>Attempts before the job is marked failed, overriding the queue default.</td></tr>
+              <tr><td><code>backoff</code></td><td><code>Option&lt;BackOffJobOptions&gt;</code></td><td>Backoff strategy for this job's retries.</td></tr>
+              <tr><td><code>repeat</code></td><td><code>Option&lt;Repeat&gt;</code></td><td>Repeat policy, see below.</td></tr>
+              <tr><td><code>remove_on_complete</code></td><td><code>Option&lt;RemoveOnCompletionOrFailure&gt;</code></td><td>Retention after success, by age or count.</td></tr>
+              <tr><td><code>remove_on_fail</code></td><td><code>Option&lt;RemoveOnCompletionOrFailure&gt;</code></td><td>Retention after failure.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Delays</h3>
+        <p><code>JobDelay</code> has two forms: a fixed offset in milliseconds, or the next occurrence of a cron schedule.</p>
+        <pre>use kiomq::{JobDelay, JobOptions};
+
+// Run in five seconds.
+let later = JobOptions { delay: JobDelay::TimeMilis(5_000), ..Default::default() };
+
+// Run at the next cron occurrence.
+let nightly = JobOptions {
+    delay: JobDelay::FromCron(Box::new(cron)),
+    ..Default::default()
+};</pre>
+
+        <h3>Repeat policies</h3>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Variant</th><th>Behaviour</th></tr></thead>
+            <tbody>
+              <tr><td><code>Repeat::WithCron(cron)</code></td><td>Re-run at the next occurrence of a cron schedule.</td></tr>
+              <tr><td><code>Repeat::WithBackOff(opts)</code></td><td>Re-run after a delay calculated by a backoff strategy.</td></tr>
+              <tr><td><code>Repeat::Every { delay_ms, max_attempts }</code></td><td>Re-run every <code>delay_ms</code> milliseconds, at most <code>max_attempts</code> times, or unlimited when <code>None</code>.</td></tr>
+              <tr><td><code>Repeat::Immediately(max_attempts)</code></td><td>Re-run as fast as possible until <code>max_attempts</code> is reached.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <pre>use kiomq::{JobOptions, Repeat};
+
+let poll = JobOptions {
+    repeat: Some(Repeat::Every { delay_ms: 60_000, max_attempts: None }),
+    ..Default::default()
+};
+
+queue.add_job("poll-upstream", feed_id, Some(poll)).await?;</pre>
+        <p>A repeat policy can also be set queue-wide through <code>QueueOpts::repeat</code>, in which case every job inherits it.</p>
+      </section>
+
+      <section id="states">
+        <span class="sec-num">Job states</span>
+        <h2>Job states</h2>
+        <p class="lede">Every job sits in exactly one state, and each transition is an event you can subscribe to.</p>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>State</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>Wait</code></td><td>Queued and eligible, waiting for a free worker.</td></tr>
+              <tr><td><code>Prioritized</code></td><td>Queued with a priority score, taken ahead of plain waiting jobs.</td></tr>
+              <tr><td><code>Delayed</code></td><td>Scheduled for later, not yet eligible.</td></tr>
+              <tr><td><code>Active</code></td><td>Claimed by a worker.</td></tr>
+              <tr><td><code>Processing</code></td><td>Currently inside the processor.</td></tr>
+              <tr><td><code>Progress</code></td><td>Emitted when a processor reports progress.</td></tr>
+              <tr><td><code>Stalled</code></td><td>Held a lock that expired, typically because its worker vanished.</td></tr>
+              <tr><td><code>Completed</code></td><td>The processor returned <code>Ok</code>.</td></tr>
+              <tr><td><code>Failed</code></td><td>The processor returned <code>Err</code> or panicked, with no attempts left.</td></tr>
+              <tr><td><code>Paused</code></td><td>The queue was paused.</td></tr>
+              <tr><td><code>Resumed</code></td><td>The queue was resumed.</td></tr>
+              <tr><td><code>Obliterated</code></td><td>The queue was wiped.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <section id="failures">
-        <span class="sec-num">Section 05</span>
+        <span class="sec-num">Failures</span>
         <h2>Panics &amp; errors in the processor</h2>
         <p class="lede">A processor signals a job failure by returning <code>Err</code>. The worker catches the error, marks the job failed, and retries it with the configured backoff depending on the <code>attempts</code> configuration.</p>
         <div class="callout warn">
@@ -210,7 +355,7 @@ async fn my_processor&lt;S: Store&lt;u64, u64, ()&gt;&gt;(
       </section>
 
       <section id="configuration">
-        <span class="sec-num">Section 06</span>
+        <span class="sec-num">Configuration</span>
         <h2>Configuration</h2>
 
         <h3>Queue options</h3>
@@ -252,11 +397,26 @@ let opts = JobOptions { attempts: 5, ..Default::default() };</pre>
         <pre>use kiomq::WorkerOpts;
 
 let opts = WorkerOpts { concurrency: 8, ..Default::default() };</pre>
-        <p>Concurrency defaults to the CPU count when left at the default.</p>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Field</th><th>Default</th><th>Purpose</th></tr></thead>
+            <tbody>
+              <tr><td><code>concurrency</code></td><td>Logical CPU count</td><td>Jobs this worker processes at once.</td></tr>
+              <tr><td><code>stalled_interval</code></td><td><code>30000</code></td><td>How often, in milliseconds, to sweep for stalled jobs.</td></tr>
+              <tr><td><code>lock_duration</code></td><td><code>30000</code></td><td>Milliseconds a worker holds a job lock before it is considered stalled.</td></tr>
+              <tr><td><code>lock_renew_time</code></td><td><code>15000</code></td><td>Milliseconds between lock renewals for a job still in progress.</td></tr>
+              <tr><td><code>max_stalled_count</code></td><td><code>1</code></td><td>Times a job may stall before it is failed outright.</td></tr>
+              <tr><td><code>metrics_update_interval</code></td><td><code>100</code></td><td>Milliseconds between worker metric refreshes.</td></tr>
+              <tr><td><code>autorun</code></td><td><code>false</code></td><td>Start processing on construction instead of waiting for <code>run()</code>.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>Worker state</h3>
+        <p>A worker reports itself as <code>WorkerState::Active</code>, <code>Idle</code> or <code>Closed</code>. The current state of every registered worker also appears in the <code>workers</code> field of each process metrics snapshot.</p>
       </section>
 
       <section id="events">
-        <span class="sec-num">Section 07</span>
+        <span class="sec-num">Events</span>
         <h2>Events &amp; observability</h2>
         <p class="lede">Subscribe to job-state events on the queue. Listeners are identified by an id so they can be removed again.</p>
         <pre>use kiomq::{EventParameters, InMemoryStore, JobState, Queue};
@@ -272,7 +432,7 @@ queue.remove_event_listener(listener_id);</pre>
       </section>
 
       <section id="progress">
-        <span class="sec-num">Section 08</span>
+        <span class="sec-num">Progress</span>
         <h2>Progress updates</h2>
         <p>Report progress from inside a processor with <code>Job::update_progress</code>. It persists to the store and emits a progress event.</p>
         <pre>use std::sync::Arc;
@@ -290,7 +450,7 @@ async fn processor&lt;S: Store&lt;u64, u64, u8&gt;&gt;(
       </section>
 
       <section id="metrics">
-        <span class="sec-num">Section 09</span>
+        <span class="sec-num">Metrics</span>
         <h2>Process &amp; worker metrics</h2>
         <p class="lede">KioMQ collects two kinds of metrics in the background with no extra setup. Both are stored with a TTL and refreshed by the queue's timer subsystem.</p>
 
@@ -333,7 +493,7 @@ for (worker_id, wm) in &amp;worker_metrics {
       </section>
 
       <section id="backends">
-        <span class="sec-num">Section 10</span>
+        <span class="sec-num">Backends</span>
         <h2>Backends</h2>
 
         <h3>In-memory</h3>
@@ -374,10 +534,13 @@ async fn main() -> KioResult&lt;()&gt; {
     // ... worker logic below here
     Ok(())
 }</pre>
+
+        <h3>Writing your own store</h3>
+        <p>The <code>Store</code> trait is public, so a queue can be backed by anything that can hold job state. KioMQ also ships the conformance suites it uses on its own stores, so a custom implementation can be held to the same standard. See <a href="stores.html">custom stores</a>.</p>
       </section>
 
       <section id="benchmarks">
-        <span class="sec-num">Section 11</span>
+        <span class="sec-num">Testing</span>
         <h2>Benchmarks &amp; testing</h2>
         <pre>cargo bench</pre>
         <p>Run the test suite with <a href="https://nexte.st/">cargo nextest</a>:</p>
@@ -389,7 +552,7 @@ async fn main() -> KioResult&lt;()&gt; {
       </section>
 
       <section id="contributing">
-        <span class="sec-num">Section 12</span>
+        <span class="sec-num">Contributing</span>
         <h2>Contributing</h2>
         <p>Enable the repository's git hooks, which run fmt, clippy, tests and docs on push:</p>
         <pre>git config core.hooksPath .githooks</pre>
@@ -433,6 +596,7 @@ async fn main() -> KioResult&lt;()&gt; {
         <a href="start.html">Getting started</a>
         <a href="guide.html">Documentation</a>
         <a href="guide.html#configuration">Configuration</a>
+        <a href="stores.html">Custom stores</a>
         <a href="https://docs.rs/kiomq">API reference</a>
       </div>
       <div class="fcol">

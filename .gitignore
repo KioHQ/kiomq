@@ -28,3 +28,6 @@ target/
 .bacon-location*
 ## ignore any videos files
 *.mp4
+
+# macOS
+.DS_Store

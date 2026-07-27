@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Custom stores — KioMQ</title>
+<meta name="description" content="Back a KioMQ queue with your own storage by implementing the Store trait, then prove it correct with the queue_store_suite and worker_store_suite conformance macros." />
+<link rel="icon" href="logo-mark.png" />
+<link rel="apple-touch-icon" href="logo-mark.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="container nav-inner">
+    <a class="brand logo" href="index.html">
+      <span class="logo-mark" aria-hidden="true">
+        <img src="logo-mark.png" alt="" width="26" height="26" />
+      </span>
+      <span class="logo-word">KioMQ</span>
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="index.html#features">Features</a>
+      <a href="index.html#backends">Backends</a>
+      <a href="start.html">Get started</a>
+      <a href="guide.html">Docs</a>
+      <a href="stores.html" class="active">Custom stores</a>
+    </nav>
+    <div class="nav-cta">
+      <button class="btn btn-ghost btn-sm nav-toggle" type="button" aria-expanded="false" aria-label="Toggle menu">Menu</button>
+      <a class="btn btn-ghost btn-sm" href="https://docs.rs/kiomq">API reference</a>
+      <a class="btn btn-accent btn-sm" href="https://github.com/KioHQ/kiomq">GitHub</a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+<div class="container docs-wrap">
+  <div class="doc-hero">
+    <span class="sec-num">Extending KioMQ</span>
+    <h1 class="doc-title">Custom stores.</h1>
+    <p class="doc-sub">
+      A queue is only as portable as its storage. <code>Store</code> is a public trait, so you can
+      back KioMQ with whatever your infrastructure already runs, and prove it correct with the same
+      conformance suites the built-in stores are held to.
+    </p>
+    <div class="doc-meta">
+      <span>Trait <b>kiomq::Store</b></span><span class="dot"></span>
+      <span>Module <b>kiomq::macros</b></span><span class="dot"></span>
+      <span>Suites <b>queue + worker</b></span>
+    </div>
+  </div>
+
+  <div class="doc-layout">
+    <aside class="toc" aria-label="Contents">
+      <p class="toc-label">Contents</p>
+      <ol>
+        <li><a href="#when">When to write one</a></li>
+        <li><a href="#trait">The Store trait</a></li>
+        <li><a href="#suites">Conformance suites</a></li>
+        <li><a href="#wiring">Wiring it up</a></li>
+      </ol>
+    </aside>
+
+    <article class="content">
+      <section id="when">
+        <span class="sec-num">Motivation</span>
+        <h2>When to write one</h2>
+        <p class="lede">Three stores ship with KioMQ. A fourth is worth writing when none of them matches where your state already lives.</p>
+        <ul>
+          <li>Your infrastructure standardises on a database that is neither Redis nor RocksDB.</li>
+          <li>You need job state in the same transaction as your application data.</li>
+          <li>You are testing a failure mode and want a store that can be told to misbehave.</li>
+        </ul>
+        <div class="callout">
+          <span class="ico" aria-hidden="true">i</span>
+          <p><strong>Check the built-ins first</strong><code>InMemoryStore</code> covers tests and short-lived work, and <code>RedisStore</code> covers durable and distributed. See <a href="guide.html#backends">backends</a> before writing anything.</p>
+        </div>
+      </section>
+
+      <section id="trait">
+        <span class="sec-num">The trait</span>
+        <h2>The Store trait</h2>
+        <p>A store is the single place job state lives, so <code>Store&lt;D, R, P&gt;</code> is broad: it covers job storage, state transitions, counters, locks, events and metrics. The groups are roughly:</p>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Group</th><th>Methods</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>Jobs</td>
+                <td><code>add_item</code>, <code>add_bulk</code>, <code>add_bulk_only</code>, <code>get_job</code>, <code>fetch_jobs</code>, <code>job_exists</code>, <code>remove</code>, <code>remove_item</code></td>
+              </tr>
+              <tr>
+                <td>State</td>
+                <td><code>get_state</code>, <code>get_job_ids_in_state</code>, <code>set_fields</code>, <code>exists_in</code>, <code>pop_set</code>, <code>pop_back_push_front</code>, <code>get_delayed_at</code></td>
+              </tr>
+              <tr>
+                <td>Locks &amp; tokens</td>
+                <td><code>set_lock</code>, <code>get_token</code>, <code>expire</code>, <code>purge_expired</code></td>
+              </tr>
+              <tr>
+                <td>Counters</td>
+                <td><code>incr</code>, <code>get_counter</code>, <code>get_metrics</code></td>
+              </tr>
+              <tr>
+                <td>Events</td>
+                <td><code>publish_event</code>, <code>listen_to_events</code>, <code>create_stream_listener</code>, <code>set_event_mode</code></td>
+              </tr>
+              <tr>
+                <td>Progress</td>
+                <td><code>update_job_progress</code>, <code>update_job_progress_sync</code></td>
+              </tr>
+              <tr>
+                <td>Metrics</td>
+                <td><code>store_process_metrics</code>, <code>fetch_process_metrics</code>, <code>store_worker_metrics</code>, <code>fetch_worker_metrics</code></td>
+              </tr>
+              <tr>
+                <td>Lifecycle</td>
+                <td><code>pause</code>, <code>clear_jobs</code>, <code>clear_collections</code>, <code>queue_name</code>, <code>queue_prefix</code>, <code>metadata_field_exists</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>The generated <a href="https://docs.rs/kiomq">API reference</a> carries the exact signatures. The existing implementations in <code>src/stores/</code> are the best worked examples, with <code>InMemoryStore</code> the shortest.</p>
+        <p>A store must be <code>Clone + Send + 'static</code>, because the queue, every worker and the timer subsystem all hold handles to it.</p>
+      </section>
+
+      <section id="suites">
+        <span class="sec-num">Conformance</span>
+        <h2>Conformance suites</h2>
+        <p class="lede">The <code>kiomq::macros</code> module re-exports the two test suites KioMQ runs against its own stores. Point them at your constructor and you inherit the whole battery.</p>
+        <p>Both are written for <code>D = R = P = i32</code>. Each takes a unique module name, to keep test names from colliding, and an async expression returning <code>KioResult&lt;S&gt;</code> where <code>S: Store&lt;i32, i32, i32&gt; + Clone + Send + 'static</code>.</p>
+
+        <h3>Queue behaviour</h3>
+        <pre>use kiomq::macros::queue_store_suite;
+
+queue_store_suite!(my_store_queue, async {
+    use uuid::Uuid;
+    let name = Uuid::new_v4().to_string();
+    MyStore::&lt;i32, i32, i32&gt;::new(None, &amp;name).await
+});</pre>
+
+        <h3>Worker behaviour</h3>
+        <pre>use kiomq::macros::worker_store_suite;
+
+worker_store_suite!(my_store_worker, async {
+    use uuid::Uuid;
+    let name = Uuid::new_v4().to_string();
+    MyStore::&lt;i32, i32, i32&gt;::new(None, &amp;name).await
+});</pre>
+
+        <p>Give each invocation a fresh, uniquely named store. The suites obliterate the queue as they go, so sharing one namespace between them makes the results meaningless.</p>
+
+        <div class="callout warn">
+          <span class="ico" aria-hidden="true">!</span>
+          <p><strong>Run them with nextest</strong>The suites share process-global state through the metrics collector, so they need a process each. Use <code>cargo nextest run</code>, not <code>cargo test</code>.</p>
+        </div>
+
+        <p>KioMQ's own <a href="https://github.com/KioHQ/kiomq/blob/main/tests/queue.rs"><code>tests/queue.rs</code></a> and <a href="https://github.com/KioHQ/kiomq/blob/main/tests/worker.rs"><code>tests/worker.rs</code></a> are these macros applied to the in-memory and Redis stores, and are worth copying as a starting point.</p>
+      </section>
+
+      <section id="wiring">
+        <span class="sec-num">Wiring</span>
+        <h2>Wiring it up</h2>
+        <p>Nothing else changes. A queue takes any <code>Store</code>, and processors never see the store type directly:</p>
+        <pre>let store = MyStore::&lt;u64, u64, ()&gt;::new(None, "my-queue").await?;
+let queue = Queue::new(store, None).await?;
+
+let worker = Worker::new_async(&amp;queue, processor, Some(WorkerOpts::default()))?;
+worker.run()?;</pre>
+        <p>If the store turns out to be generally useful, it is worth a pull request.</p>
+        <div class="hero-cta" style="justify-content:flex-start">
+          <a class="btn btn-lg btn-accent" href="https://github.com/KioHQ/kiomq">Open a pull request</a>
+          <a class="btn btn-lg btn-outline" href="guide.html">Back to the docs</a>
+        </div>
+      </section>
+    </article>
+
+    <aside class="onpage" aria-label="Related">
+      <p class="onpage-label">Elsewhere</p>
+      <ul>
+        <li><a href="guide.html#backends">Built-in backends</a></li>
+        <li><a href="guide.html#queue-api">Queue API</a></li>
+        <li><a href="guide.html#benchmarks">Benchmarks &amp; testing</a></li>
+        <li><a href="https://docs.rs/kiomq">API reference</a></li>
+        <li><a href="https://github.com/KioHQ/kiomq/tree/main/src/stores">Store implementations</a></li>
+      </ul>
+    </aside>
+  </div>
+</div>
+</main>
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div>
+        <a class="brand logo" href="index.html">
+          <span class="logo-mark" aria-hidden="true">
+            <img src="logo-mark.png" alt="" width="26" height="26" />
+          </span>
+          <span class="logo-word">KioMQ</span>
+        </a>
+        <p class="fdesc">A task queue and orchestration library for Rust, built for Tokio. Scale up across cores, scale out across machines.</p>
+      </div>
+      <div class="fcol">
+        <h4>Docs</h4>
+        <a href="start.html">Getting started</a>
+        <a href="guide.html">Documentation</a>
+        <a href="guide.html#configuration">Configuration</a>
+        <a href="stores.html">Custom stores</a>
+        <a href="https://docs.rs/kiomq">API reference</a>
+      </div>
+      <div class="fcol">
+        <h4>Project</h4>
+        <a href="https://github.com/KioHQ/kiomq">GitHub</a>
+        <a href="https://crates.io/crates/kiomq">crates.io</a>
+        <a href="https://github.com/KioHQ/kiomq/blob/main/CHANGELOG.md">Changelog</a>
+        <a href="https://github.com/KioHQ/kiomq/issues">Issues</a>
+      </div>
+      <div class="fcol">
+        <h4>Community</h4>
+        <a href="https://discord.gg/Y6Vy2k9Rf">Discord</a>
+        <a href="https://github.com/KioHQ/kiomq/blob/main/LICENSE">Licence</a>
+        <a href="https://tokio.rs">Tokio</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>MIT licensed · © KioHQ</span>
+      <span>v0.2.1</span>
+    </div>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>
