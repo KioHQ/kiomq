@@ -1,0 +1,34 @@
+{{ define "main" }}
+<div class="docs">
+  {{ partial "sidebar.html" . }}
+
+  <article class="docs-main">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="{{ "docs/" | relURL }}">Docs</a>
+      <span>/</span>
+      <span>{{ with .Params.group }}{{ . }}{{ else }}Guides{{ end }}</span>
+    </nav>
+
+    <header>
+      <h1>{{ .Title }}</h1>
+      {{ with or .Params.lead .Description }}<p>{{ . | markdownify }}</p>{{ end }}
+    </header>
+
+    <div class="prose">
+      {{ .Content }}
+    </div>
+
+    {{ partial "page-nav.html" . }}
+
+    {{ with .File }}
+      <p class="docs-footer-links">
+        <a href="{{ site.Params.links.github }}/edit/main/docs/content/{{ .Path }}" target="_blank" rel="noopener">
+          Edit this page on GitHub ↗
+        </a>
+      </p>
+    {{ end }}
+  </article>
+
+  {{ partial "toc.html" . }}
+</div>
+{{ end }}

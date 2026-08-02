@@ -1,0 +1,41 @@
+{{ define "main" }}
+<div class="docs">
+  {{ partial "sidebar.html" . }}
+
+  <article class="docs-main">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="{{ "" | relURL }}">KioMQ</a>
+      <span>/</span>
+      <span>{{ .Title }}</span>
+    </nav>
+
+    <header>
+      <h1>{{ .Title }}</h1>
+      {{ with or .Params.lead .Description }}<p>{{ . | markdownify }}</p>{{ end }}
+    </header>
+
+    <div class="prose">
+      {{ .Content }}
+
+      <div class="doc-index">
+        {{- range (where site.RegularPages "Section" "docs").ByWeight }}
+          <a href="{{ .RelPermalink }}">
+            <strong>{{ .LinkTitle }}</strong>
+            <span>{{ with or .Params.lead .Description }}{{ . | plainify | truncate 110 }}{{ else }}{{ .Summary | plainify | truncate 110 }}{{ end }}</span>
+          </a>
+        {{- end }}
+      </div>
+    </div>
+
+    {{ with .File }}
+      <p class="docs-footer-links">
+        <a href="{{ site.Params.links.github }}/edit/main/docs/content/{{ .Path }}" target="_blank" rel="noopener">
+          Edit this page on GitHub ↗
+        </a>
+      </p>
+    {{ end }}
+  </article>
+
+  {{ partial "toc.html" . }}
+</div>
+{{ end }}

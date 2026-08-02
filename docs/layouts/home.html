@@ -1,0 +1,414 @@
+{{ define "main" }}
+{{- $links := .Site.Params.links -}}
+
+<section class="hero">
+  <div class="container hero__inner">
+    <div>
+      <p class="eyebrow">Rust · Tokio · MIT licensed</p>
+      <h1>Background jobs at <em>Rust speed</em>.</h1>
+      <p class="hero__lede">
+        <strong>KioMQ</strong> is an all-in-one task queue and orchestration library for Rust. Enqueue
+        work, process it across a pool of workers, and keep it durable with Redis — all inside the Tokio
+        runtime you already have.
+      </p>
+
+      <div class="install" data-copy-text="cargo add kiomq">
+        <span class="prompt">$</span><code>cargo add kiomq</code>
+      </div>
+
+      <div class="hero__cta">
+        <a class="btn btn--primary" href="{{ "docs/getting-started/" | relURL }}">
+          Get started {{ partial "icon.html" "arrow-right" }}
+        </a>
+        <a class="btn btn--ghost" href="{{ $links.github }}" target="_blank" rel="noopener">
+          {{ partial "icon.html" "github" }} View on GitHub
+        </a>
+      </div>
+
+      <p class="hero__badges">
+        <span>async &amp; sync processors</span>
+        <span>cron &amp; repeat policies</span>
+        <span>retries with backoff</span>
+        <span>near-zero idle CPU</span>
+      </p>
+    </div>
+
+    <div>
+      <img
+        class="hero__logo"
+        src="{{ .Site.Params.logo | relURL }}"
+        alt="KioMQ — a roadrunner carrying a lightning bolt"
+        width="669"
+        height="544"
+        loading="eager"
+        decoding="async"
+      />
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="section__head">
+      <p class="eyebrow">Why KioMQ</p>
+      <h2>The building blocks for background work</h2>
+      <p>
+        Inspired by <a href="https://docs.bullmq.io/" target="_blank" rel="noopener">BullMQ</a>'s
+        ergonomics, implemented as an embeddable Rust library — no broker to babysit, no sidecar to
+        deploy.
+      </p>
+    </div>
+
+    <div class="features">
+      {{- $features := slice
+        (dict "icon" "cpu" "title" "Async & sync processors"
+          "body" "Async for I/O-bound work; blocking closures run on <code>spawn_blocking</code> so CPU-heavy jobs never stall the runtime.")
+        (dict "icon" "split" "title" "Configurable concurrency"
+          "body" "Each worker processes up to <code>concurrency</code> jobs at once — defaults to the host's logical CPU count.")
+        (dict "icon" "bolt" "title" "Event-driven idle workers"
+          "body" "Lock-free atomics plus <code>Notify</code> mean an empty queue costs almost nothing. No polling loops burning cores.")
+        (dict "icon" "layers" "title" "Bulk enqueue"
+          "body" "Push thousands of jobs in one round trip with <code>bulk_add</code> and <code>bulk_add_only</code>.")
+        (dict "icon" "clock" "title" "Priorities, delays & cron"
+          "body" "Run a job now, in <em>N</em> milliseconds, on a cron schedule, or ahead of everything else by priority score.")
+        (dict "icon" "shield" "title" "Retries & stalled detection"
+          "body" "Exponential or fixed backoff, per-job attempt limits, and lock renewal that recovers jobs from dead workers.")
+        (dict "icon" "activity" "title" "Events & metrics built in"
+          "body" "Subscribe to job-state events, stream progress updates, and read Tokio runtime plus per-worker timings.")
+        (dict "icon" "database" "title" "Pluggable stores"
+          "body" "Start with <code>InMemoryStore</code>, graduate to <code>RedisStore</code> when you need durability and many machines.")
+      -}}
+      {{- range $features }}
+        <article class="card">
+          <div class="card__icon">{{ partial "icon.html" .icon }}</div>
+          <h3>{{ .title }}</h3>
+          <p>{{ .body | safeHTML }}</p>
+        </article>
+      {{- end }}
+    </div>
+  </div>
+</section>
+
+<section class="section section--alt">
+  <div class="container split">
+    <div class="split__copy">
+      <p class="eyebrow">Quick start</p>
+      <h2>A working queue in about ten lines</h2>
+      <p>
+        Create a store, wrap it in a <code>Queue</code>, hand a closure to a <code>Worker</code>. That's
+        the whole model — the same code scales from a unit test to a Redis-backed fleet.
+      </p>
+      <ul class="checklist">
+        <li><strong>No macros to learn.</strong> Processors are ordinary async or sync closures.</li>
+        <li><strong>Typed end to end.</strong> Job data, return value, and progress are your own types.</li>
+        <li><strong>Panic-safe.</strong> A panicking job fails and retries; the process stays up.</li>
+        <li><strong>Swap the store, keep the code.</strong> In-memory in tests, Redis in production.</li>
+      </ul>
+      <p style="margin-top: 26px">
+        <a class="btn btn--ghost" href="{{ "docs/quick-start/" | relURL }}">
+          {{ partial "icon.html" "book" }} Read the quick start
+        </a>
+      </p>
+    </div>
+
+    {{- $samples := slice
+      (dict "id" "async" "label" "async_worker.rs" "lang" "rust" "code" `use std::sync::Arc;
+use kiomq::{InMemoryStore, Job, KioError, Queue, Worker, WorkerOpts};
+
+#[tokio::main]
+async fn main() -> kiomq::KioResult<()> {
+    let store: InMemoryStore<u64, u64, ()> = InMemoryStore::new(None, "demo");
+    let queue = Queue::new(store, None).await?;
+
+    // A processor is just a closure: (store, job) -> Result<R, KioError>
+    let processor = |_store: Arc<_>, job: Job<u64, u64, ()>| async move {
+        Ok::<u64, KioError>(job.data.unwrap_or_default() * 2)
+    };
+
+    let worker = Worker::new_async(&queue, processor, Some(WorkerOpts::default()))?;
+    worker.run()?;
+
+    queue
+        .bulk_add_only((0..10u64).map(|i| (format!("job-{i}"), None, i)))
+        .await?;
+
+    let metrics = queue.current_metrics.clone();
+    while !metrics.all_jobs_completed() {
+        tokio::task::yield_now().await;
+    }
+
+    worker.close();
+    Ok(())
+}`)
+      (dict "id" "sync" "label" "sync_worker.rs" "lang" "rust" "code" `use std::sync::Arc;
+use kiomq::{InMemoryStore, Job, KioError, Queue, Worker, WorkerOpts};
+
+#[tokio::main]
+async fn main() -> kiomq::KioResult<()> {
+    let store: InMemoryStore<u64, u64, ()> = InMemoryStore::new(None, "demo-sync");
+    let queue = Queue::new(store, None).await?;
+
+    // Sync processors run on a blocking thread via spawn_blocking —
+    // use them for hashing, image work, blocking FFI, etc.
+    let processor = |_store: Arc<_>, job: Job<u64, u64, ()>| {
+        Ok::<u64, KioError>(job.data.unwrap_or_default() * 2)
+    };
+
+    let worker = Worker::new_sync(&queue, processor, Some(WorkerOpts::default()))?;
+    worker.run()?;
+
+    queue.add_job("compute", 42u64, None).await?;
+
+    let metrics = queue.current_metrics.clone();
+    while !metrics.all_jobs_completed() {
+        tokio::task::yield_now().await;
+    }
+
+    worker.close();
+    Ok(())
+}`)
+      (dict "id" "redis" "label" "redis_store.rs" "lang" "rust" "code" `use kiomq::{Config, KioResult, Queue, RedisStore, SharedRedis};
+
+#[tokio::main]
+async fn main() -> KioResult<()> {
+    // Config re-exports deadpool_redis::Config, so you can reuse
+    // the pool configuration your app already has.
+    let config = Config::default();
+    let redis = SharedRedis::create(&config)?;
+
+    let store = RedisStore::new(None, "my-queue", &redis).await?;
+    let queue: Queue<(), (), (), _> = Queue::new(store, None).await?;
+
+    // Every worker on every machine that points at this queue name
+    // now shares the same job set, locks, and events.
+    Ok(())
+}`)
+      (dict "id" "schedule" "label" "scheduling.rs" "lang" "rust" "code" `use kiomq::{JobDelay, JobOptions, Repeat};
+
+// Run in five seconds.
+let delayed = JobOptions {
+    delay: JobDelay::TimeMilis(5_000),
+    ..Default::default()
+};
+
+// Jump the queue: lower priority values run first.
+let urgent = JobOptions { priority: 1, ..Default::default() };
+
+// Every weekday at 07:30, forever.
+let nightly = JobOptions {
+    repeat: Some(Repeat::from_cron_str("30 7 * * 1-5")?),
+    ..Default::default()
+};
+
+// Or every 30 seconds, at most 100 times.
+let polling = JobOptions {
+    repeat: Some(Repeat::repeat_every_for_times(30_000, Some(100))),
+    ..Default::default()
+};
+
+queue.add_job("report", payload, Some(nightly)).await?;`)
+    -}}
+
+    <div class="code-panel">
+      <div class="code-panel__tabs" role="tablist" aria-label="Code examples" data-tabs>
+        {{- range $i, $s := $samples }}
+          <button
+            class="code-tab"
+            type="button"
+            role="tab"
+            id="tab-{{ $s.id }}"
+            aria-controls="panel-{{ $s.id }}"
+            aria-selected="{{ if eq $i 0 }}true{{ else }}false{{ end }}"
+            tabindex="{{ if eq $i 0 }}0{{ else }}-1{{ end }}"
+          >{{ $s.label }}</button>
+        {{- end }}
+      </div>
+      <div class="code-panel__body">
+        {{- range $i, $s := $samples }}
+          <div role="tabpanel" id="panel-{{ $s.id }}" aria-labelledby="tab-{{ $s.id }}" {{ if ne $i 0 }}hidden{{ end }}>
+            {{ highlight $s.code $s.lang "" }}
+          </div>
+        {{- end }}
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="section__head section__head--center">
+      <p class="eyebrow">Architecture</p>
+      <h2>One queue, many workers, any store</h2>
+      <p>
+        Producers hand jobs to a queue; the store owns the state; workers reserve, execute, and report.
+        Scale up by raising concurrency, scale out by pointing more processes at the same Redis queue.
+      </p>
+    </div>
+    {{ partial "diagram.html" . }}
+  </div>
+</section>
+
+<section class="section section--alt">
+  <div class="container">
+    <div class="section__head">
+      <p class="eyebrow">Backends</p>
+      <h2>Pick durability to match the workload</h2>
+      <p>Stores are pluggable behind a single <code>Store</code> trait — the rest of your code doesn't change.</p>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Store</th>
+            <th>Feature flag</th>
+            <th>Durable</th>
+            <th>Multi-process</th>
+            <th>Best for</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>InMemoryStore</code></td>
+            <td>always available</td>
+            <td>No</td>
+            <td>No</td>
+            <td>Tests, dev loops, short-lived in-process work</td>
+          </tr>
+          <tr>
+            <td><code>RedisStore</code></td>
+            <td><code>redis-store</code> <em>(default)</em></td>
+            <td>Yes</td>
+            <td>Yes</td>
+            <td>Production fleets spread across machines</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="stats" style="margin-top: 22px">
+      <div class="stat">
+        <div class="stat__value">1</div>
+        <p class="stat__label"><code>Store</code> trait — swap the backend per environment, keep the code.</p>
+      </div>
+      <div class="stat">
+        <div class="stat__value">2</div>
+        <p class="stat__label">Processor flavours — async futures and blocking closures.</p>
+      </div>
+      <div class="stat">
+        <div class="stat__value">~0</div>
+        <p class="stat__label">CPU burned while queues sit empty, thanks to atomics + <code>Notify</code>.</p>
+      </div>
+      <div class="stat">
+        <div class="stat__value">MIT</div>
+        <p class="stat__label">Permissive licence. No CLA, no open-core tier.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container split">
+    <div class="split__copy">
+      <p class="eyebrow">Observability</p>
+      <h2>You can see what the queue is doing</h2>
+      <p>
+        Metrics collection runs in the background with no extra setup, and every job state transition is
+        an event you can subscribe to.
+      </p>
+      <ul class="checklist">
+        <li><strong>Job events.</strong> <code>Completed</code>, <code>Failed</code>, <code>Stalled</code>, <code>Progress</code> and more, per state or all at once.</li>
+        <li><strong>Progress updates.</strong> Persist typed progress from inside a processor.</li>
+        <li><strong>Process metrics.</strong> CPU, RSS, heap stats, and Tokio runtime counters, keyed by PID.</li>
+        <li><strong>Worker metrics.</strong> Per-task poll counts and idle durations for latency profiling.</li>
+      </ul>
+      <p style="margin-top: 26px">
+        <a class="btn btn--ghost" href="{{ "docs/metrics/" | relURL }}">
+          {{ partial "icon.html" "activity" }} Metrics reference
+        </a>
+      </p>
+    </div>
+
+    <div class="code-panel">
+      <div class="code-panel__tabs" role="tablist" aria-label="Observability examples" data-tabs>
+        <button class="code-tab" type="button" role="tab" id="tab-events" aria-controls="panel-events" aria-selected="true" tabindex="0">events.rs</button>
+        <button class="code-tab" type="button" role="tab" id="tab-metrics" aria-controls="panel-metrics" aria-selected="false" tabindex="-1">metrics.rs</button>
+      </div>
+      <div class="code-panel__body">
+        <div role="tabpanel" id="panel-events" aria-labelledby="tab-events">
+          {{ highlight `use kiomq::{EventParameters, JobState};
+
+// Listen to one state…
+let id = queue.on(JobState::Completed, |evt| async move {
+    if let EventParameters::Completed { job_id, .. } = evt {
+        println!("job {job_id} completed");
+    }
+});
+
+// …or match on every event the queue emits.
+queue.on_all_events(|evt: EventParameters<u64, u8>| async move {
+    match evt {
+        EventParameters::Failed { job_id, reason, .. } => {
+            eprintln!("job {job_id} failed: {}", reason.reason);
+        }
+        EventParameters::Progress { job_id, data } => {
+            println!("job {job_id} is {data}% done");
+        }
+        _ => {}
+    }
+});
+
+// Listeners are removable by id.
+queue.remove_event_listener(id);` "rust" "" }}
+        </div>
+        <div role="tabpanel" id="panel-metrics" aria-labelledby="tab-metrics" hidden>
+          {{ highlight `// Snapshots are keyed by PID, so a multi-process
+// deployment stays distinguishable.
+let snapshots = queue.fetch_proess_metrics().await?;
+
+if let Some(m) = snapshots.values().next() {
+    println!(
+        "cpu: {:.1}%  mem: {} MB  tokio workers: {}",
+        m.process_cpu_usage,
+        m.memory_usage / 1_024 / 1_024,
+        m.rt_metrics.workers_count,
+    );
+}
+
+// Per-worker, per-task timing data.
+for (worker_id, wm) in &queue.fetch_worker_metrics().await? {
+    for task in &wm.tasks {
+        println!(
+            "worker {worker_id} polls={} idle={:?}",
+            task.metrics.total_poll_count,
+            task.metrics.total_idle_duration,
+        );
+    }
+}` "rust" "" }}
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="cta">
+  <div class="container">
+    <h2>Ready to move work off the request path?</h2>
+    <p>
+      Add one dependency, keep your runtime. KioMQ is MIT licensed and developed in the open — issues and
+      pull requests welcome.
+    </p>
+    <div class="cta__actions">
+      <a class="btn btn--primary" href="{{ "docs/getting-started/" | relURL }}">
+        Get started {{ partial "icon.html" "arrow-right" }}
+      </a>
+      <a class="btn btn--ghost" href="{{ $links.docsrs }}" target="_blank" rel="noopener">
+        {{ partial "icon.html" "book" }} API reference
+      </a>
+      <a class="btn btn--ghost" href="{{ $links.discord }}" target="_blank" rel="noopener">
+        {{ partial "icon.html" "discord" }} Join the Discord
+      </a>
+    </div>
+  </div>
+</section>
+{{ end }}

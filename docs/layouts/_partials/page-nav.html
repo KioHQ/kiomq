@@ -1,0 +1,25 @@
+{{- $pages := (where site.RegularPages "Section" "docs").ByWeight -}}
+{{- $prev := false -}}
+{{- $next := false -}}
+{{- range $i, $p := $pages -}}
+  {{- if eq $p.RelPermalink $.RelPermalink -}}
+    {{- if gt $i 0 }}{{ $prev = index $pages (sub $i 1) }}{{ end -}}
+    {{- if lt $i (sub (len $pages) 1) }}{{ $next = index $pages (add $i 1) }}{{ end -}}
+  {{- end -}}
+{{- end -}}
+{{- if or $prev $next }}
+  <nav class="page-nav" aria-label="Pagination">
+    {{- with $prev }}
+      <a class="is-prev" href="{{ .RelPermalink }}" rel="prev">
+        <span>← Previous</span>
+        <strong>{{ .LinkTitle }}</strong>
+      </a>
+    {{- end }}
+    {{- with $next }}
+      <a class="is-next" href="{{ .RelPermalink }}" rel="next">
+        <span>Next →</span>
+        <strong>{{ .LinkTitle }}</strong>
+      </a>
+    {{- end }}
+  </nav>
+{{- end }}

@@ -1,0 +1,17 @@
+{{- if and (ne .Params.toc false) (gt (len .TableOfContents) 80) }}
+  {{/* Below 1180px the rail has nowhere to sit, so it moves above the article
+       as a disclosure rather than disappearing (see .docs-toc in main.css). */}}
+  <aside class="docs-toc" aria-label="On this page">
+    <details class="docs-toc__disclosure" open>
+      <summary class="docs-toc__title">
+        <span>On this page</span>
+        {{ partial "icon.html" "chevron-down" }}
+      </summary>
+      {{ .TableOfContents }}
+    </details>
+  </aside>
+{{- else }}
+  {{/* Keeps the three-column grid's cell count right without leaving a gap in
+       the stacked layout. */}}
+  <div class="docs-toc docs-toc--empty" aria-hidden="true"></div>
+{{- end }}

@@ -1,0 +1,105 @@
+{{- /* Architecture diagram. Colours come from CSS custom properties so it
+       follows the active theme. */ -}}
+<figure class="diagram" style="margin: 0">
+  <svg viewBox="0 0 900 372" role="img" aria-labelledby="diagram-title diagram-desc">
+    <title id="diagram-title">KioMQ data flow</title>
+    <desc id="diagram-desc">
+      Producers call add_job on a queue. The queue keeps jobs in wait, prioritized, delayed and paused
+      lanes inside a pluggable store. Workers reserve jobs from the store, run the processor with a
+      configurable concurrency, and emit events, progress and metrics back to the queue.
+    </desc>
+
+    <defs>
+      <marker id="kio-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 0 10 5 0 10z" style="fill: var(--accent)" />
+      </marker>
+    </defs>
+
+    <g style="font-family: var(--font-sans)">
+      <!-- producers -->
+      <rect x="8" y="94" width="164" height="132" rx="12" style="fill: var(--surface-2); stroke: var(--line-strong)" />
+      <text x="90" y="122" text-anchor="middle" style="font-size: 13.5px; font-weight: 620; fill: var(--text)">Your Tokio app</text>
+      <g style="font-family: var(--font-mono); font-size: 11.5px; fill: var(--text-muted)">
+        <text x="90" y="150" text-anchor="middle">queue.add_job()</text>
+        <text x="90" y="172" text-anchor="middle">queue.bulk_add()</text>
+        <text x="90" y="194" text-anchor="middle">queue.pause_or_resume()</text>
+      </g>
+
+      <!-- queue -->
+      <rect x="236" y="60" width="180" height="200" rx="12" style="fill: var(--surface-2); stroke: var(--line-strong)" />
+      <text x="326" y="88" text-anchor="middle" style="font-size: 13.5px; font-weight: 620; fill: var(--text)">Queue</text>
+      <text x="326" y="106" text-anchor="middle" style="font-family: var(--font-mono); font-size: 10.5px; fill: var(--text-faint)">attempts · backoff · repeat</text>
+      <g>
+        <rect x="252" y="118" width="148" height="26" rx="7" style="fill: var(--accent-soft); stroke: var(--accent-line)" />
+        <text x="326" y="135" text-anchor="middle" style="font-family: var(--font-mono); font-size: 11px; fill: var(--accent-text)">wait</text>
+        <rect x="252" y="150" width="148" height="26" rx="7" style="fill: var(--surface-hi); stroke: var(--line)" />
+        <text x="326" y="167" text-anchor="middle" style="font-family: var(--font-mono); font-size: 11px; fill: var(--text-muted)">prioritized</text>
+        <rect x="252" y="182" width="148" height="26" rx="7" style="fill: var(--surface-hi); stroke: var(--line)" />
+        <text x="326" y="199" text-anchor="middle" style="font-family: var(--font-mono); font-size: 11px; fill: var(--text-muted)">delayed · cron</text>
+        <rect x="252" y="214" width="148" height="26" rx="7" style="fill: var(--surface-hi); stroke: var(--line)" />
+        <text x="326" y="231" text-anchor="middle" style="font-family: var(--font-mono); font-size: 11px; fill: var(--text-muted)">paused</text>
+      </g>
+
+      <!-- store -->
+      <rect x="480" y="60" width="164" height="200" rx="12" style="fill: var(--surface-2); stroke: var(--line-strong)" />
+      <text x="562" y="88" text-anchor="middle" style="font-size: 13.5px; font-weight: 620; fill: var(--text)">Store</text>
+      <text x="562" y="106" text-anchor="middle" style="font-family: var(--font-mono); font-size: 10.5px; fill: var(--text-faint)">state · locks · events</text>
+      <g>
+        <rect x="496" y="130" width="132" height="32" rx="7" style="fill: var(--surface-hi); stroke: var(--line)" />
+        <text x="562" y="150" text-anchor="middle" style="font-family: var(--font-mono); font-size: 11px; fill: var(--text-soft)">InMemoryStore</text>
+        <rect x="496" y="172" width="132" height="32" rx="7" style="fill: var(--accent-soft); stroke: var(--accent-line)" />
+        <text x="562" y="192" text-anchor="middle" style="font-family: var(--font-mono); font-size: 11px; fill: var(--accent-text)">RedisStore</text>
+        <text x="562" y="228" text-anchor="middle" style="font-family: var(--font-mono); font-size: 10.5px; fill: var(--text-faint)">one Store trait</text>
+      </g>
+
+      <!-- workers -->
+      <rect x="708" y="60" width="184" height="200" rx="12" style="fill: var(--surface-2); stroke: var(--line-strong)" />
+      <text x="800" y="88" text-anchor="middle" style="font-size: 13.5px; font-weight: 620; fill: var(--text)">Worker pool</text>
+      <text x="800" y="106" text-anchor="middle" style="font-family: var(--font-mono); font-size: 10.5px; fill: var(--text-faint)">concurrency = num_cpus</text>
+      <g>
+        {{- /* Three busy slots and one free one. Style values stay literal —
+               Go's template CSS escaping rejects interpolated declarations. */}}
+        {{- range $i := seq 0 3 }}
+          {{- $x := add 726 (mul $i 40) }}
+          {{- if lt $i 3 }}
+            <rect x="{{ $x }}" y="120" width="32" height="32" rx="8" style="fill: var(--accent-soft); stroke: var(--accent-line)" />
+            <path d="M{{ add $x 15 }} 128 l-5 8 h4 l-1 8 6-9h-4z" style="fill: var(--accent)" />
+          {{- else }}
+            <rect x="{{ $x }}" y="120" width="32" height="32" rx="8" style="fill: var(--surface-hi); stroke: var(--line)" />
+          {{- end }}
+        {{- end }}
+      </g>
+      <g style="font-family: var(--font-mono); font-size: 11px; fill: var(--text-muted)">
+        <text x="800" y="178" text-anchor="middle">Worker::new_async()</text>
+        <text x="800" y="198" text-anchor="middle">Worker::new_sync()</text>
+        <text x="800" y="222" text-anchor="middle" style="fill: var(--text-faint); font-size: 10.5px">lock renewal ·</text>
+        <text x="800" y="238" text-anchor="middle" style="fill: var(--text-faint); font-size: 10.5px">stalled recovery</text>
+      </g>
+
+      <!-- flow arrows -->
+      <g style="stroke: var(--accent); stroke-width: 1.6; fill: none">
+        <path d="M176 160 H228" marker-end="url(#kio-arrow)" />
+        <path d="M420 160 H472" marker-end="url(#kio-arrow)" />
+        <path d="M648 160 H700" marker-end="url(#kio-arrow)" />
+      </g>
+      <g style="font-family: var(--font-mono); font-size: 10.5px; fill: var(--text-faint)" text-anchor="middle">
+        <text x="202" y="150">enqueue</text>
+        <text x="446" y="150">persist</text>
+        <text x="674" y="150">reserve</text>
+      </g>
+
+      <!-- feedback loop -->
+      <g style="stroke: var(--line-strong); stroke-width: 1.5; fill: none; stroke-dasharray: 5 5">
+        <path d="M800 268 V318 H326 V268" marker-end="url(#kio-arrow)" />
+      </g>
+      <rect x="444" y="302" width="238" height="30" rx="8" style="fill: var(--surface); stroke: var(--line-strong)" />
+      <text x="563" y="321" text-anchor="middle" style="font-family: var(--font-mono); font-size: 11px; fill: var(--text-muted)">
+        events · progress · metrics
+      </text>
+    </g>
+  </svg>
+  <figcaption class="diagram__caption">
+    Swap <code>InMemoryStore</code> for <code>RedisStore</code> and the same worker code runs on as many
+    machines as you like.
+  </figcaption>
+</figure>

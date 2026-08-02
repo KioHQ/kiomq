@@ -1,0 +1,60 @@
+{{- $current := .RelPermalink -}}
+{{- $section := site.GetPage "/docs" -}}
+{{- $pages := where site.RegularPages "Section" "docs" -}}
+{{- $pages = $pages.ByWeight -}}
+{{/* The whole tree is wrapped in a disclosure. It ships open, so no-JS and
+     desktop are unaffected; site.js collapses it on small screens, where an
+     always-expanded 20-link tree would otherwise sit above every article. */}}
+<aside class="docs-sidebar" aria-label="Documentation navigation">
+ <details class="docs-nav" open>
+  <summary class="docs-nav__summary">
+    <span>Browse docs</span>
+    {{ partial "icon.html" "chevron-down" }}
+  </summary>
+  <div class="docs-nav__body">
+  <div class="sidebar__group">
+    <p class="sidebar__title">Documentation</p>
+    <ul class="sidebar__list">
+      <li>
+        <a href="{{ $section.RelPermalink }}" {{ if eq $current $section.RelPermalink }}aria-current="page"{{ end }}>
+          Overview
+        </a>
+      </li>
+    </ul>
+  </div>
+
+  {{- $groups := slice -}}
+  {{- range $pages -}}
+    {{- $g := or .Params.group "Guides" -}}
+    {{- if not (in $groups $g) }}{{ $groups = $groups | append $g }}{{ end -}}
+  {{- end }}
+
+  {{- range $groups }}
+    {{- $group := . }}
+    <div class="sidebar__group">
+      <p class="sidebar__title">{{ $group }}</p>
+      <ul class="sidebar__list">
+        {{- range $pages }}
+          {{- if eq (or .Params.group "Guides") $group }}
+            <li>
+              <a href="{{ .RelPermalink }}" {{ if eq $current .RelPermalink }}aria-current="page"{{ end }}>
+                {{ .LinkTitle }}
+              </a>
+            </li>
+          {{- end }}
+        {{- end }}
+      </ul>
+    </div>
+  {{- end }}
+
+  <div class="sidebar__group">
+    <p class="sidebar__title">External</p>
+    <ul class="sidebar__list">
+      <li><a href="{{ site.Params.links.docsrs }}" target="_blank" rel="noopener">API reference ↗</a></li>
+      <li><a href="{{ site.Params.links.crates }}" target="_blank" rel="noopener">crates.io ↗</a></li>
+      <li><a href="{{ site.Params.links.examples }}" target="_blank" rel="noopener">Examples ↗</a></li>
+    </ul>
+  </div>
+  </div>
+ </details>
+</aside>
