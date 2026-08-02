@@ -1,0 +1,10 @@
+{{- $index := "index.json" | relURL -}}
+<dialog class="search-dialog" id="search-dialog" data-search-index="{{ $index }}" aria-label="Search documentation">
+  <div class="search-dialog__field">
+    {{ partial "icon.html" "search" }}
+    <input type="search" placeholder="Search the docs…" autocomplete="off" spellcheck="false" aria-label="Search query" />
+    <kbd>Esc</kbd>
+  </div>
+  <ul class="search-results" role="listbox" aria-label="Search results"></ul>
+  <p class="search-empty">Type to search the docs.</p>
+</dialog>

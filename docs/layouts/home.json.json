@@ -1,0 +1,11 @@
+{{- $index := slice -}}
+{{- range site.RegularPages -}}
+  {{- $index = $index | append (dict
+    "title" .LinkTitle
+    "section" (cond (eq .Section "docs") (or .Params.group "Guides") "")
+    "url" .RelPermalink
+    "summary" (.Summary | plainify | htmlUnescape | htmlUnescape | chomp | truncate 150)
+    "body" (.Plain | htmlUnescape | htmlUnescape | chomp | replaceRE `\s+` " " | truncate 12000 "")
+  ) -}}
+{{- end -}}
+{{- $index | jsonify -}}
