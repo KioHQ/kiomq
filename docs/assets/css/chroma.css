@@ -1,0 +1,183 @@
+/* ==========================================================================
+   Chroma syntax theme — tuned to the KioMQ palette (navy / cream / amber)
+   ========================================================================== */
+
+:root {
+  --syn-text: #dce3ea;
+  --syn-comment: #67728a;
+  --syn-keyword: #f2a9c4;
+  --syn-type: #f5b25c;
+  --syn-func: #8fc6f0;
+  --syn-string: #a7d9a0;
+  --syn-number: #c7a9f5;
+  --syn-attr: #e0c084;
+  --syn-punct: #93a0b3;
+  --syn-lineno: #4d5768;
+}
+
+:root[data-theme="light"] {
+  --syn-text: #1b2230;
+  --syn-comment: #79839a;
+  --syn-keyword: #a03063;
+  --syn-type: #90570d;
+  --syn-func: #245ba6;
+  --syn-string: #2a7340;
+  --syn-number: #6a3fa0;
+  --syn-attr: #8a5a10;
+  --syn-punct: #5c6779;
+  --syn-lineno: #a8b0bd;
+}
+
+.highlight pre code,
+.highlight code {
+  color: var(--syn-text);
+}
+
+/* comments */
+.chroma .c,
+.chroma .ch,
+.chroma .cm,
+.chroma .c1,
+.chroma .cs,
+.chroma .cpf {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+
+/* preprocessor / rust attributes */
+.chroma .cp,
+.chroma .cpf {
+  color: var(--syn-attr);
+  font-style: normal;
+}
+
+/* keywords */
+.chroma .k,
+.chroma .kc,
+.chroma .kd,
+.chroma .kn,
+.chroma .kp,
+.chroma .kr {
+  color: var(--syn-keyword);
+}
+
+/* types */
+.chroma .kt,
+.chroma .nc,
+.chroma .nn,
+.chroma .ni,
+.chroma .no {
+  color: var(--syn-type);
+}
+
+/* functions, macros, decorators */
+.chroma .nf,
+.chroma .fm,
+.chroma .nd {
+  color: var(--syn-func);
+}
+
+/* names, variables, attributes (TOML keys, HTML attrs) */
+.chroma .n,
+.chroma .nv,
+.chroma .vc,
+.chroma .vg,
+.chroma .vi,
+.chroma .py {
+  color: var(--syn-text);
+}
+
+.chroma .na,
+.chroma .nl,
+.chroma .nt {
+  color: var(--syn-attr);
+}
+
+/* builtins */
+.chroma .nb,
+.chroma .bp {
+  color: var(--syn-type);
+}
+
+/* strings */
+.chroma .s,
+.chroma .sa,
+.chroma .sb,
+.chroma .sc,
+.chroma .dl,
+.chroma .sd,
+.chroma .s2,
+.chroma .sh,
+.chroma .si,
+.chroma .sx,
+.chroma .s1,
+.chroma .ss {
+  color: var(--syn-string);
+}
+
+.chroma .se,
+.chroma .sr {
+  color: var(--syn-number);
+}
+
+/* numbers */
+.chroma .m,
+.chroma .mb,
+.chroma .mf,
+.chroma .mh,
+.chroma .mi,
+.chroma .il,
+.chroma .mo {
+  color: var(--syn-number);
+}
+
+/* operators & punctuation */
+.chroma .o,
+.chroma .ow {
+  color: var(--syn-keyword);
+}
+
+.chroma .p {
+  color: var(--syn-punct);
+}
+
+/* generic / diff */
+.chroma .gd {
+  color: #e08585;
+}
+
+.chroma .gi {
+  color: #7fc493;
+}
+
+.chroma .ge {
+  font-style: italic;
+}
+
+.chroma .gs {
+  font-weight: 600;
+}
+
+.chroma .gh,
+.chroma .gu {
+  color: var(--syn-func);
+  font-weight: 600;
+}
+
+.chroma .err {
+  color: #e08585;
+}
+
+/* line numbers & highlighted lines */
+.chroma .lnt,
+.chroma .ln,
+.chroma .lnlinks {
+  color: var(--syn-lineno);
+  user-select: none;
+}
+
+.chroma .hl {
+  display: block;
+  background: rgba(245, 178, 92, 0.1);
+  box-shadow: inset 2px 0 0 var(--amber);
+}
