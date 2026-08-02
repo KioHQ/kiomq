@@ -1,0 +1,75 @@
+baseURL = "https://kiohq.github.io/kiomq/"
+locale = "en-US"
+title = "KioMQ"
+enableRobotsTXT = true
+disableKinds = ["taxonomy", "term"]
+
+[params]
+  tagline = "Background jobs at Rust speed"
+  description = "An all-in-one task-queue and orchestration library for Rust. Built for Tokio — scale up across cores, scale out across machines."
+  version = "0.2.1"
+  # Transparent variants, extracted from assets/logo-dark.png, so the artwork
+  # sits directly on the hero's navy instead of inside its own rectangle.
+  logo = "img/kiomq-logo-alpha.png"
+  mark = "img/kiomq-mark.png"
+  ogImage = "img/og.png"
+
+[params.links]
+  github = "https://github.com/KioHQ/kiomq"
+  crates = "https://crates.io/crates/kiomq"
+  docsrs = "https://docs.rs/kiomq"
+  discord = "https://discord.gg/Y6Vy2k9Rf"
+  license = "https://github.com/KioHQ/kiomq/blob/main/LICENSE"
+  examples = "https://github.com/KioHQ/kiomq/tree/main/examples"
+
+# The repository CHANGELOG is mounted as an asset so the changelog page renders
+# the real file instead of a copy that drifts. Declaring an assets mount replaces
+# the default one, so `assets` itself is re-declared here.
+[[module.mounts]]
+  source = "assets"
+  target = "assets"
+
+[[module.mounts]]
+  source = "../CHANGELOG.md"
+  target = "assets/CHANGELOG.md"
+
+[menus]
+  [[menus.main]]
+    name = "Docs"
+    pageRef = "/docs"
+    weight = 10
+  [[menus.main]]
+    name = "Changelog"
+    pageRef = "/docs/changelog"
+    weight = 20
+  [[menus.main]]
+    name = "API reference"
+    url = "https://docs.rs/kiomq"
+    weight = 30
+    [menus.main.params]
+      external = true
+
+# The header's star count is fetched at build time; keep it for a day so
+# repeated local builds don't hit the GitHub API.
+[caches.getresource]
+  dir = ":cacheDir/:project"
+  maxAge = "24h"
+
+[markup]
+  [markup.goldmark.renderer]
+    unsafe = true
+  [markup.highlight]
+    noClasses = false
+    lineNos = false
+    tabWidth = 4
+    guessSyntax = false
+  [markup.tableOfContents]
+    startLevel = 2
+    endLevel = 3
+
+[outputs]
+  home = ["HTML", "RSS", "JSON"]
+
+[build]
+  [build.buildStats]
+    enable = false
