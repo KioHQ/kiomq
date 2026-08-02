@@ -1,0 +1,19 @@
+{{- if eq .Type "alert" -}}
+  {{- $variants := dict
+    "note" (dict "class" "note" "icon" "info" "label" "Note")
+    "tip" (dict "class" "tip" "icon" "check-circle" "label" "Tip")
+    "important" (dict "class" "note" "icon" "bolt" "label" "Important")
+    "warning" (dict "class" "warning" "icon" "alert" "label" "Warning")
+    "caution" (dict "class" "danger" "icon" "octagon" "label" "Caution")
+  -}}
+  {{- $v := or (index $variants .AlertType) (dict "class" "note" "icon" "info" "label" "Note") -}}
+  <div class="callout callout--{{ $v.class }}">
+    <span class="callout__icon">{{ partial "icon.html" $v.icon }}</span>
+    <div class="callout__body">
+      <span class="callout__title">{{ or .AlertTitle $v.label }}</span>
+      {{- .Text | strings.TrimSpace | safeHTML -}}
+    </div>
+  </div>
+{{- else -}}
+  <blockquote>{{- .Text | strings.TrimSpace | safeHTML -}}</blockquote>
+{{- end -}}

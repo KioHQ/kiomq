@@ -1,0 +1,76 @@
+{{- /*
+  Renders the repository's CHANGELOG.md, mounted into assets/ by hugo.toml.
+  Each `## vX.Y.Z (date)` section becomes a release block with its own anchor,
+  preceded by an index of every release.
+*/ -}}
+{{- $file := resources.Get "CHANGELOG.md" -}}
+{{- if not $file -}}
+  {{- errorf "changelog shortcode: CHANGELOG.md not found — check the module.mounts entry in hugo.toml" -}}
+{{- end -}}
+
+{{- /* Everything before the first `## ` heading is the file's own preamble. */ -}}
+{{- $chunks := after 1 (split $file.Content "\n## ") -}}
+{{- $releases := slice -}}
+{{- range $chunks -}}
+  {{- $lines := split . "\n" -}}
+  {{- $head := trim (index $lines 0) " \r" -}}
+  {{- $body := delimit (after 1 $lines) "\n" -}}
+
+  {{- /* Split "v0.2.1 (2026-07-05)" into version and date. */ -}}
+  {{- $version := $head -}}
+  {{- $date := "" -}}
+  {{- with findRESubmatch `^(\S+)\s+\((.+)\)$` $head 1 -}}
+    {{- $m := index . 0 -}}
+    {{- $version = index $m 1 -}}
+    {{- $date = index $m 2 -}}
+  {{- end -}}
+
+  {{- /* Commit refs arrive as `([abc1234](url))`; drop the wrapping parens so
+         the link can be styled as a standalone chip. */ -}}
+  {{- $body = replaceRE `\(\[([0-9a-f]{7,})\]\(([^)]+)\)\)` `[$1]($2)` $body -}}
+  {{- /* Collapse the blank lines between bullets so each category is one list. */ -}}
+  {{- $body = replaceRE `\n{2,}(- )` "\n$1" $body -}}
+
+  {{- $releases = $releases | append (dict
+    "version" $version
+    "date" $date
+    "anchor" (anchorize $version)
+    "body" (trim $body "\n ")
+  ) -}}
+{{- end -}}
+
+{{- if $releases }}
+  <nav class="release-index" aria-label="Releases">
+    {{- range $releases }}
+      <a href="#{{ .anchor }}">{{ .version }}</a>
+    {{- end }}
+  </nav>
+
+  {{- range $i, $r := $releases }}
+    <section class="release" id="{{ $r.anchor }}">
+      <div class="release__head">
+        <h2>
+          <a href="#{{ $r.anchor }}">{{ $r.version }}</a>
+        </h2>
+        {{- if eq $i 0 }}<span class="release__tag">Latest</span>{{ end }}
+        {{- with $r.date }}
+          <span class="release__date">
+            {{- if findRE `^\d{4}-\d{2}-\d{2}$` . -}}
+              {{ time.Format "2 January 2006" . }}
+            {{- else -}}
+              {{ . }}
+            {{- end -}}
+          </span>
+        {{- end }}
+        <a class="release__compare" href="{{ site.Params.links.github }}/releases/tag/{{ $r.version }}" target="_blank" rel="noopener">
+          release notes ↗
+        </a>
+      </div>
+      <div class="release__body">
+        {{ $r.body | markdownify }}
+      </div>
+    </section>
+  {{- end }}
+{{- else }}
+  <p>No releases found in <code>CHANGELOG.md</code>.</p>
+{{- end }}

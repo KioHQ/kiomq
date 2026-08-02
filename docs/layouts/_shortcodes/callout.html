@@ -1,0 +1,15 @@
+{{- $variants := dict
+  "note" (dict "class" "note" "icon" "info" "label" "Note")
+  "tip" (dict "class" "tip" "icon" "check-circle" "label" "Tip")
+  "warning" (dict "class" "warning" "icon" "alert" "label" "Warning")
+  "danger" (dict "class" "danger" "icon" "octagon" "label" "Careful")
+-}}
+{{- $kind := .Get "type" | default "note" -}}
+{{- $v := or (index $variants $kind) (index $variants "note") -}}
+<div class="callout callout--{{ $v.class }}">
+  <span class="callout__icon">{{ partial "icon.html" $v.icon }}</span>
+  <div class="callout__body">
+    <span class="callout__title">{{ .Get "title" | default $v.label }}</span>
+    {{ .Inner | markdownify }}
+  </div>
+</div>

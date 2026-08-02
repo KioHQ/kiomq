@@ -1,0 +1,23 @@
+{{- /* Wrap markdown tables so wide ones scroll instead of crushing a column. */ -}}
+<div class="table-wrap">
+  <table>
+    <thead>
+      {{- range .THead }}
+        <tr>
+          {{- range . }}
+            <th {{ with .Alignment }}style="{{ printf "text-align: %s" . | safeCSS }}"{{ end }}>{{ .Text }}</th>
+          {{- end }}
+        </tr>
+      {{- end }}
+    </thead>
+    <tbody>
+      {{- range .TBody }}
+        <tr>
+          {{- range . }}
+            <td {{ with .Alignment }}style="{{ printf "text-align: %s" . | safeCSS }}"{{ end }}>{{ .Text }}</td>
+          {{- end }}
+        </tr>
+      {{- end }}
+    </tbody>
+  </table>
+</div>
