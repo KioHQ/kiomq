@@ -1,0 +1,28 @@
+{{- /*
+  Returns the repository's star count, formatted (e.g. "128" or "15.8k"), or an
+  empty string when GitHub can't be reached. Callers must degrade gracefully —
+  the build must never fail because of this.
+*/ -}}
+{{- $stars := "" -}}
+{{- $url := "https://api.github.com/repos/KioHQ/kiomq" -}}
+{{- with try (resources.GetRemote $url) -}}
+  {{- with .Err -}}
+    {{- warnf "github-stars: request failed (%s) — rendering without a count" . -}}
+  {{- else with .Value -}}
+    {{- with try (.Content | transform.Unmarshal) -}}
+      {{- with .Err -}}
+        {{- warnf "github-stars: unexpected response (%s) — rendering without a count" . -}}
+      {{- else with .Value -}}
+        {{- /* JSON numbers unmarshal to float64 — cast before formatting. */ -}}
+        {{- with .stargazers_count -}}
+          {{- if ge . 1000 -}}
+            {{- $stars = printf "%.1fk" (div (float .) 1000.0) -}}
+          {{- else -}}
+            {{- $stars = printf "%d" (int .) -}}
+          {{- end -}}
+        {{- end -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- return $stars -}}

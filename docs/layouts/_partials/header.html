@@ -1,0 +1,81 @@
+{{- $links := .Site.Params.links -}}
+{{- $stars := partialCached "github-stars.html" . -}}
+<header class="site-header">
+  <div class="container site-header__inner">
+    {{/* Left: brand */}}
+    <a class="brand" href="{{ "" | relURL }}" aria-label="KioMQ home">
+      <img
+        class="brand__mark"
+        src="{{ .Site.Params.mark | relURL }}"
+        alt=""
+        width="57"
+        height="30"
+        loading="eager"
+        decoding="async"
+      />
+      <span>KioMQ</span>
+    </a>
+
+    {{/* Middle: primary navigation */}}
+    <nav class="site-nav" id="site-nav" aria-label="Main">
+      {{- range .Site.Menus.main }}
+        {{- $href := .URL }}
+        {{- $active := and (not .Params.external) (hasPrefix $.RelPermalink $href) }}
+        <a
+          href="{{ $href }}"
+          {{ if $active }}aria-current="true"{{ end }}
+          {{ if .Params.external }}target="_blank" rel="noopener"{{ end }}
+        >{{ .Name }}</a>
+      {{- end }}
+
+      {{/* Shown inside the dropdown on small screens, where the right-hand
+           cluster collapses. */}}
+      <span class="site-nav__extra">
+        <a href="{{ $links.github }}" target="_blank" rel="noopener">GitHub ↗</a>
+        <a href="{{ $links.discord }}" target="_blank" rel="noopener">Discord ↗</a>
+      </span>
+    </nav>
+
+    {{/* Right: search, community, theme, call to action */}}
+    <div class="header-actions">
+      <button class="search-btn" type="button" data-search-open aria-label="Search docs">
+        {{ partial "icon.html" "search" }}
+        <span>Search</span>
+        <kbd>Ctrl K</kbd>
+      </button>
+
+      <a class="icon-btn" href="{{ $links.discord }}" target="_blank" rel="noopener" aria-label="KioMQ on Discord">
+        {{ partial "icon.html" "discord" }}
+      </a>
+
+      <a
+        class="gh-pill"
+        href="{{ $links.github }}"
+        target="_blank"
+        rel="noopener"
+        aria-label="Star KioMQ on GitHub{{ with $stars }} — {{ . }} stars{{ end }}"
+      >
+        {{ partial "icon.html" "github" }}
+        <span>Star</span>
+        {{- with $stars }}<span class="gh-pill__count">{{ . }}</span>{{ end }}
+      </a>
+
+      <button class="icon-btn" type="button" data-theme-toggle aria-label="Toggle colour theme">
+        {{ partial "icon.html" "sun" }}{{ partial "icon.html" "moon" }}
+      </button>
+
+      <a class="btn btn--primary btn--sm" href="{{ "docs/getting-started/" | relURL }}">Get started</a>
+
+      <button
+        class="icon-btn nav-toggle"
+        type="button"
+        data-nav-toggle
+        aria-controls="site-nav"
+        aria-expanded="false"
+        aria-label="Toggle navigation"
+      >
+        {{ partial "icon.html" "menu" }}
+      </button>
+    </div>
+  </div>
+</header>

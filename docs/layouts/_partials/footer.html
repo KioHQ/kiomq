@@ -1,0 +1,51 @@
+{{- $links := .Site.Params.links -}}
+<footer class="site-footer">
+  <div class="container">
+    <div class="site-footer__grid">
+      <div class="site-footer__brand">
+        <a class="brand" href="{{ "" | relURL }}">
+          <img class="brand__mark" src="{{ .Site.Params.mark | relURL }}" alt="" width="57" height="30" loading="lazy" decoding="async" />
+          <span>KioMQ</span>
+        </a>
+        <p class="site-footer__blurb">
+          An all-in-one task-queue and orchestration library for Rust, built for Tokio.
+        </p>
+      </div>
+
+      <div>
+        <h4>Documentation</h4>
+        <ul>
+          <li><a href="{{ "docs/" | relURL }}">Overview</a></li>
+          <li><a href="{{ "docs/getting-started/" | relURL }}">Getting started</a></li>
+          <li><a href="{{ "docs/configuration/" | relURL }}">Configuration</a></li>
+          <li><a href="{{ "docs/changelog/" | relURL }}">Changelog</a></li>
+        </ul>
+      </div>
+
+      <div>
+        <h4>Reference</h4>
+        <ul>
+          <li><a href="{{ $links.docsrs }}" target="_blank" rel="noopener">docs.rs</a></li>
+          <li><a href="{{ $links.crates }}" target="_blank" rel="noopener">crates.io</a></li>
+          <li><a href="{{ $links.examples }}" target="_blank" rel="noopener">Examples</a></li>
+          <li><a href="{{ "docs/benchmarks/" | relURL }}">Benchmarks</a></li>
+        </ul>
+      </div>
+
+      <div>
+        <h4>Community</h4>
+        <ul>
+          <li><a href="{{ $links.github }}" target="_blank" rel="noopener">GitHub</a></li>
+          <li><a href="{{ $links.discord }}" target="_blank" rel="noopener">Discord</a></li>
+          <li><a href="{{ $links.github }}/issues" target="_blank" rel="noopener">Issues</a></li>
+          <li><a href="{{ "docs/contributing/" | relURL }}">Contributing</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="site-footer__bottom">
+      <span>MIT licensed · © {{ now.Year }} KioMQ contributors</span>
+      <span>Built with Hugo · v{{ .Site.Params.version }} on crates.io</span>
+    </div>
+  </div>
+</footer>

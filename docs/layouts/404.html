@@ -1,0 +1,18 @@
+{{ define "main" }}
+<section class="cta" style="padding: 140px 0 120px">
+  <div class="container">
+    <p class="eyebrow">404</p>
+    <h2 style="margin-top: 12px">This page ran off somewhere</h2>
+    <p>
+      The roadrunner is fast, but not that fast. The page you asked for doesn't exist — try the docs, or
+      search from the header.
+    </p>
+    <div class="cta__actions">
+      <a class="btn btn--primary" href="{{ "docs/" | relURL }}">
+        {{ partial "icon.html" "book" }} Browse the docs
+      </a>
+      <a class="btn btn--ghost" href="{{ "" | relURL }}">Back to the homepage</a>
+    </div>
+  </div>
+</section>
+{{ end }}
