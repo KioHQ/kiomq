@@ -132,6 +132,119 @@
     });
   });
 
+  /* --------------------------------------------------------------- demo */
+  var demoVideo = document.querySelector("[data-demo-video]");
+  if (demoVideo) {
+    /* `from` is when the clip reaches each section on its own; `at` is where a
+       button jumps to. Both are needed: the status line and the active button
+       have to keep following playback after a jump. */
+    var SECTIONS = [
+      { from: 0, at: 2.6, label: "queues & progress" },
+      { from: 5.4, at: 6, label: "job detail" },
+      { from: 8.6, at: 11, label: "worker metrics" }
+    ];
+
+    var now = document.querySelector("[data-demo-ctx]");
+    var keyBtn = document.querySelector("[data-demo-toggle]");
+    var keyLabel = document.querySelector("[data-demo-state]");
+    var tabs = Array.prototype.slice.call(
+      document.querySelectorAll("[data-views] [data-view-at]")
+    );
+    var shown = -1;
+
+    var markShown = function (i) {
+      shown = i;
+      if (now) now.textContent = SECTIONS[i].label;
+      tabs.forEach(function (t, n) {
+        t.setAttribute("aria-selected", n === i ? "true" : "false");
+        t.tabIndex = n === i ? 0 : -1;
+      });
+    };
+
+    demoVideo.addEventListener("timeupdate", function () {
+      var i = 0;
+      for (var n = 0; n < SECTIONS.length; n++) {
+        if (demoVideo.currentTime >= SECTIONS[n].from) i = n;
+      }
+      if (i !== shown) markShown(i);
+    });
+
+    tabs.forEach(function (tab, i) {
+      tab.addEventListener("click", function () {
+        demoVideo.currentTime = SECTIONS[i].at;
+        if (demoVideo.dataset.stopped !== "1" && demoVideo.paused) {
+          var p = demoVideo.play();
+          if (p && p.catch) p.catch(function () {});
+        }
+        markShown(i);
+      });
+      tab.addEventListener("keydown", function (e) {
+        var n = e.key === "ArrowRight" ? i + 1 : e.key === "ArrowLeft" ? i - 1 : -1;
+        if (n < 0 || n >= tabs.length) return;
+        e.preventDefault();
+        tabs[n].focus();
+        tabs[n].click();
+      });
+    });
+
+    if (tabs.length) markShown(0);
+
+    var setPlaying = function (on) {
+      if (on) {
+        var p = demoVideo.play();
+        if (p && p.catch) p.catch(function () {});
+      } else {
+        demoVideo.pause();
+      }
+      if (keyBtn) keyBtn.setAttribute("aria-pressed", on ? "false" : "true");
+      if (keyLabel) keyLabel.textContent = on ? "pause" : "play";
+    };
+
+    if (keyBtn) {
+      keyBtn.addEventListener("click", function () {
+        demoVideo.dataset.stopped = demoVideo.paused ? "" : "1";
+        setPlaying(demoVideo.paused);
+      });
+    }
+
+    /* The status line advertises `space`, so space had better do it — but only
+       while the hero is in view and nothing else has focus. */
+    document.addEventListener("keydown", function (e) {
+      if (e.key !== " " && e.code !== "Space") return;
+      var t = e.target;
+      if (t && (t.matches("input, textarea, select, button, a, [contenteditable]") || t.isContentEditable)) return;
+      var box = demoVideo.getBoundingClientRect();
+      if (box.bottom < 80 || box.top > window.innerHeight - 80) return;
+      e.preventDefault();
+      demoVideo.dataset.stopped = demoVideo.paused ? "" : "1";
+      setPlaying(demoVideo.paused);
+    });
+
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      demoVideo.removeAttribute("autoplay");
+      demoVideo.dataset.stopped = "1";
+      setPlaying(false);
+    }
+
+    /* Decoding costs nothing once the hero has scrolled away. */
+    if ("IntersectionObserver" in window) {
+      new IntersectionObserver(
+        function (entries) {
+          entries.forEach(function (entry) {
+            if (demoVideo.dataset.stopped === "1") return;
+            if (entry.isIntersecting) {
+              var p = demoVideo.play();
+              if (p && p.catch) p.catch(function () {});
+            } else {
+              demoVideo.pause();
+            }
+          });
+        },
+        { rootMargin: "120px" }
+      ).observe(demoVideo);
+    }
+  }
+
   /* ----------------------------------------------------------- code tabs */
   document.querySelectorAll("[data-tabs]").forEach(function (group) {
     var tabs = Array.prototype.slice.call(group.querySelectorAll('[role="tab"]'));
