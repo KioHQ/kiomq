@@ -1,50 +1,93 @@
 {{ define "main" }}
 {{- $links := .Site.Params.links -}}
 
+{{/*
+  Hatchet's shape: a centred copy stack, then the product given the full width
+  directly beneath it, running off the bottom of the fold so the cut edge pulls
+  the scroll. Theirs is a canvas drawn live; ours is the recording, held at
+  roughly its native 1174px so nothing is stretched.
+*/}}
 <section class="hero">
   <div class="container hero__inner">
-    <div>
-      <p class="eyebrow">Rust · Tokio · MIT licensed</p>
-      <h1>Background jobs at <em>Rust speed</em>.</h1>
-      <p class="hero__lede">
-        <strong>KioMQ</strong> is an all-in-one task queue and orchestration library for Rust. Enqueue
-        work, process it across a pool of workers, and keep it durable with Redis — all inside the Tokio
-        runtime you already have.
-      </p>
+    <p class="eyebrow">Rust &middot; Tokio &middot; MIT licensed</p>
+    <h1>Background jobs at <em>Rust speed</em>.</h1>
+    <p class="hero__lede">
+      <strong>KioMQ</strong> is an all-in-one task queue and orchestration library for Rust. Enqueue
+      work, process it across a pool of workers, and keep it durable with Redis — all inside the Tokio
+      runtime you already have.
+    </p>
 
-      <div class="install" data-copy-text="cargo add kiomq">
-        <span class="prompt">$</span><code>cargo add kiomq</code>
-      </div>
-
-      <div class="hero__cta">
-        <a class="btn btn--primary" href="{{ "docs/getting-started/" | relURL }}">
-          Get started {{ partial "icon.html" "arrow-right" }}
-        </a>
-        <a class="btn btn--ghost" href="{{ $links.github }}" target="_blank" rel="noopener">
-          {{ partial "icon.html" "github" }} View on GitHub
-        </a>
-      </div>
-
-      <p class="hero__badges">
-        <span>async &amp; sync processors</span>
-        <span>cron &amp; repeat policies</span>
-        <span>retries with backoff</span>
-        <span>near-zero idle CPU</span>
-      </p>
-    </div>
-
-    <div>
-      <img
-        class="hero__logo"
-        src="{{ .Site.Params.logo | relURL }}"
-        alt="KioMQ — a roadrunner carrying a lightning bolt"
-        width="669"
-        height="544"
-        loading="eager"
-        decoding="async"
-      />
+    <div class="install" data-copy-text="cargo add kiomq">
+      <span class="prompt">$</span><code>cargo add kiomq</code>
     </div>
   </div>
+
+  {{/* Three real views in the clip, so the row is navigation into it rather
+       than decoration — each button seeks, and the active one keeps tracking
+       playback afterwards. */}}
+  <div class="hero__views" role="tablist" aria-label="Dashboard views" data-views>
+    {{- $views := slice
+      (dict "id" "queues" "label" "Queues & progress"
+        "hint" "Every queue, counts by state, and per-job progress bars.")
+      (dict "id" "detail" "label" "Job detail"
+        "hint" "Attempts, delay, timings and the token for a single job.")
+      (dict "id" "metrics" "label" "Worker metrics"
+        "hint" "Poll counts, idle time, a duration histogram and percentiles.")
+    -}}
+    {{- range $i, $v := $views }}
+      <button
+        class="hero__view"
+        type="button"
+        role="tab"
+        id="view-{{ $v.id }}"
+        data-view-at="{{ $v.id }}"
+        aria-selected="{{ if eq $i 0 }}true{{ else }}false{{ end }}"
+        tabindex="{{ if eq $i 0 }}0{{ else }}-1{{ end }}"
+      >
+        <span class="hero__view-label">{{ $v.label }}</span>
+        <span class="hero__view-hint">{{ $v.hint }}</span>
+      </button>
+    {{- end }}
+  </div>
+
+  <figure class="hero__demo">
+    <div class="hero__demo-bar">
+      <span class="hero__demo-pip" aria-hidden="true"></span>
+      <span class="hero__demo-name">kiodsh</span>
+      <span class="hero__demo-now" data-demo-ctx>queues &amp; progress</span>
+      <button class="hero__demo-btn" type="button" data-demo-toggle aria-pressed="false">
+        <kbd>space</kbd> <span data-demo-state>pause</span>
+      </button>
+    </div>
+
+    <video
+      class="hero__demo-video"
+      data-demo-video
+      poster="{{ "img/demo-poster.jpg" | relURL }}"
+      width="1174"
+      height="676"
+      autoplay
+      muted
+      loop
+      playsinline
+      preload="metadata"
+    >
+      <source src="{{ "img/demo.mp4" | relURL }}" type="video/mp4" />
+    </video>
+
+    {{/* One figcaption only, so the screen-reader description of the recording
+         and the visible note share it. */}}
+    <figcaption class="hero__demo-note">
+      <span class="visually-hidden">
+        A recording of kiodsh, KioMQ's terminal dashboard: five queues with their job counts,
+        counters for the waiting, prioritized, delayed, stalled, paused, active, completed and failed
+        states, a list of running jobs with advancing progress bars, then one job's metadata and
+        per-worker poll timings with a duration histogram and percentiles.
+      </span>
+      <span class="hero__demo-soon">soon</span>
+      <span><code>kiodsh</code>, the terminal dashboard in this recording, is coming soon.</span>
+    </figcaption>
+  </figure>
 </section>
 
 <section class="section">

@@ -182,6 +182,21 @@ kbd {
   padding-inline: 24px;
 }
 
+/* Text for assistive tech only — the caption describes the recording, which is
+   otherwise unreadable to a screen reader. Clipped rather than display:none so
+   it stays in the accessibility tree. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 .skip-link {
   position: absolute;
   left: -9999px;
@@ -452,133 +467,6 @@ kbd {
 .btn--ghost:hover {
   background: var(--surface-2);
   border-color: var(--accent-line);
-}
-
-/* ==========================================================================
-   hero — intentionally dark in both themes so the logo sits on its own navy
-   ========================================================================== */
-
-.hero {
-  position: relative;
-  overflow: clip;
-  background: var(--brand-navy);
-  border-bottom: 1px solid rgba(232, 236, 239, 0.1);
-  color: var(--brand-cream);
-  isolation: isolate;
-}
-
-.hero::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -2;
-  background-image: linear-gradient(rgba(232, 236, 239, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(232, 236, 239, 0.045) 1px, transparent 1px);
-  background-size: 56px 56px;
-  mask-image: radial-gradient(ellipse 90% 70% at 50% 22%, #000 20%, transparent 78%);
-}
-
-.hero::after {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  top: -320px;
-  left: 50%;
-  width: 900px;
-  height: 620px;
-  transform: translateX(-50%);
-  background: radial-gradient(ellipse at center, rgba(245, 178, 92, 0.16), transparent 62%);
-  pointer-events: none;
-}
-
-.hero__inner {
-  display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
-  gap: 56px;
-  align-items: center;
-  padding: 84px 24px 92px;
-}
-
-.hero__logo {
-  width: min(420px, 100%);
-  margin-inline: auto;
-  filter: drop-shadow(0 24px 48px rgba(0, 0, 0, 0.45));
-}
-
-.hero h1 {
-  font-size: clamp(2.35rem, 5.2vw, 3.5rem);
-  line-height: 1.06;
-  letter-spacing: -0.035em;
-  font-weight: 700;
-  margin: 14px 0 0;
-  color: #fff;
-  text-wrap: balance;
-}
-
-.hero h1 em {
-  font-style: normal;
-  background: linear-gradient(100deg, var(--amber-hi) 10%, var(--amber) 55%, #e0913a);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-
-.hero__lede {
-  margin: 20px 0 0;
-  max-width: 46ch;
-  font-size: 17.5px;
-  line-height: 1.62;
-  color: #b9c3d1;
-}
-
-.hero__lede strong {
-  color: var(--brand-cream);
-  font-weight: 570;
-}
-
-.hero__cta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 30px;
-}
-
-.hero .btn--ghost {
-  background: rgba(232, 236, 239, 0.06);
-  border-color: rgba(232, 236, 239, 0.2);
-  color: var(--brand-cream);
-}
-
-.hero .btn--ghost:hover {
-  background: rgba(232, 236, 239, 0.11);
-  border-color: rgba(245, 178, 92, 0.4);
-}
-
-.hero__badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 14px;
-  margin-top: 30px;
-  padding-top: 22px;
-  border-top: 1px solid rgba(232, 236, 239, 0.1);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: #8b96a7;
-}
-
-.hero__badges span {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.hero__badges span::before {
-  content: "";
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--amber);
-  box-shadow: 0 0 8px rgba(245, 178, 92, 0.8);
 }
 
 /* install strip */
@@ -1903,31 +1791,6 @@ th code {
 }
 
 @media (max-width: 900px) {
-  .hero__inner {
-    grid-template-columns: 1fr;
-    gap: 40px;
-    padding: 56px 24px 64px;
-    text-align: center;
-  }
-
-  .hero__logo {
-    width: min(320px, 78%);
-    order: -1;
-  }
-
-  .hero__lede {
-    margin-inline: auto;
-  }
-
-  .hero__cta,
-  .hero__badges {
-    justify-content: center;
-  }
-
-  .install {
-    margin-inline: auto;
-  }
-
   .split {
     grid-template-columns: 1fr;
     gap: 36px;
@@ -2195,23 +2058,6 @@ th code {
     display: none;
   }
 
-  .hero__inner {
-    padding: 44px 16px 52px;
-    gap: 32px;
-  }
-
-  .hero h1 {
-    font-size: clamp(1.95rem, 8.4vw, 2.6rem);
-  }
-
-  .hero__lede {
-    font-size: 16.5px;
-  }
-
-  .hero__cta .btn {
-    flex: 1 1 auto;
-  }
-
   .install {
     width: 100%;
     padding: 11px 12px;
@@ -2370,5 +2216,328 @@ th code {
 
   .docs {
     grid-template-columns: 1fr;
+  }
+}
+
+/* ==========================================================================
+   hero — centred copy, then the dashboard at full width beneath it
+
+   Intentionally dark in both themes: the recording is a dark terminal, and a
+   light surround would fight it. The frame is square along the bottom because
+   it is meant to read as continuing past the fold rather than ending there.
+   ========================================================================== */
+
+.hero {
+  position: relative;
+  overflow: clip;
+  background: var(--brand-navy);
+  border-bottom: 1px solid rgba(232, 236, 239, 0.1);
+  color: var(--brand-cream);
+  isolation: isolate;
+}
+
+.hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  background-image: linear-gradient(rgba(232, 236, 239, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(232, 236, 239, 0.045) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse 90% 60% at 50% 12%, #000 20%, transparent 78%);
+}
+
+.hero::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: -320px;
+  left: 50%;
+  width: 1000px;
+  height: 700px;
+  transform: translateX(-50%);
+  background: radial-gradient(ellipse at center, rgba(245, 178, 92, 0.16), transparent 62%);
+  pointer-events: none;
+}
+
+.hero__inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 78px 24px 44px;
+}
+
+.hero h1 {
+  font-size: clamp(2.35rem, 5.2vw, 3.5rem);
+  line-height: 1.06;
+  letter-spacing: -0.035em;
+  font-weight: 700;
+  margin: 14px 0 0;
+  color: #fff;
+  text-wrap: balance;
+}
+
+.hero h1 em {
+  font-style: normal;
+  background: linear-gradient(100deg, var(--amber-hi) 10%, var(--amber) 55%, #e0913a);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.hero__lede {
+  margin: 20px auto 0;
+  max-width: 58ch;
+  font-size: 17.5px;
+  line-height: 1.62;
+  color: #b9c3d1;
+  text-wrap: pretty;
+}
+
+.hero__lede strong {
+  color: var(--brand-cream);
+  font-weight: 570;
+}
+
+/* ---- view switcher -------------------------------------------------------- */
+
+.hero__views {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  width: min(1000px, 94vw);
+  margin: 0 auto 20px;
+}
+
+.hero__view {
+  flex: 1 1 220px;
+  max-width: 300px;
+  padding: 10px 14px;
+  border: 1px solid rgba(232, 236, 239, 0.14);
+  border-radius: var(--radius);
+  background: rgba(232, 236, 239, 0.04);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.hero__view:hover {
+  border-color: rgba(232, 236, 239, 0.28);
+  background: rgba(232, 236, 239, 0.08);
+}
+
+.hero__view[aria-selected="true"] {
+  border-color: rgba(245, 178, 92, 0.55);
+  background: rgba(245, 178, 92, 0.1);
+}
+
+.hero__view-label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #e8ecef;
+}
+
+.hero__view[aria-selected="true"] .hero__view-label {
+  color: var(--amber);
+}
+
+.hero__view-hint {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #8b96a7;
+}
+
+/* ---- the dashboard -------------------------------------------------------- */
+
+.hero__demo {
+  /* Held near the recording's own 1174px so it is never meaningfully
+     upscaled — the source has no more detail to give. */
+  width: min(1180px, 94vw);
+  margin: 0 auto;
+  border: 1px solid rgba(232, 236, 239, 0.16);
+  border-radius: var(--radius-lg);
+  background: var(--brand-navy);
+  box-shadow: 0 -8px 60px -20px rgba(245, 178, 92, 0.22), 0 32px 64px -24px rgba(0, 0, 0, 0.7);
+  overflow: hidden;
+}
+
+.hero__demo-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid rgba(232, 236, 239, 0.1);
+  background: rgba(232, 236, 239, 0.04);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.hero__demo-pip {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 8px rgba(245, 178, 92, 0.8);
+  animation: hero-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes hero-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.hero__demo-name {
+  color: var(--amber);
+  font-weight: 600;
+}
+
+/* Names whichever section of the clip is playing, so the recording is always
+   labelled rather than left to speak for itself. */
+.hero__demo-now {
+  color: #6b7688;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.hero__demo-now::before {
+  content: "│ ";
+  color: #3f4a5c;
+}
+
+.hero__demo-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  color: #8b96a7;
+  font: inherit;
+  cursor: pointer;
+}
+
+.hero__demo-btn:hover {
+  border-color: rgba(232, 236, 239, 0.18);
+  color: var(--brand-cream);
+}
+
+.hero__demo-btn kbd {
+  border-color: rgba(232, 236, 239, 0.18);
+  background: rgba(232, 236, 239, 0.1);
+  color: #e8ecef;
+  font-size: 11px;
+  line-height: 14px;
+}
+
+/* Footer strip, mirroring the bar above the video. */
+.hero__demo-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin: 0;
+  padding: 11px 16px 12px;
+  border-top: 1px solid rgba(232, 236, 239, 0.1);
+  background: rgba(232, 236, 239, 0.03);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #8b96a7;
+  text-align: center;
+}
+
+.hero__demo-note code {
+  font-size: inherit;
+  color: var(--brand-cream);
+}
+
+.hero__demo-soon {
+  padding: 1px 8px;
+  border: 1px solid rgba(245, 178, 92, 0.42);
+  border-radius: 999px;
+  color: var(--amber);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.hero__demo-video {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1174 / 676;
+  background: var(--brand-navy);
+}
+
+@media (max-width: 900px) {
+  .hero__inner {
+    padding: 58px 24px 34px;
+  }
+
+  .hero__demo {
+    width: min(100%, 96vw);
+  }
+}
+
+@media (max-width: 640px) {
+  .hero__inner {
+    padding: 46px 16px 28px;
+  }
+
+  .hero h1 {
+    font-size: clamp(1.95rem, 8.4vw, 2.6rem);
+  }
+
+  .hero__lede {
+    font-size: 16.5px;
+  }
+
+  /* Stacked view cards would push the demo off the screen entirely, so they
+     collapse to one scrollable row of labels. */
+  .hero__views {
+    flex-wrap: nowrap;
+    gap: 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding-inline: 2px;
+    /* Must not stay `center`: centring an overflowing nowrap flex row pushes
+       content past both edges, and the left overflow cannot be scrolled back
+       into view — the first label just loses its opening character. */
+    justify-content: flex-start;
+  }
+
+  .hero__view {
+    flex: 0 0 auto;
+    max-width: none;
+    padding: 8px 12px;
+  }
+
+  .hero__view-hint {
+    display: none;
+  }
+
+  /* The section label is the first thing to drop — the buttons name it now. */
+  .hero__demo-now {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero__demo-pip {
+    animation: none;
   }
 }
