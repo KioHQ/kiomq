@@ -28,3 +28,5 @@ target/
 .bacon-location*
 ## ignore any videos files
 *.mp4
+## …except the hero recording the docs site ships
+!docs/static/img/demo.mp4
