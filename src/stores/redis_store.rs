@@ -269,7 +269,7 @@ impl RedisStore {
         let mut pipeline = redis::pipe();
         pipeline.atomic();
         pipeline.hset(key.as_str(), field_key.as_str(), metrics_string);
-        pipeline.pexpire(key.as_str(), ttl_ms.saturating_mul(100).cast_signed());
+        pipeline.pexpire(key.as_str(), ttl_ms.saturating_mul(100) as i64);
         let _: () = pipeline.query_async(&mut conn).await?;
         Ok(())
     }
@@ -306,7 +306,7 @@ where
                 if now
                     .signed_duration_since(metrics.last_updated)
                     .num_milliseconds()
-                    <= (metrics.ttl_ms.cast_signed() + 20)
+                    <= (metrics.ttl_ms as i64 + 20)
                 {
                     return Some((metrics.worker_id, metrics));
                 }
@@ -733,7 +733,7 @@ where
                     let end = end.map_or(list_len, |value| value + 1);
 
                     let items: Vec<u64> = conn
-                        .zrange(key.as_str(), start.cast_signed(), end.cast_signed())
+                        .zrange(key.as_str(), start as isize, end as isize)
                         .await?;
                     return Ok(VecDeque::from_iter(items));
                 }
@@ -753,7 +753,7 @@ where
                 if list_len > 0 {
                     let end = end.map_or(list_len, |value| value + 1);
                     let items: Vec<u64> = conn
-                        .lrange(key.as_str(), start.cast_signed(), end.cast_signed())
+                        .lrange(key.as_str(), start as isize, end as isize)
                         .await?;
                     return Ok(VecDeque::from_iter(items));
                 }

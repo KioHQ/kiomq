@@ -348,7 +348,7 @@ impl<D, R, P> Job<D, R, P> {
     /// and the number of attempts made.  Returns `None` if the job has not
     /// been processed yet (i.e. `processed_on` and `finished_on` are not set).
     pub fn get_metrics(&self) -> Option<JobMetrics> {
-        let delay = self.opts.delay.as_diff_ms(self.ts).cast_unsigned();
+        let delay = self.opts.delay.as_diff_ms(self.ts) as u64;
         let processed_on = self.processed_on.unwrap_or_default();
         let id = self.id.unwrap_or_default();
         let finished_on = self.finished_on.unwrap_or_default();
@@ -368,7 +368,7 @@ impl<D, R, P> Job<D, R, P> {
     /// and other scheduling fields.
     pub fn add_opts(&mut self, opts: JobOptions) {
         self.priority = opts.priority;
-        self.delay = opts.delay.as_diff_ms(self.ts).cast_unsigned();
+        self.delay = opts.delay.as_diff_ms(self.ts) as u64;
         self.opts = opts;
     }
     /// Updates the job's progress value and persists it to the store.
@@ -425,7 +425,7 @@ where
                     b"timestamp" => {
                         job.ts = simd_json::from_slice::<Option<u64>>(&mut bytes)
                             .map_err(other)?
-                            .and_then(|t| Dt::from_timestamp_micros(t.cast_signed()))
+                            .and_then(|t| Dt::from_timestamp_micros(t as i64))
                             .unwrap_or_default();
                     }
                     b"opts" => job.opts = simd_json::from_slice(&mut bytes).map_err(other)?,
@@ -461,12 +461,12 @@ where
                     b"processedon" | b"processedOn" => {
                         job.processed_on = simd_json::from_slice::<Option<u64>>(&mut bytes)
                             .map_err(other)?
-                            .and_then(|t| Dt::from_timestamp_micros(t.cast_signed()));
+                            .and_then(|t| Dt::from_timestamp_micros(t as i64));
                     } // Assuming Dt is handled by simd_json
                     b"finishedon" | b"finishedOn" => {
                         job.finished_on = simd_json::from_slice::<Option<u64>>(&mut bytes)
                             .map_err(other)?
-                            .and_then(|t| Dt::from_timestamp_micros(t.cast_signed()));
+                            .and_then(|t| Dt::from_timestamp_micros(t as i64));
                     }
                     b"stalledcounter" | b"stalledCounter" => {
                         job.stalled_counter = simd_json::from_slice(&mut bytes).map_err(other)?;

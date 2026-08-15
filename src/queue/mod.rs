@@ -685,7 +685,7 @@ impl<
                 .prepare_job_for_processing(
                     token,
                     id,
-                    ts.cast_unsigned(),
+                    ts as u64,
                     opts,
                     prev_state.unwrap_or_default(),
                 )
@@ -1075,9 +1075,7 @@ impl<D, R, P, S: Store<D, R, P>> Queue<D, R, P, S> {
     ) -> KioResult<()> {
         let ts = Utc::now();
 
-        if let Some(next_delay) =
-            self.calculate_next_delay_ms(backoff_job_opts, attempts.cast_signed())
-        {
+        if let Some(next_delay) = self.calculate_next_delay_ms(backoff_job_opts, attempts as i64) {
             let expected_active_time = ts + TimeDelta::milliseconds(next_delay);
             self.store
                 .add_item(
@@ -1310,7 +1308,7 @@ mod tests {
         let queue = make_queue(None).await?;
         let below = MIN_DELAY_MS_LIMIT.saturating_sub(1);
         let opts = JobOptions {
-            delay: below.cast_signed().into(),
+            delay: (below as i64).into(),
             ..Default::default()
         };
         let err = queue
@@ -1333,7 +1331,7 @@ mod tests {
     async fn delay_exactly_at_limit_is_accepted() -> KioResult<()> {
         let queue = make_queue(None).await?;
         let opts = JobOptions {
-            delay: MIN_DELAY_MS_LIMIT.cast_signed().into(),
+            delay: (MIN_DELAY_MS_LIMIT as i64).into(),
             ..Default::default()
         };
         queue.add_job("boundary", 1, Some(opts)).await?;
