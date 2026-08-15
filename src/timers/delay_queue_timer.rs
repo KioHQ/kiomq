@@ -201,11 +201,7 @@ impl<
                 let date_time = Utc::now();
                 if queue.current_metrics.has_delayed() && !queue.current_metrics.is_idle() {
                     queue
-                        .promote_delayed_jobs(
-                            date_time,
-                            EVICTION_INTERVAL_MS.cast_signed(),
-                            &sender,
-                        )
+                        .promote_delayed_jobs(date_time, EVICTION_INTERVAL_MS as i64, &sender)
                         .await?;
                 }
 

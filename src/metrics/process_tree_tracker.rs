@@ -54,10 +54,8 @@ impl ProcessTreeTracker {
         let mut total_virt_bytes = 0;
 
         if let Ok(stat) = self.me.stat() {
-            total_ticks += (stat.utime
-                + stat.stime
-                + stat.cutime.cast_unsigned()
-                + stat.cstime.cast_unsigned()) as f32;
+            total_ticks +=
+                (stat.utime + stat.stime + stat.cutime as u64 + stat.cstime as u64) as f32;
             total_rss_pages += stat.rss;
             total_virt_bytes += stat.vsize;
         }

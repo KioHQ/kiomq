@@ -11,12 +11,14 @@
 // - store/worker constructors legitimately take many arguments and lines
 #![allow(
     clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,
     clippy::future_not_send,
     clippy::too_many_arguments,
     clippy::too_many_lines,
-    clippy::type_complexity
+    clippy::type_complexity,
+    clippy::duration_suboptimal_units
 )]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 mod error;

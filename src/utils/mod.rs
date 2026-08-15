@@ -357,7 +357,7 @@ where
         return Ok(None);
     }
     if let Some(job_id) = passed_id {
-        let ts = Utc::now().timestamp_micros().cast_unsigned();
+        let ts = Utc::now().timestamp_micros() as u64;
         let prev_state = JobState::Wait;
         let job = queue
             .prepare_job_for_processing(token, job_id, ts, opts, prev_state)
@@ -647,7 +647,7 @@ pub fn prepare_for_insert<D: Serialize, R: Serialize, P: Serialize>(
     } = opts;
     let dt = Utc::now();
     let expected_dt_ts = delay.next_occurrance_timestamp_ms();
-    let delay = delay.as_diff_ms(dt).cast_unsigned();
+    let delay = delay.as_diff_ms(dt) as u64;
     job.add_opts(opts);
     if delay > 0 && delay < MIN_DELAY_MS_LIMIT {
         return Err(QueueError::DelayBelowAllowedLimit {

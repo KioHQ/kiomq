@@ -171,7 +171,7 @@ where
         } = opts;
         let dt = Utc::now();
         let expected_dt_ts = delay.next_occurrance_timestamp_ms();
-        let delay = delay.as_diff_ms(dt).cast_unsigned();
+        let delay = delay.as_diff_ms(dt) as u64;
         job.add_opts(opts);
         if delay > 0 && delay < MIN_DELAY_MS_LIMIT {
             return Err(crate::KioError::from(QueueError::DelayBelowAllowedLimit {
@@ -202,7 +202,7 @@ where
                 event = JobState::Delayed;
             }
         } else if to_priorize {
-            let score = calculate_next_priority_score(priority, pc).cast_signed();
+            let score = calculate_next_priority_score(priority, pc) as i64;
             job.state = JobState::Prioritized;
             self.add_item(CollectionSuffix::Prioritized, id, Some(score), true)
                 .await?;
@@ -445,9 +445,9 @@ where
     }
 
     async fn get_delayed_at(&self, start: i64, stop: i64) -> KioResult<(Vec<u64>, Vec<u64>)> {
-        let before = (start - 1).cast_unsigned();
-        let end = stop.cast_unsigned();
-        let start = start.cast_unsigned();
+        let before = (start - 1) as u64;
+        let end = stop as u64;
+        let start = start as u64;
         let missed_iter = self.delayed.range(..before);
         let jobs_iter = self.delayed.range(start..end);
         let jobs = jobs_iter
@@ -630,22 +630,22 @@ where
             }
             CollectionSuffix::Completed => {
                 if let Some(score) = score {
-                    self.completed.insert(score.cast_unsigned(), item);
+                    self.completed.insert(score as u64, item);
                 }
             }
             CollectionSuffix::Failed => {
                 if let Some(score) = score {
-                    self.failed.insert(score.cast_unsigned(), item);
+                    self.failed.insert(score as u64, item);
                 }
             }
             CollectionSuffix::Prioritized => {
                 if let Some(score) = score {
-                    self.prioritized.insert(score.cast_unsigned(), item);
+                    self.prioritized.insert(score as u64, item);
                 }
             }
             CollectionSuffix::Delayed => {
                 if let Some(score) = score {
-                    self.delayed.insert(score.cast_unsigned(), item);
+                    self.delayed.insert(score as u64, item);
                 }
             }
             CollectionSuffix::Stalled => {
@@ -826,10 +826,10 @@ where
                     JobField::BackTrace(trace) => job.stack_trace.push(trace),
                     JobField::State(state) => job.state = state,
                     JobField::ProcessedOn(ts) => {
-                        job.processed_on = Dt::from_timestamp_micros(ts.cast_signed());
+                        job.processed_on = Dt::from_timestamp_micros(ts as i64);
                     }
                     JobField::FinishedOn(ts) => {
-                        job.finished_on = Dt::from_timestamp_micros(ts.cast_signed());
+                        job.finished_on = Dt::from_timestamp_micros(ts as i64);
                     }
                     JobField::Token(token) => job.token = Some(token),
                     JobField::Payload(processed_result) => match processed_result {
@@ -867,16 +867,12 @@ where
                     let update_job = |job: &mut Job<D, R, P>| -> u64 {
                         match field {
                             "attempts_made" | "attemptsMade" => {
-                                let new = (job.attempts_made.cast_signed() + delta)
-                                    .max(0)
-                                    .cast_unsigned();
+                                let new = (job.attempts_made as i64 + delta).max(0) as u64;
                                 job.attempts_made = new;
                                 new
                             }
                             "stalled_counter" | "stalledCounter" => {
-                                let new = (job.stalled_counter.cast_signed() + delta)
-                                    .max(0)
-                                    .cast_unsigned();
+                                let new = (job.stalled_counter as i64 + delta).max(0) as u64;
                                 job.stalled_counter = new;
                                 new
                             }
