@@ -10,8 +10,9 @@ cd docs
 hugo server
 ```
 
-Because `baseURL` includes a path, the dev server is at **<http://localhost:1313/kiomq/>** (Hugo
-prints the exact URL). Live reload picks up content, layout, CSS, and JS changes.
+The site is configured for the root of `kiomq.dev`; locally, the dev server is at
+**<http://localhost:1313/>** (Hugo prints the exact URL). Live reload picks up content, layout,
+CSS, and JS changes.
 
 Requires Hugo **extended**, v0.146 or newer (the layout structure uses `layouts/_partials`,
 `layouts/_markup`, `layouts/_shortcodes`). Install with:
@@ -31,7 +32,7 @@ hugo --gc --minify
 Output lands in `docs/public/` (git-ignored). CI does this on every push to `main` that touches
 `docs/**` and deploys to GitHub Pages — see
 [`.github/workflows/docs.yml`](../.github/workflows/docs.yml). The workflow passes the Pages base URL
-on the command line, so `baseURL` in `hugo.toml` only matters for local builds and previews.
+on the command line, so deployment automatically follows the configured Pages domain.
 
 > **First-time setup:** in the repository settings, set **Pages → Build and deployment → Source** to
 > **GitHub Actions**.
