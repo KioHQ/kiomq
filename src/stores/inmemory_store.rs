@@ -1995,12 +1995,6 @@ mod tests {
         assert_eq!(unique.len() as u64, N, "waiting list contains duplicates");
     }
 
-    // NOTE: `#[ignore]`d because it reproduces a REAL concurrency bug — see the
-    // module-level report below.  Concurrent consumers can be handed the *same*
-    // job twice: `ConcurrentDeque::pop_back` uses a non-atomic
-    // `back()`-then-`remove()` sequence, so under contention a job is delivered
-    // more than once (count out > count in).  Run with `--ignored` to reproduce.
-    #[ignore = "reveals duplicate job delivery under concurrent pop_back; see module report"]
     #[tokio::test(flavor = "multi_thread")]
     async fn test_concurrent_consumers_deliver_each_job_once() {
         let store = new_store();
@@ -2078,13 +2072,6 @@ mod tests {
         assert!(ids_in_state(&store, JobState::Wait).await.is_empty());
         assert_eq!(ids_in_state(&store, JobState::Active).await.len() as u64, N);
     }
-
-    // NOTE: `#[ignore]`d because it reproduces the same REAL concurrency bug as
-    // `test_concurrent_consumers_deliver_each_job_once`: with producers and
-    // consumers running together, `pop_back` hands the same job to two consumers,
-    // so `popped.len()` exceeds the number produced.  Run with `--ignored` to
-    // reproduce.  See the module report for details.
-    #[ignore = "reveals duplicate job delivery under concurrent pop_back; see module report"]
     #[tokio::test(flavor = "multi_thread")]
     async fn test_concurrent_push_pop_loses_no_jobs() {
         let store = new_store();
