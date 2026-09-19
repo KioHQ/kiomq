@@ -1,4 +1,4 @@
-baseURL = "https://kiohq.github.io/kiomq/"
+baseURL = "https://kiomq.dev/"
 locale = "en-US"
 title = "KioMQ"
 enableRobotsTXT = true
