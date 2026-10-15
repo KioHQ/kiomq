@@ -2046,7 +2046,7 @@ mod tests {
         );
 
         // The waiting list is fully drained and everything sits in active.
-        assert!(ids_in_state(&store, JobState::Wait).await.is_empty());
+        assert_eq!(ids_in_state(&store, JobState::Wait).await.len(), 0);
         assert_eq!(ids_in_state(&store, JobState::Active).await.len() as u64, N);
     }
     #[tokio::test(flavor = "multi_thread")]

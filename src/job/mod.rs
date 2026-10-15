@@ -501,8 +501,8 @@ mod tests {
         assert!(job.progress.is_none());
         assert!(job.returned_value.is_none());
         assert!(job.token.is_none());
-        assert!(job.stack_trace.is_empty());
-        assert!(job.logs.is_empty());
+        assert_eq!(job.stack_trace.len(), 0);
+        assert_eq!(job.logs.len(), 0);
     }
 
     #[test]
