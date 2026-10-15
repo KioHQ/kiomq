@@ -154,7 +154,7 @@ mod error_tests {
             to: "TargetType",
         };
         let display = err.to_string();
-        assert!(!display.is_empty());
+        assert_ne!(display, "");
         assert_eq!(display, "Failed to Convert: from SourceType to TargetType");
         // A structural error carries no underlying source.
         assert!(err.source().is_none());
@@ -164,7 +164,7 @@ mod error_tests {
     fn emitter_error_message_embeds_the_reason() {
         let err = KioError::EmitterError("channel closed".to_compact_string());
         let display = err.to_string();
-        assert!(!display.is_empty());
+        assert_ne!(display, "");
         assert_eq!(display, "Emitter: channel closed");
         assert!(err.source().is_none());
     }
@@ -190,14 +190,14 @@ mod error_tests {
         assert!(matches!(err, KioError::ParseIntError(_)));
         // Transparent Display forwards the std error's message; assert on the
         // variant only (the exact std string is not a stability guarantee).
-        assert!(!err.to_string().is_empty());
+        assert_ne!(err.to_string(), "");
     }
 
     #[test]
     fn fmt_error_converts_and_renders() {
         let err = KioError::from(std::fmt::Error);
         assert!(matches!(err, KioError::FmtError(_)));
-        assert!(!err.to_string().is_empty());
+        assert_ne!(err.to_string(), "");
     }
 
     #[test]
@@ -209,7 +209,7 @@ mod error_tests {
             .expect_err("earlier.duration_since(later) must error");
         let err = KioError::from(source);
         assert!(matches!(err, KioError::SystemTimeError(_)));
-        assert!(!err.to_string().is_empty());
+        assert_ne!(err.to_string(), "");
     }
 
     #[test]
@@ -228,7 +228,7 @@ mod error_tests {
             simd_json::to_owned_value(&mut bytes).expect_err("invalid JSON must fail to parse");
         let err = KioError::from(source);
         assert!(matches!(err, KioError::JsonError(_)));
-        assert!(!err.to_string().is_empty());
+        assert_ne!(err.to_string(), "");
     }
 
     #[test]
@@ -247,7 +247,7 @@ mod error_tests {
             .expect_err("a panicking task must produce a JoinError");
         let err = KioError::from(source);
         assert!(matches!(err, KioError::JoinError(_)));
-        assert!(!err.to_string().is_empty());
+        assert_ne!(err.to_string(), "");
     }
 
     #[test]
@@ -257,7 +257,7 @@ mod error_tests {
             .expect_err("an invalid cron expression must fail to parse");
         let err = KioError::from(source);
         assert!(matches!(err, KioError::CronerError(_)));
-        assert!(!err.to_string().is_empty());
+        assert_ne!(err.to_string(), "");
     }
 
     #[test]
@@ -268,7 +268,7 @@ mod error_tests {
             err.to_string(),
             QueueError::CantOperateWhenPaused.to_string()
         );
-        assert!(!err.to_string().is_empty());
+        assert_ne!(err.to_string(), "");
     }
 
     #[test]
@@ -280,7 +280,7 @@ mod error_tests {
             err.to_string(),
             WorkerError::WorkerAlreadyClosed(id).to_string()
         );
-        assert!(!err.to_string().is_empty());
+        assert_ne!(err.to_string(), "");
     }
 
     #[test]
@@ -399,7 +399,7 @@ mod error_tests {
             KioError::from(JobError::JobNotFound),
         ];
         for err in &errors {
-            assert!(!format!("{err:?}").is_empty());
+            assert_ne!(format!("{err:?}"), "");
         }
     }
 }

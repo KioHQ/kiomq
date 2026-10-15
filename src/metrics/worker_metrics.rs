@@ -452,7 +452,7 @@ mod tests {
         assert_eq!(metrics.worker_id, id);
         assert_eq!(metrics.active_len, 3);
         assert_eq!(metrics.ttl_ms, ttl);
-        assert!(metrics.tasks.is_empty());
+        assert_eq!(metrics.tasks.len(), 0);
     }
 
     #[test]

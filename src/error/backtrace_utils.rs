@@ -170,7 +170,7 @@ mod tests {
         let caught: CaughtError = join_error.into();
         assert!(matches!(caught, CaughtError::JoinError(_)));
         // Debug rendering of every CaughtError arm must be populated.
-        assert!(!format!("{caught:?}").is_empty());
+        assert_ne!(format!("{caught:?}"), "");
     }
 
     #[test]
