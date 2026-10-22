@@ -305,7 +305,7 @@ mod tests {
     #[tokio::test]
     async fn removing_before_expiry_cancels_the_entry() {
         let map: TimedMap<u64, u64> = TimedMap::new();
-        map.insert_expirable(1, 5, Duration::from_secs(60));
+        map.insert_expirable(1, 5, Duration::from_mins(1));
         assert!(map.contains_key(&1));
         map.remove(&1);
         assert!(
@@ -323,7 +323,7 @@ mod tests {
         let map: TimedMap<u64, u64> = TimedMap::new();
         map.insert_expirable(1, 1, Duration::from_millis(5));
         // Overwrite with a fresh, long TTL before the first would expire.
-        map.insert_expirable(1, 2, Duration::from_secs(60));
+        map.insert_expirable(1, 2, Duration::from_mins(1));
         sleep(Duration::from_millis(25)).await;
         let value = map
             .get(&1)
@@ -336,7 +336,7 @@ mod tests {
     async fn update_expiration_status_extends_a_live_entry() {
         let map: TimedMap<u64, u64> = TimedMap::new();
         map.insert_expirable(1, 10, Duration::from_millis(20));
-        let next = map.update_expiration_status(&1, Duration::from_secs(60));
+        let next = map.update_expiration_status(&1, Duration::from_mins(1));
         assert!(next.is_some(), "updating a live expirable key must succeed");
         // The original short TTL would have elapsed here; the extension keeps it.
         sleep(Duration::from_millis(40)).await;
@@ -378,7 +378,7 @@ mod tests {
     async fn purge_evicts_only_expired_entries_and_preserves_the_rest() {
         let map: TimedMap<u64, u64> = TimedMap::new();
         map.insert_expirable(1, 1, Duration::from_millis(5)); // will expire
-        map.insert_expirable(2, 2, Duration::from_secs(60)); // stays live
+        map.insert_expirable(2, 2, Duration::from_mins(1)); // stays live
         map.insert_constant(3, 3); // never expires
         sleep(Duration::from_millis(25)).await;
         map.purge_expired();
@@ -396,7 +396,7 @@ mod tests {
         // Staggered TTLs: only the earliest deadline should have elapsed at the
         // observation point.
         map.insert_expirable(1, 1, Duration::from_millis(5));
-        map.insert_expirable(2, 2, Duration::from_secs(60));
+        map.insert_expirable(2, 2, Duration::from_mins(1));
         sleep(Duration::from_millis(25)).await;
         assert!(
             map.get(&1).is_none(),

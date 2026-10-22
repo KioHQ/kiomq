@@ -559,7 +559,7 @@ mod events_tests {
             EventParameters::Delayed {
                 job_id: 19,
                 delay
-            } if delay == Duration::from_millis(2_000)
+            } if delay == Duration::from_secs(2)
         ));
 
         // Absent delay defaults to zero.
